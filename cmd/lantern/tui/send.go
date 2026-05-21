@@ -215,28 +215,31 @@ func (m sendModel) updateWaiting(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m sendModel) waitForEvents() tea.Cmd {
 	return func() tea.Msg {
-		select {
-		case e := <-m.lantern.Events():
-			switch e.Type {
-			case lantern.EventTransferProgress:
-				return transferProgressMsg{
-					fileName: e.FileName,
-					bytes:    e.Bytes,
-					total:    e.Total,
-					done:     false,
+		for {
+			select {
+			case e := <-m.lantern.Events():
+				switch e.Type {
+				case lantern.EventTransferProgress:
+					return transferProgressMsg{
+						fileName: e.FileName,
+						bytes:    e.Bytes,
+						total:    e.Total,
+						done:     false,
+					}
+				case lantern.EventTransferDone:
+					return transferProgressMsg{
+						fileName: e.FileName,
+						done:     true,
+					}
+				case lantern.EventError:
+					return errMsg{e.Err}
+				default:
+					continue
 				}
-			case lantern.EventTransferDone:
-				return transferProgressMsg{
-					fileName: e.FileName,
-					done:     true,
-				}
-			case lantern.EventError:
-				return errMsg{e.Err}
+			case <-m.ctx.Done():
+				return errMsg{m.ctx.Err()}
 			}
-		case <-m.ctx.Done():
-			return errMsg{m.ctx.Err()}
 		}
-		return nil
 	}
 }
 

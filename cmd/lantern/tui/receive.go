@@ -35,6 +35,12 @@ type receiveModel struct {
 	viewport  viewport.Model
 	err       error
 	outputDir string
+	receiveCh chan receiveResult
+}
+
+type receiveResult struct {
+	peer *lantern.Peer
+	err  error
 }
 
 func newReceiveModel(ln *lantern.Lantern, outputDir string) receiveModel {
@@ -61,6 +67,7 @@ func newReceiveModel(ln *lantern.Lantern, outputDir string) receiveModel {
 		progress:  p,
 		viewport:  vp,
 		outputDir: outputDir,
+		receiveCh: make(chan receiveResult, 1),
 	}
 }
 
@@ -93,15 +100,13 @@ func (m receiveModel) updateInputCode(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "enter":
 			if m.input.Value() != "" {
-				m.state = recvDiscovering
 				code := m.input.Value()
-				return m, func() tea.Msg {
+				go func() {
 					peer, err := m.lantern.Receive(m.ctx, code, m.outputDir)
-					if err != nil {
-						return errMsg{err}
-					}
-					return receiveReadyMsg{peer: peer}
-				}
+					m.receiveCh <- receiveResult{peer: peer, err: err}
+				}()
+				m.state = recvDiscovering
+				return m, nil
 			}
 		}
 	}
@@ -112,6 +117,19 @@ func (m receiveModel) updateInputCode(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m receiveModel) updateDiscovering(msg tea.Msg) (tea.Model, tea.Cmd) {
+	select {
+	case r := <-m.receiveCh:
+		if r.err != nil {
+			m.state = recvError
+			m.err = r.err
+			return m, nil
+		}
+		m.peer = r.peer
+		m.state = recvTransferring
+		return m, m.waitForReceiveEvents()
+	default:
+	}
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -119,16 +137,6 @@ func (m receiveModel) updateDiscovering(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancel()
 			return m, tea.Quit
 		}
-
-	case errMsg:
-		m.state = recvError
-		m.err = msg.err
-		return m, nil
-
-	case receiveReadyMsg:
-		m.peer = msg.peer
-		m.state = recvTransferring
-		return m, m.waitForReceiveEvents()
 	}
 
 	return m, nil
@@ -136,27 +144,30 @@ func (m receiveModel) updateDiscovering(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m receiveModel) waitForReceiveEvents() tea.Cmd {
 	return func() tea.Msg {
-		select {
-		case e := <-m.lantern.Events():
-			switch e.Type {
-			case lantern.EventTransferProgress:
-				return transferProgressMsg{
-					fileName: e.FileName,
-					bytes:    e.Bytes,
-					total:    e.Total,
+		for {
+			select {
+			case e := <-m.lantern.Events():
+				switch e.Type {
+				case lantern.EventTransferProgress:
+					return transferProgressMsg{
+						fileName: e.FileName,
+						bytes:    e.Bytes,
+						total:    e.Total,
+					}
+				case lantern.EventTransferDone:
+					return transferProgressMsg{
+						fileName: e.FileName,
+						done:     true,
+					}
+				case lantern.EventError:
+					return errMsg{e.Err}
+				default:
+					continue
 				}
-			case lantern.EventTransferDone:
-				return transferProgressMsg{
-					fileName: e.FileName,
-					done:     true,
-				}
-			case lantern.EventError:
-				return errMsg{e.Err}
+			case <-m.ctx.Done():
+				return errMsg{m.ctx.Err()}
 			}
-		case <-m.ctx.Done():
-			return errMsg{m.ctx.Err()}
 		}
-		return nil
 	}
 }
 
