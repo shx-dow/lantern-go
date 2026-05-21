@@ -241,6 +241,13 @@ func (m receiveModel) View() string {
 		)
 
 	case recvTransferring:
+		if m.total == 0 {
+			return appStyle.Render(
+				titleStyle.Render("receiving...")+"\n\n"+
+					infoStyle.Render("connecting to peer...")+"\n\n"+
+					helpStyle.Render("esc: cancel"),
+			)
+		}
 		pct := float64(m.bytes) / float64(m.total)
 		return appStyle.Render(
 			titleStyle.Render(fmt.Sprintf("receiving: %s", m.fileName))+"\n\n"+

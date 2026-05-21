@@ -341,6 +341,13 @@ func (m sendModel) View() string {
 		)
 
 	case sendTransferring:
+		if m.total == 0 {
+			return appStyle.Render(
+				titleStyle.Render("sending...")+"\n\n"+
+					infoStyle.Render("waiting for connection...")+"\n\n"+
+					helpStyle.Render("esc: cancel"),
+			)
+		}
 		pct := float64(m.bytes) / float64(m.total)
 		return appStyle.Render(
 			titleStyle.Render(fmt.Sprintf("sending: %s", m.fileName)) + "\n\n" +
