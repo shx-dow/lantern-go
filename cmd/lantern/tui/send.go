@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -48,8 +47,14 @@ type sendModel struct {
 	fileName    string
 	viewport    viewport.Model
 
-	err   error
-	done  bool
+	err      error
+	done     bool
+	shareCh  chan shareResult
+}
+
+type shareResult struct {
+	peer *lantern.Peer
+	err  error
 }
 
 func newSendModel(ln *lantern.Lantern) sendModel {
@@ -68,6 +73,7 @@ func newSendModel(ln *lantern.Lantern) sendModel {
 		cancel:   cancel,
 		progress: p,
 		viewport: vp,
+		shareCh:  make(chan shareResult, 1),
 	}
 	m.readDir()
 	return m
@@ -151,38 +157,31 @@ func (m sendModel) updatePickFile(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.readDir()
 			} else {
 				m.selected = filepath.Join(m.dir, e.name)
+				go func() {
+					p, err := m.lantern.Share(m.ctx, m.selected)
+					m.shareCh <- shareResult{peer: p, err: err}
+				}()
 				m.state = sendWaiting
-				return m, m.startShare
+				return m, nil
 			}
 		}
 	}
 	return m, nil
 }
 
-func (m sendModel) startShare() tea.Msg {
-	result := make(chan struct {
-		peer *lantern.Peer
-		err  error
-	}, 1)
-	go func() {
-		p, err := m.lantern.Share(m.ctx, m.selected)
-		result <- struct {
-			peer *lantern.Peer
-			err  error
-		}{p, err}
-	}()
-	select {
-	case r := <-result:
-		if r.err != nil {
-			return errMsg{r.err}
-		}
-		return shareStartedMsg{peer: r.peer}
-	case <-time.After(10 * time.Second):
-		return errMsg{fmt.Errorf("share timed out")}
-	}
-}
-
 func (m sendModel) updateWaiting(msg tea.Msg) (tea.Model, tea.Cmd) {
+	select {
+	case r := <-m.shareCh:
+		if r.err != nil {
+			m.state = sendError
+			m.err = r.err
+			return m, nil
+		}
+		m.peer = r.peer
+		return m, m.waitForEvents()
+	default:
+	}
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -195,11 +194,6 @@ func (m sendModel) updateWaiting(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = sendError
 		m.err = msg.err
 		return m, nil
-
-	case shareStartedMsg:
-		m.peer = msg.peer
-		m.state = sendWaiting
-		return m, m.waitForEvents()
 
 	case transferProgressMsg:
 		m.bytes = msg.bytes
@@ -368,10 +362,6 @@ func (m sendModel) View() string {
 		)
 	}
 	return ""
-}
-
-type shareStartedMsg struct {
-	peer *lantern.Peer
 }
 
 type errMsg struct {
