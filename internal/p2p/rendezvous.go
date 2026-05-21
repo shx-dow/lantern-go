@@ -32,22 +32,36 @@ func (n *Node) Advertise(ctx context.Context, code string) error {
 func (n *Node) Discover(ctx context.Context, code string) (peer.AddrInfo, error) {
 	c := codeToCID(code)
 
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	peers, err := n.DHT.FindProviders(ctx, c)
-	if err != nil {
-		return peer.AddrInfo{}, fmt.Errorf("find providers: %w", err)
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		deadline, _ = ctx.Deadline()
 	}
 
-	for _, p := range peers {
-		if p.ID == n.Host.ID() {
-			continue
+	for {
+		peers, err := n.DHT.FindProviders(ctx, c)
+		if err != nil {
+			return peer.AddrInfo{}, fmt.Errorf("find providers: %w", err)
 		}
-		return p, nil
-	}
+		for _, p := range peers {
+			if p.ID == n.Host.ID() {
+				continue
+			}
+			return p, nil
+		}
 
-	return peer.AddrInfo{}, fmt.Errorf("no peers found for code: %s", code)
+		select {
+		case <-time.After(500 * time.Millisecond):
+		case <-ctx.Done():
+			return peer.AddrInfo{}, fmt.Errorf("no peers found for code: %s (timeout)", code)
+		}
+
+		if time.Now().After(deadline) {
+			return peer.AddrInfo{}, fmt.Errorf("no peers found for code: %s (timeout)", code)
+		}
+	}
 }
 
 func (n *Node) AddrInfo() peer.AddrInfo {
