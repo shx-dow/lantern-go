@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -159,11 +160,26 @@ func (m sendModel) updatePickFile(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m sendModel) startShare() tea.Msg {
-	peer, err := m.lantern.Share(m.ctx, m.selected)
-	if err != nil {
-		return errMsg{err}
+	result := make(chan struct {
+		peer *lantern.Peer
+		err  error
+	}, 1)
+	go func() {
+		p, err := m.lantern.Share(m.ctx, m.selected)
+		result <- struct {
+			peer *lantern.Peer
+			err  error
+		}{p, err}
+	}()
+	select {
+	case r := <-result:
+		if r.err != nil {
+			return errMsg{r.err}
+		}
+		return shareStartedMsg{peer: r.peer}
+	case <-time.After(10 * time.Second):
+		return errMsg{fmt.Errorf("share timed out")}
 	}
-	return shareStartedMsg{peer: peer}
 }
 
 func (m sendModel) updateWaiting(msg tea.Msg) (tea.Model, tea.Cmd) {
