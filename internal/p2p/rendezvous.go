@@ -87,15 +87,16 @@ func (n *Node) Discover(ctx context.Context, code string) (peer.AddrInfo, error)
 			return *pi, nil
 		}
 
-		peers, err := n.DHT.FindProviders(ctx, c)
-		if err != nil {
-			return peer.AddrInfo{}, fmt.Errorf("find providers: %w", err)
-		}
-		for _, p := range peers {
-			if p.ID == n.Host.ID() {
-				continue
+		dhtCtx, dhtCancel := context.WithTimeout(ctx, 3*time.Second)
+		peers, err := n.DHT.FindProviders(dhtCtx, c)
+		dhtCancel()
+		if err == nil {
+			for _, p := range peers {
+				if p.ID == n.Host.ID() {
+					continue
+				}
+				return p, nil
 			}
-			return p, nil
 		}
 
 		select {
