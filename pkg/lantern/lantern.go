@@ -83,6 +83,10 @@ func (l *Lantern) Share(ctx context.Context, path string) (*Peer, error) {
 
 	l.node.RegisterShareHandler(code, path, progress)
 
+	if err := l.node.AdvertiseLocal(code); err != nil {
+		return nil, fmt.Errorf("local advertise: %w", err)
+	}
+
 	advCtx, advCancel := context.WithCancel(context.Background())
 	go func() {
 		defer advCancel()
