@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 
-	"github.com/charmbracelet/bubbles/filepicker"
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -22,13 +24,20 @@ const (
 	sendError
 )
 
+type dirEntry struct {
+	name  string
+	isDir bool
+}
+
 type sendModel struct {
 	state       sendState
 	lantern     *lantern.Lantern
 	ctx         context.Context
 	cancel      context.CancelFunc
 
-	fp          filepicker.Model
+	dir         string
+	entries     []dirEntry
+	cursor      int
 	selected    string
 	peer        *lantern.Peer
 
@@ -43,12 +52,6 @@ type sendModel struct {
 }
 
 func newSendModel(ln *lantern.Lantern) sendModel {
-	fp := filepicker.New()
-	fp.ShowHidden = false
-	fp.FileAllowed = true
-	fp.DirAllowed = true
-	fp.CurrentDirectory, _ = os.Getwd()
-
 	ctx, cancel := context.WithCancel(context.Background())
 
 	p := progress.New()
@@ -57,19 +60,45 @@ func newSendModel(ln *lantern.Lantern) sendModel {
 
 	vp := viewport.New(60, 5)
 
-	return sendModel{
+	m := sendModel{
 		state:    sendPickFile,
 		lantern:  ln,
 		ctx:      ctx,
 		cancel:   cancel,
-		fp:       fp,
 		progress: p,
 		viewport: vp,
+	}
+	m.readDir()
+	return m
+}
+
+func (m *sendModel) readDir() {
+	dir := m.dir
+	if dir == "" {
+		dir, _ = os.Getwd()
+		m.dir = dir
+	}
+	ents, _ := os.ReadDir(dir)
+	m.entries = nil
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		m.entries = append(m.entries, dirEntry{name: e.Name(), isDir: e.IsDir()})
+	}
+	sort.Slice(m.entries, func(i, j int) bool {
+		if m.entries[i].isDir != m.entries[j].isDir {
+			return m.entries[i].isDir
+		}
+		return strings.ToLower(m.entries[i].name) < strings.ToLower(m.entries[j].name)
+	})
+	if m.cursor >= len(m.entries) {
+		m.cursor = 0
 	}
 }
 
 func (m sendModel) Init() tea.Cmd {
-	return m.fp.Init()
+	return nil
 }
 
 func (m sendModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -92,25 +121,41 @@ func (m sendModel) updatePickFile(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "esc":
+		case "ctrl+c", "q":
 			m.cancel()
 			return m, tea.Quit
+		case "esc":
+			parent := filepath.Dir(m.dir)
+			if parent != m.dir {
+				m.dir = parent
+				m.cursor = 0
+				m.readDir()
+			}
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "j":
+			if m.cursor < len(m.entries)-1 {
+				m.cursor++
+			}
+		case "enter":
+			if len(m.entries) == 0 {
+				break
+			}
+			e := m.entries[m.cursor]
+			if e.isDir {
+				m.dir = filepath.Join(m.dir, e.name)
+				m.cursor = 0
+				m.readDir()
+			} else {
+				m.selected = filepath.Join(m.dir, e.name)
+				m.state = sendWaiting
+				return m, m.startShare
+			}
 		}
-
-	case tea.WindowSizeMsg:
-		m.fp.SetHeight(m.viewport.Height)
 	}
-
-	var cmd tea.Cmd
-	m.fp, cmd = m.fp.Update(msg)
-
-	if didSelect, path := m.fp.DidSelectFile(msg); didSelect {
-		m.selected = path
-		m.state = sendWaiting
-		return m, m.startShare
-	}
-
-	return m, cmd
+	return m, nil
 }
 
 func (m sendModel) startShare() tea.Msg {
@@ -244,11 +289,26 @@ func (m sendModel) updateError(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m sendModel) View() string {
 	switch m.state {
 	case sendPickFile:
-		return appStyle.Render(
-			titleStyle.Render("send a file") + "\n\n" +
-				m.fp.View() + "\n\n" +
-				helpStyle.Render("esc: back • enter: select • /: search"),
-		)
+		s := titleStyle.Render("send a file") + "\n\n"
+		s += infoStyle.Render(m.dir) + "\n\n"
+		if len(m.entries) == 0 {
+			s += "  (empty directory)" + "\n\n"
+		} else {
+			for i, e := range m.entries {
+				cursor := "  "
+				if i == m.cursor {
+					cursor = "› "
+				}
+				icon := " "
+				if e.isDir {
+					icon = "D"
+				}
+				s += fmt.Sprintf("%s%s %s\n", cursor, icon, e.name)
+			}
+			s += "\n"
+		}
+		s += helpStyle.Render("↑/↓: navigate • enter: open/select • esc: up • q: quit")
+		return appStyle.Render(s)
 
 	case sendWaiting:
 		code := m.peer.Code
