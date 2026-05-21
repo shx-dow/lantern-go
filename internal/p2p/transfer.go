@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 
 	"github.com/libp2p/go-libp2p/core/network"
@@ -33,20 +32,17 @@ type shareState struct {
 	code     string
 	filePath string
 	handled  atomic.Bool
+	progress chan TransferProgress
 }
 
-func (n *Node) SendFile(ctx context.Context, code string, path string, progress chan<- TransferProgress) error {
-	state := &shareState{code: code, filePath: path}
-
-	done := make(chan struct{})
-	var once sync.Once
+func (n *Node) RegisterShareHandler(code string, path string, progress chan TransferProgress) {
+	state := &shareState{code: code, filePath: path, progress: progress}
+	state.handled.Store(false)
 
 	n.Host.SetStreamHandler(ProtocolID, func(s network.Stream) {
 		defer s.Close()
-		once.Do(func() { close(done) })
 
 		if !state.handled.CompareAndSwap(false, true) {
-			progress <- TransferProgress{Err: fmt.Errorf("already handling a transfer")}
 			return
 		}
 
@@ -119,17 +115,18 @@ func (n *Node) SendFile(ctx context.Context, code string, path string, progress 
 			Done:     true,
 		}
 	})
-
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		n.Host.RemoveStreamHandler(ProtocolID)
-		return ctx.Err()
-	}
 }
 
-func (n *Node) ReceiveFile(ctx context.Context, pi peer.AddrInfo, code string, outputDir string, progress chan<- TransferProgress) error {
+func (n *Node) RegisterReceive(ctx context.Context, pi peer.AddrInfo, code string, outputDir string, progress chan TransferProgress) {
+	go func() {
+		err := n.receiveFile(ctx, pi, code, outputDir, progress)
+		if err != nil {
+			progress <- TransferProgress{Err: err}
+		}
+	}()
+}
+
+func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, outputDir string, progress chan<- TransferProgress) error {
 	if err := n.Host.Connect(ctx, pi); err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}

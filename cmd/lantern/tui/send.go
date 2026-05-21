@@ -38,9 +38,8 @@ type sendModel struct {
 	fileName    string
 	viewport    viewport.Model
 
-	err         error
-	done        bool
-	quitting    bool
+	err   error
+	done  bool
 }
 
 func newSendModel(ln *lantern.Lantern) sendModel {

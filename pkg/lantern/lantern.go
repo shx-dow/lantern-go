@@ -17,11 +17,10 @@ type Config struct {
 type EventType int
 
 const (
-	EventPeerFound    EventType = iota
-	EventPeerConnected
-	EventTransferStarted
-	EventTransferProgress
+	EventTransferProgress EventType = iota
 	EventTransferDone
+	EventPeerFound
+	EventPeerConnected
 	EventError
 )
 
@@ -79,22 +78,20 @@ func (l *Lantern) Share(ctx context.Context, path string) (*Peer, error) {
 		return nil, fmt.Errorf("generate code: %w", err)
 	}
 
-	l.emit(Event{Type: EventPeerFound, Code: code})
+	progress := make(chan p2p.TransferProgress)
+	go l.forwardProgress(progress)
 
-	advCtx, advCancel := context.WithCancel(ctx)
-	defer advCancel()
+	l.node.RegisterShareHandler(code, path, progress)
+
+	advCtx, advCancel := context.WithCancel(context.Background())
 	go func() {
+		defer advCancel()
 		if err := l.node.Advertise(advCtx, code); err != nil && ctx.Err() == nil {
 			l.emit(Event{Type: EventError, Err: fmt.Errorf("advertise: %w", err)})
 		}
 	}()
 
-	progress := make(chan p2p.TransferProgress)
-	go l.handleProgress(progress)
-
-	if err := l.node.SendFile(ctx, code, path, progress); err != nil {
-		return nil, err
-	}
+	l.emit(Event{Type: EventPeerFound, Code: code})
 
 	return &Peer{
 		ID:       l.node.Host.ID().String(),
@@ -111,14 +108,11 @@ func (l *Lantern) Receive(ctx context.Context, code string, outputDir string) (*
 	}
 
 	l.emit(Event{Type: EventPeerConnected, PeerID: pi.ID.String()})
-	l.emit(Event{Type: EventTransferStarted})
 
 	progress := make(chan p2p.TransferProgress)
-	go l.handleProgress(progress)
+	go l.forwardProgress(progress)
 
-	if err := l.node.ReceiveFile(ctx, pi, code, outputDir, progress); err != nil {
-		return nil, err
-	}
+	l.node.RegisterReceive(ctx, pi, code, outputDir, progress)
 
 	return &Peer{
 		ID:   pi.ID.String(),
@@ -126,7 +120,7 @@ func (l *Lantern) Receive(ctx context.Context, code string, outputDir string) (*
 	}, nil
 }
 
-func (l *Lantern) handleProgress(progress <-chan p2p.TransferProgress) {
+func (l *Lantern) forwardProgress(progress <-chan p2p.TransferProgress) {
 	for p := range progress {
 		if p.Err != nil {
 			l.emit(Event{Type: EventError, Err: p.Err})
@@ -135,9 +129,6 @@ func (l *Lantern) handleProgress(progress <-chan p2p.TransferProgress) {
 		if p.Done {
 			l.emit(Event{Type: EventTransferDone, FileName: p.FileName})
 		} else {
-			if p.Bytes == 0 && p.Total == 0 {
-				continue
-			}
 			l.emit(Event{Type: EventTransferProgress, FileName: p.FileName, Bytes: p.Bytes, Total: p.Total})
 		}
 	}

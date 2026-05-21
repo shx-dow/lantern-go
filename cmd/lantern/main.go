@@ -30,41 +30,91 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go handleSignals(cancel)
-	go printEvents(ctx, ln)
+	go handleSignal(cancel)
 
 	switch os.Args[1] {
 	case "send":
-		if len(os.Args) < 3 {
-			log.Fatal("usage: lantern send <path>")
-		}
-		peer, err := ln.Share(ctx, os.Args[2])
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Printf("\nsent %s (code: %s)\n", peer.FileName, peer.Code)
-
+		runSend(ctx, ln, os.Args)
 	case "receive":
-		if len(os.Args) < 3 {
-			log.Fatal("usage: lantern receive <code> [output-dir]")
-		}
-		outputDir := "."
-		if len(os.Args) > 3 {
-			outputDir = os.Args[3]
-		}
-		peer, err := ln.Receive(ctx, os.Args[2], outputDir)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Printf("\nreceived from %s\n", peer.ID)
-
+		runReceive(ctx, ln, os.Args)
 	default:
 		fmt.Println("usage: lantern [send|receive]")
 		os.Exit(1)
 	}
 }
 
-func handleSignals(cancel context.CancelFunc) {
+func runSend(ctx context.Context, ln *lantern.Lantern, args []string) {
+	if len(args) < 3 {
+		log.Fatal("usage: lantern send <path>")
+	}
+
+	peer, err := ln.Share(ctx, args[2])
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("share code: %s\n", peer.Code)
+	fmt.Println("waiting for receiver...")
+
+	for {
+		select {
+		case e := <-ln.Events():
+			switch e.Type {
+			case lantern.EventTransferProgress:
+				pct := float64(e.Bytes) / float64(e.Total) * 100
+				fmt.Printf("\rprogress: %.1f%% (%s / %s)", pct, formatBytes(e.Bytes), formatBytes(e.Total))
+			case lantern.EventTransferDone:
+				fmt.Printf("\nsent %s\n", peer.FileName)
+				return
+			case lantern.EventError:
+				fmt.Fprintf(os.Stderr, "\nerror: %v\n", e.Err)
+				return
+			}
+		case <-ctx.Done():
+			fmt.Println("\ncancelled")
+			return
+		}
+	}
+}
+
+func runReceive(ctx context.Context, ln *lantern.Lantern, args []string) {
+	if len(args) < 3 {
+		log.Fatal("usage: lantern receive <code> [output-dir]")
+	}
+	outputDir := "."
+	if len(args) > 3 {
+		outputDir = args[3]
+	}
+
+	peer, err := ln.Receive(ctx, args[2], outputDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("connecting to %s...\n", peer.ID)
+
+	for {
+		select {
+		case e := <-ln.Events():
+			switch e.Type {
+			case lantern.EventTransferProgress:
+				pct := float64(e.Bytes) / float64(e.Total) * 100
+				fmt.Printf("\rprogress: %.1f%% (%s / %s)", pct, formatBytes(e.Bytes), formatBytes(e.Total))
+			case lantern.EventTransferDone:
+				fmt.Printf("\nreceived: %s\n", e.FileName)
+				return
+			case lantern.EventError:
+				fmt.Fprintf(os.Stderr, "\nerror: %v\n", e.Err)
+				return
+			}
+		case <-ctx.Done():
+			fmt.Println("\ncancelled")
+			return
+		}
+	}
+}
+
+func handleSignal(cancel context.CancelFunc) {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
 	<-sig
@@ -72,28 +122,15 @@ func handleSignals(cancel context.CancelFunc) {
 	cancel()
 }
 
-func printEvents(ctx context.Context, ln *lantern.Lantern) {
-	for {
-		select {
-		case e := <-ln.Events():
-			switch e.Type {
-			case lantern.EventPeerFound:
-				fmt.Printf("share code: %s\n", e.Code)
-				fmt.Println("waiting for receiver...")
-			case lantern.EventPeerConnected:
-				fmt.Printf("connected to peer: %s\n", e.PeerID)
-			case lantern.EventTransferStarted:
-				fmt.Println("transfer starting...")
-			case lantern.EventTransferProgress:
-				pct := float64(e.Bytes) / float64(e.Total) * 100
-				fmt.Printf("\rprogress: %.1f%% (%d/%d bytes)", pct, e.Bytes, e.Total)
-			case lantern.EventTransferDone:
-				fmt.Printf("\nreceived: %s\n", e.FileName)
-			case lantern.EventError:
-				fmt.Fprintf(os.Stderr, "error: %v\n", e.Err)
-			}
-		case <-ctx.Done():
-			return
-		}
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
 	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }

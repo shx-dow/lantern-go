@@ -51,7 +51,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case sendView:
 			updated, cmd := m.send.Update(msg)
 			m.send = updated.(sendModel)
-			if m.send.done || m.send.state == sendError {
+			if m.send.state == sendDone || m.send.state == sendError {
 				m.send = newSendModel(m.lantern)
 				m.current = mainMenu
 			}

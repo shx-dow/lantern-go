@@ -22,22 +22,19 @@ const (
 )
 
 type receiveModel struct {
-	state       receiveState
-	lantern     *lantern.Lantern
-	ctx         context.Context
-	cancel      context.CancelFunc
-
-	input       textinput.Model
-	peer        *lantern.Peer
-
-	progress    progress.Model
-	bytes       int64
-	total       int64
-	fileName    string
-	viewport    viewport.Model
-
-	err         error
-	outputDir   string
+	state     receiveState
+	lantern   *lantern.Lantern
+	ctx       context.Context
+	cancel    context.CancelFunc
+	input     textinput.Model
+	peer      *lantern.Peer
+	progress  progress.Model
+	bytes     int64
+	total     int64
+	fileName  string
+	viewport  viewport.Model
+	err       error
+	outputDir string
 }
 
 func newReceiveModel(ln *lantern.Lantern, outputDir string) receiveModel {
@@ -103,7 +100,7 @@ func (m receiveModel) updateInputCode(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if err != nil {
 						return errMsg{err}
 					}
-					return receiveDoneMsg{peer: peer}
+					return receiveReadyMsg{peer: peer}
 				}
 			}
 		}
@@ -128,28 +125,10 @@ func (m receiveModel) updateDiscovering(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		return m, nil
 
-	case receiveDoneMsg:
+	case receiveReadyMsg:
 		m.peer = msg.peer
-		m.state = recvDone
-		return m, nil
-
-	case transferProgressMsg:
-		m.bytes = msg.bytes
-		m.total = msg.total
-		m.fileName = msg.fileName
-		if msg.done {
-			m.state = recvDone
-			return m, nil
-		}
-		if m.bytes > 0 {
-			m.state = recvTransferring
-		}
+		m.state = recvTransferring
 		return m, m.waitForReceiveEvents()
-
-	case progress.FrameMsg:
-		pm, cmd := m.progress.Update(msg)
-		m.progress = pm.(progress.Model)
-		return m, cmd
 	}
 
 	return m, nil
@@ -165,7 +144,6 @@ func (m receiveModel) waitForReceiveEvents() tea.Cmd {
 					fileName: e.FileName,
 					bytes:    e.Bytes,
 					total:    e.Total,
-					done:     false,
 				}
 			case lantern.EventTransferDone:
 				return transferProgressMsg{
@@ -197,19 +175,15 @@ func (m receiveModel) updateTransferring(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case transferProgressMsg:
-		m.bytes = msg.bytes
-		m.total = msg.total
 		m.fileName = msg.fileName
 		if msg.done {
 			m.state = recvDone
+			m.total = msg.total
 			return m, nil
 		}
+		m.bytes = msg.bytes
+		m.total = msg.total
 		return m, m.waitForReceiveEvents()
-
-	case progress.FrameMsg:
-		pm, cmd := m.progress.Update(msg)
-		m.progress = pm.(progress.Model)
-		return m, cmd
 	}
 
 	return m, nil
@@ -241,46 +215,46 @@ func (m receiveModel) View() string {
 	switch m.state {
 	case recvInputCode:
 		return appStyle.Render(
-			titleStyle.Render("receive a file") + "\n\n" +
-				infoStyle.Render("enter the share code:") + "\n" +
-				m.input.View() + "\n\n" +
+			titleStyle.Render("receive a file")+"\n\n"+
+				infoStyle.Render("enter the share code:")+"\n"+
+				m.input.View()+"\n\n"+
 				helpStyle.Render("enter: confirm • esc: back • ctrl+c: quit"),
 		)
 
 	case recvDiscovering:
 		return appStyle.Render(
-			titleStyle.Render("searching for peer...") + "\n\n" +
-				infoStyle.Render("looking for a peer with your code...") + "\n\n" +
+			titleStyle.Render("searching for peer...")+"\n\n"+
+				infoStyle.Render("looking for a peer with your code...")+"\n\n"+
 				helpStyle.Render("esc: cancel"),
 		)
 
 	case recvTransferring:
 		pct := float64(m.bytes) / float64(m.total)
 		return appStyle.Render(
-			titleStyle.Render(fmt.Sprintf("receiving: %s", m.fileName)) + "\n\n" +
-				m.progress.ViewAs(pct) + "\n" +
-				infoStyle.Render(fmt.Sprintf("%s / %s", formatBytes(m.bytes), formatBytes(m.total))) + "\n\n" +
+			titleStyle.Render(fmt.Sprintf("receiving: %s", m.fileName))+"\n\n"+
+				m.progress.ViewAs(pct)+"\n"+
+				infoStyle.Render(fmt.Sprintf("%s / %s", formatBytes(m.bytes), formatBytes(m.total)))+"\n\n"+
 				helpStyle.Render("esc: cancel"),
 		)
 
 	case recvDone:
 		return appStyle.Render(
-			titleStyle.Render("received!") + "\n\n" +
-				infoStyle.Render(fmt.Sprintf("file: %s", m.fileName)) + "\n" +
-				infoStyle.Render(fmt.Sprintf("size: %s", formatBytes(m.total))) + "\n\n" +
+			titleStyle.Render("received!")+"\n\n"+
+				infoStyle.Render(fmt.Sprintf("file: %s", m.fileName))+"\n"+
+				infoStyle.Render(fmt.Sprintf("size: %s", formatBytes(m.total)))+"\n\n"+
 				helpStyle.Render("enter: back • esc: quit"),
 		)
 
 	case recvError:
 		return appStyle.Render(
-			titleStyle.Render("error") + "\n\n" +
-				errorStyle.Render(m.err.Error()) + "\n\n" +
+			titleStyle.Render("error")+"\n\n"+
+				errorStyle.Render(m.err.Error())+"\n\n"+
 				helpStyle.Render("enter: back • esc: quit"),
 		)
 	}
 	return ""
 }
 
-type receiveDoneMsg struct {
+type receiveReadyMsg struct {
 	peer *lantern.Peer
 }
