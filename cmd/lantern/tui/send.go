@@ -46,7 +46,7 @@ func newSendModel(ln *lantern.Lantern) sendModel {
 	fp := filepicker.New()
 	fp.ShowHidden = false
 	fp.FileAllowed = true
-	fp.DirAllowed = false
+	fp.DirAllowed = true
 	fp.CurrentDirectory, _ = os.Getwd()
 
 	ctx, cancel := context.WithCancel(context.Background())
