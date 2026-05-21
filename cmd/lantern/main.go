@@ -8,12 +8,13 @@ import (
 	"os/signal"
 
 	tea "github.com/charmbracelet/bubbletea"
+	logging "github.com/ipfs/go-log/v2"
 	"github.com/shx-dow/lantern-go/cmd/lantern/tui"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
 
 func main() {
-	os.Setenv("GOLOG_LOG_LEVEL", "error")
+	logging.SetAllLoggers(logging.LevelError)
 
 	ln, err := lantern.New(lantern.Config{DataDir: "."})
 	if err != nil {
