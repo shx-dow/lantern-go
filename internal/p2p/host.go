@@ -32,14 +32,19 @@ type Node struct {
 func NewNode(port int, bootstrapPeers []string) (*Node, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	addr := fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port)
+	tcpAddr := fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port)
+	quicAddr := fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port)
 	if port == 0 {
-		addr = "/ip4/0.0.0.0/tcp/0"
+		tcpAddr = "/ip4/0.0.0.0/tcp/0"
+		quicAddr = "/ip4/0.0.0.0/udp/0/quic-v1"
 	}
 
 	h, err := libp2p.New(
-		libp2p.ListenAddrStrings(addr),
+		libp2p.ListenAddrStrings(tcpAddr, quicAddr),
 		libp2p.EnableRelay(),
+		libp2p.EnableHolePunching(),
+		libp2p.EnableAutoRelay(),
+		libp2p.NATPortMap(),
 	)
 	if err != nil {
 		cancel()
