@@ -73,11 +73,6 @@ func (n *Node) Advertise(ctx context.Context, code string) error {
 }
 
 func (n *Node) Discover(ctx context.Context, code string) (peer.AddrInfo, error) {
-	if pi, err := n.DiscoverLocal(ctx, code); err == nil {
-		go n.ClearLocal(code)
-		return *pi, nil
-	}
-
 	c := codeToCID(code)
 
 	deadline, ok := ctx.Deadline()
@@ -89,6 +84,11 @@ func (n *Node) Discover(ctx context.Context, code string) (peer.AddrInfo, error)
 	}
 
 	for {
+		if pi, err := n.DiscoverLocal(ctx, code); err == nil {
+			go n.ClearLocal(code)
+			return *pi, nil
+		}
+
 		peers, err := n.DHT.FindProviders(ctx, c)
 		if err != nil {
 			return peer.AddrInfo{}, fmt.Errorf("find providers: %w", err)
