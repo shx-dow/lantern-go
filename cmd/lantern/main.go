@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -8,14 +9,24 @@ import (
 	"os/signal"
 
 	tea "github.com/charmbracelet/bubbletea"
-	logging "github.com/ipfs/go-log/v2"
 	"github.com/shx-dow/lantern-go/cmd/lantern/tui"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
 
-func main() {
-	logging.SetAllLoggers(logging.LevelError)
+type mdnsFilter struct{}
 
+func (mdnsFilter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte("[WARN] mdns:")) {
+		return len(p), nil
+	}
+	return os.Stderr.Write(p)
+}
+
+func init() {
+	log.SetOutput(mdnsFilter{})
+}
+
+func main() {
 	ln, err := lantern.New(lantern.Config{DataDir: "."})
 	if err != nil {
 		log.Fatal(err)
