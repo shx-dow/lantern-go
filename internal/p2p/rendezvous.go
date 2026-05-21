@@ -14,9 +14,7 @@ import (
 )
 
 func peerFilePath(code string) string {
-	dir, _ := os.Getwd()
-	path := filepath.Join(dir, "."+code+".peer")
-	return path
+	return filepath.Join(os.TempDir(), "lantern-"+code+".peer")
 }
 
 func (n *Node) AdvertiseLocal(code string) error {
