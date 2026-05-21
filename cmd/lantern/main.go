@@ -7,21 +7,25 @@ import (
 	"os"
 	"os/signal"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/shx-dow/lantern-go/cmd/lantern/tui"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("usage: lantern send <path>")
-		fmt.Println("       lantern receive <code> [output-dir]")
-		os.Exit(1)
-	}
-
 	ln, err := lantern.New(lantern.Config{DataDir: "."})
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer ln.Close()
+
+	if len(os.Args) < 2 {
+		p := tea.NewProgram(tui.New(ln, "."), tea.WithAltScreen())
+		if _, err := p.Run(); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -53,6 +57,10 @@ func main() {
 			log.Fatal(err)
 		}
 		fmt.Printf("\nreceived from %s\n", peer.ID)
+
+	default:
+		fmt.Println("usage: lantern [send|receive]")
+		os.Exit(1)
 	}
 }
 
