@@ -311,6 +311,13 @@ func (m sendModel) View() string {
 		return appStyle.Render(s)
 
 	case sendWaiting:
+		if m.peer == nil {
+			return appStyle.Render(
+				titleStyle.Render("preparing...") + "\n\n" +
+					infoStyle.Render("generating share code...") + "\n\n" +
+					helpStyle.Render("esc: cancel"),
+			)
+		}
 		code := m.peer.Code
 		return appStyle.Render(
 			titleStyle.Render("waiting for receiver") + "\n\n" +
