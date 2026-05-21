@@ -51,7 +51,7 @@ func NewNode(port int, bootstrapPeers []string) (*Node, error) {
 	}
 
 	var dhtOpts []dht.Option
-	dhtOpts = append(dhtOpts, dht.Mode(dht.ModeAuto))
+	dhtOpts = append(dhtOpts, dht.Mode(dht.ModeServer))
 
 	if len(bootstrapPeers) == 0 {
 		bootstrapPeers = DefaultBootstrapPeers
@@ -94,15 +94,26 @@ func NewNode(port int, bootstrapPeers []string) (*Node, error) {
 }
 
 func (n *Node) setupMDNS() {
-	s := mdns.NewMdnsService(n.Host, "lantern", &mdnsDiscovery{})
+	s := mdns.NewMdnsService(n.Host, "lantern", &mdnsDiscovery{node: n})
 	if err := s.Start(); err != nil {
 		fmt.Printf("mDNS warning: %v\n", err)
 	}
 }
 
-type mdnsDiscovery struct{}
+type mdnsDiscovery struct {
+	node *Node
+}
 
-func (m *mdnsDiscovery) HandlePeerFound(pi peer.AddrInfo) {}
+func (m *mdnsDiscovery) HandlePeerFound(pi peer.AddrInfo) {
+	if pi.ID == m.node.Host.ID() {
+		return
+	}
+	go func() {
+		if err := m.node.Host.Connect(m.node.ctx, pi); err != nil {
+			return
+		}
+	}()
+}
 
 func (n *Node) Close() {
 	n.cancel()

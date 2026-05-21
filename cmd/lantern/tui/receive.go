@@ -224,7 +224,8 @@ func (m receiveModel) View() string {
 	case recvDiscovering:
 		return appStyle.Render(
 			titleStyle.Render("searching for peer...")+"\n\n"+
-				infoStyle.Render("looking for a peer with your code...")+"\n\n"+
+				infoStyle.Render("searching DHT for a peer with your code...")+"\n"+
+				infoStyle.Render("(30s timeout)")+"\n\n"+
 				helpStyle.Render("esc: cancel"),
 		)
 
