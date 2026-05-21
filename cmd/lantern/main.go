@@ -13,6 +13,8 @@ import (
 )
 
 func main() {
+	os.Setenv("GOLOG_LOG_LEVEL", "error")
+
 	ln, err := lantern.New(lantern.Config{DataDir: "."})
 	if err != nil {
 		log.Fatal(err)

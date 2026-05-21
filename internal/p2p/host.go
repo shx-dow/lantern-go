@@ -43,7 +43,6 @@ func NewNode(port int, bootstrapPeers []string) (*Node, error) {
 		libp2p.ListenAddrStrings(tcpAddr, quicAddr),
 		libp2p.EnableRelay(),
 		libp2p.EnableHolePunching(),
-		libp2p.EnableAutoRelay(),
 		libp2p.NATPortMap(),
 	)
 	if err != nil {
