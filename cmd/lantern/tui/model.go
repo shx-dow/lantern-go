@@ -1,9 +1,44 @@
 package tui
 
 import (
+	"fmt"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
+
+type errMsg struct {
+	err error
+}
+
+type transferProgressMsg struct {
+	fileName string
+	bytes    int64
+	total    int64
+	done     bool
+}
+
+type shareResult struct {
+	peer *lantern.Peer
+	err  error
+}
+
+type receiveResult struct {
+	peer *lantern.Peer
+	err  error
+}
+
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
 
 type view int
 
@@ -43,6 +78,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ready = true
+		if m.current == sendView {
+			updated, cmd := m.send.Update(msg)
+			m.send = updated.(sendModel)
+			return m, cmd
+		}
+		if m.current == receiveView {
+			updated, cmd := m.receive.Update(msg)
+			m.receive = updated.(receiveModel)
+			return m, cmd
+		}
 	}
 
 	switch m.current {
@@ -53,7 +98,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sendView:
 		updated, cmd := m.send.Update(msg)
 		m.send = updated.(sendModel)
-		if m.send.state == sendDone || m.send.state == sendError {
+		if m.send.state == sendError {
 			m.send = newSendModel(m.lantern)
 			m.current = mainMenu
 		}
@@ -61,7 +106,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case receiveView:
 		updated, cmd := m.receive.Update(msg)
 		m.receive = updated.(receiveModel)
-		if m.receive.state == recvDone || m.receive.state == recvError {
+		if m.receive.state == recvError {
 			m.receive = newReceiveModel(m.lantern, m.outputDir)
 			m.current = mainMenu
 		}

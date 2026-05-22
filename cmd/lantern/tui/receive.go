@@ -3,10 +3,13 @@ package tui
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/progress"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
@@ -29,18 +32,49 @@ type receiveModel struct {
 	input     textinput.Model
 	peer      *lantern.Peer
 	progress  progress.Model
+	spinner   spinner.Model
+	help      help.Model
+	keys      receiveKeyMap
 	bytes     int64
 	total     int64
 	fileName  string
-	viewport  viewport.Model
 	err       error
 	outputDir string
 	receiveCh chan receiveResult
+	startedAt time.Time
+	finishedAt time.Time
+	showHelp  bool
 }
 
-type receiveResult struct {
-	peer *lantern.Peer
-	err  error
+type receiveKeyMap struct {
+	Submit  key.Binding
+	Cancel  key.Binding
+	Dismiss key.Binding
+	Quit    key.Binding
+	Help    key.Binding
+	Refresh key.Binding
+}
+
+func (k receiveKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Submit, k.Cancel, k.Help}
+}
+
+func (k receiveKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{k.Submit, k.Cancel, k.Help, k.Refresh},
+		{k.Dismiss, k.Quit},
+	}
+}
+
+func defaultReceiveKeyMap() receiveKeyMap {
+	return receiveKeyMap{
+		Submit:  key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "connect")),
+		Cancel:  key.NewBinding(key.WithKeys("ctrl+c", "esc"), key.WithHelp("esc/ctrl+c", "cancel")),
+		Dismiss: key.NewBinding(key.WithKeys("enter", "esc"), key.WithHelp("enter/esc", "close")),
+		Quit:    key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
+		Help:    key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "toggle help")),
+		Refresh: key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "retry")),
+	}
 }
 
 func newReceiveModel(ln *lantern.Lantern, outputDir string) receiveModel {
@@ -52,20 +86,16 @@ func newReceiveModel(ln *lantern.Lantern, outputDir string) receiveModel {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	p := progress.New()
-	p.ShowPercentage = true
-	p.Width = 50
-
-	vp := viewport.New(60, 5)
-
 	return receiveModel{
 		state:     recvInputCode,
 		lantern:   ln,
 		ctx:       ctx,
 		cancel:    cancel,
 		input:     ti,
-		progress:  p,
-		viewport:  vp,
+		progress:  progress.New(progress.WithDefaultGradient(), progress.WithWidth(50)),
+		spinner:   spinner.New(spinner.WithSpinner(spinner.Dot)),
+		help:      help.New(),
+		keys:      defaultReceiveKeyMap(),
 		outputDir: outputDir,
 		receiveCh: make(chan receiveResult, 1),
 	}
@@ -94,19 +124,24 @@ func (m receiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m receiveModel) updateInputCode(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "esc":
+		switch {
+		case key.Matches(msg, m.keys.Cancel), key.Matches(msg, m.keys.Quit):
 			m.cancel()
 			return m, tea.Quit
-		case "enter":
+		case key.Matches(msg, m.keys.Help):
+			m.showHelp = !m.showHelp
+		case key.Matches(msg, m.keys.Refresh):
+			m.input.SetValue("")
+		case key.Matches(msg, m.keys.Submit):
 			if m.input.Value() != "" {
 				code := m.input.Value()
+				m.state = recvDiscovering
+				m.spinner = spinner.New(spinner.WithSpinner(spinner.Dot))
 				go func() {
 					peer, err := m.lantern.Receive(m.ctx, code, m.outputDir)
 					m.receiveCh <- receiveResult{peer: peer, err: err}
 				}()
-				m.state = recvDiscovering
-				return m, nil
+				return m, spinner.Tick
 			}
 		}
 	}
@@ -126,20 +161,29 @@ func (m receiveModel) updateDiscovering(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.peer = r.peer
 		m.state = recvTransferring
+		m.startedAt = time.Now()
 		return m, m.waitForReceiveEvents()
 	default:
 	}
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "esc":
+		switch {
+		case key.Matches(msg, m.keys.Cancel), key.Matches(msg, m.keys.Quit):
 			m.cancel()
 			return m, tea.Quit
+		case key.Matches(msg, m.keys.Help):
+			m.showHelp = !m.showHelp
 		}
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
 	}
 
-	return m, nil
+	var cmd tea.Cmd
+	m.spinner, cmd = m.spinner.Update(msg)
+	return m, cmd
 }
 
 func (m receiveModel) waitForReceiveEvents() tea.Cmd {
@@ -149,20 +193,11 @@ func (m receiveModel) waitForReceiveEvents() tea.Cmd {
 			case e := <-m.lantern.Events():
 				switch e.Type {
 				case lantern.EventTransferProgress:
-					return transferProgressMsg{
-						fileName: e.FileName,
-						bytes:    e.Bytes,
-						total:    e.Total,
-					}
+					return transferProgressMsg{fileName: e.FileName, bytes: e.Bytes, total: e.Total}
 				case lantern.EventTransferDone:
-					return transferProgressMsg{
-						fileName: e.FileName,
-						done:     true,
-					}
+					return transferProgressMsg{fileName: e.FileName, done: true}
 				case lantern.EventError:
 					return errMsg{e.Err}
-				default:
-					continue
 				}
 			case <-m.ctx.Done():
 				return errMsg{m.ctx.Err()}
@@ -174,37 +209,45 @@ func (m receiveModel) waitForReceiveEvents() tea.Cmd {
 func (m receiveModel) updateTransferring(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "esc":
+		switch {
+		case key.Matches(msg, m.keys.Cancel), key.Matches(msg, m.keys.Quit):
 			m.cancel()
 			return m, tea.Quit
+		case key.Matches(msg, m.keys.Help):
+			m.showHelp = !m.showHelp
 		}
-
 	case errMsg:
 		m.state = recvError
 		m.err = msg.err
 		return m, nil
-
 	case transferProgressMsg:
 		m.fileName = msg.fileName
 		if msg.done {
 			m.state = recvDone
+			m.finishedAt = time.Now()
 			m.total = msg.total
 			return m, nil
 		}
 		m.bytes = msg.bytes
 		m.total = msg.total
 		return m, m.waitForReceiveEvents()
+	case progress.FrameMsg:
+		pm, cmd := m.progress.Update(msg)
+		m.progress = pm.(progress.Model)
+		return m, cmd
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
 	}
-
 	return m, nil
 }
 
 func (m receiveModel) updateDone(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "enter", "esc":
+		switch {
+		case key.Matches(msg, m.keys.Dismiss), key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
 		}
 	}
@@ -214,8 +257,8 @@ func (m receiveModel) updateDone(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m receiveModel) updateError(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "enter", "esc":
+		switch {
+		case key.Matches(msg, m.keys.Dismiss), key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
 		}
 	}
@@ -223,52 +266,57 @@ func (m receiveModel) updateError(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m receiveModel) View() string {
+	if m.input.Width == 0 {
+		m.input.Width = 30
+	}
 	switch m.state {
 	case recvInputCode:
-		return appStyle.Render(
-			titleStyle.Render("receive a file")+"\n\n"+
-				infoStyle.Render("enter the share code:")+"\n"+
-				m.input.View()+"\n\n"+
-				helpStyle.Render("enter: confirm • esc: back • ctrl+c: quit"),
-		)
-
+		body := titleStyle.Render("receive a file") + "\n\n" +
+			infoStyle.Render("enter the share code:") + "\n" +
+			m.input.View()
+		if m.showHelp {
+			body += "\n\n" + helpStyle.Render("enter: confirm • esc: back • ctrl+c: quit")
+		}
+		return appStyle.Render(body)
 	case recvDiscovering:
 		return appStyle.Render(
-			titleStyle.Render("searching for peer...")+"\n\n"+
-				infoStyle.Render("searching DHT for a peer with your code...")+"\n"+
-				infoStyle.Render("(30s timeout)")+"\n\n"+
+			titleStyle.Render("searching for peer...") + "\n\n" +
+				m.spinner.View() + " finding peers to connect...\n\n" +
 				helpStyle.Render("esc: cancel"),
 		)
-
 	case recvTransferring:
-		if m.total == 0 {
-			return appStyle.Render(
-				titleStyle.Render("receiving...")+"\n\n"+
-					infoStyle.Render("connecting to peer...")+"\n\n"+
-					helpStyle.Render("esc: cancel"),
-			)
+		elapsed := time.Duration(0)
+		if !m.startedAt.IsZero() {
+			elapsed = time.Since(m.startedAt).Truncate(time.Second)
 		}
-		pct := float64(m.bytes) / float64(m.total)
+		pct := 0.0
+		if m.total > 0 {
+			pct = float64(m.bytes) / float64(m.total)
+		}
 		return appStyle.Render(
-			titleStyle.Render(fmt.Sprintf("receiving: %s", m.fileName))+"\n\n"+
-				m.progress.ViewAs(pct)+"\n"+
-				infoStyle.Render(fmt.Sprintf("%s / %s", formatBytes(m.bytes), formatBytes(m.total)))+"\n\n"+
+			titleStyle.Render(fmt.Sprintf("receiving: %s", m.fileName)) + "\n\n" +
+				m.progress.ViewAs(pct) + "\n" +
+				infoStyle.Render(fmt.Sprintf("%s / %s", formatBytes(m.bytes), formatBytes(m.total))) + "\n" +
+				infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" +
 				helpStyle.Render("esc: cancel"),
 		)
-
 	case recvDone:
+		elapsed := time.Duration(0)
+		if !m.startedAt.IsZero() && !m.finishedAt.IsZero() {
+			elapsed = m.finishedAt.Sub(m.startedAt).Truncate(time.Second)
+		}
 		return appStyle.Render(
-			titleStyle.Render("received!")+"\n\n"+
-				infoStyle.Render(fmt.Sprintf("file: %s", m.fileName))+"\n"+
-				infoStyle.Render(fmt.Sprintf("size: %s", formatBytes(m.total)))+"\n\n"+
-				helpStyle.Render("enter: back • esc: quit"),
+			titleStyle.Render("received!") + "\n\n" +
+			infoStyle.Render(fmt.Sprintf("file: %s", m.fileName)) + "\n" +
+			infoStyle.Render(fmt.Sprintf("size: %s", formatBytes(m.total))) + "\n" +
+			infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" +
+			helpStyle.Render("enter: close • esc: quit"),
 		)
-
 	case recvError:
 		return appStyle.Render(
-			titleStyle.Render("error")+"\n\n"+
-				errorStyle.Render(m.err.Error())+"\n\n"+
-				helpStyle.Render("enter: back • esc: quit"),
+			titleStyle.Render("error") + "\n\n" +
+			errorStyle.Render(m.err.Error()) + "\n\n" +
+			helpStyle.Render("enter: close • esc: quit"),
 		)
 	}
 	return ""

@@ -7,10 +7,15 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/progress"
-	"github.com/charmbracelet/bubbles/viewport"
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
 
@@ -18,93 +23,157 @@ type sendState int
 
 const (
 	sendPickFile sendState = iota
+	sendGenerating
 	sendWaiting
 	sendTransferring
 	sendDone
 	sendError
 )
 
-type dirEntry struct {
+type dirItem struct {
 	name  string
 	isDir bool
 }
 
-type sendModel struct {
-	state       sendState
-	lantern     *lantern.Lantern
-	ctx         context.Context
-	cancel      context.CancelFunc
+func (i dirItem) FilterValue() string { return i.name }
 
-	dir         string
-	entries     []dirEntry
-	cursor      int
-	selected    string
-	peer        *lantern.Peer
-
-	progress    progress.Model
-	bytes       int64
-	total       int64
-	fileName    string
-	viewport    viewport.Model
-
-	err      error
-	done     bool
-	shareCh  chan shareResult
+func (i dirItem) Title() string {
+	if i.isDir {
+		return "[dir] " + i.name
+	}
+	return i.name
 }
 
-type shareResult struct {
-	peer *lantern.Peer
-	err  error
+func (i dirItem) Description() string {
+	if i.isDir {
+		return "directory"
+	}
+	return "file"
+}
+
+type sendModel struct {
+	state    sendState
+	lantern  *lantern.Lantern
+	ctx      context.Context
+	cancel   context.CancelFunc
+	dir      string
+	list     list.Model
+	progress progress.Model
+	spinner  spinner.Model
+	help     help.Model
+	keys     sendKeyMap
+	peer     *lantern.Peer
+	shareCh  chan shareResult
+
+	selectedPath string
+	bytes        int64
+	total        int64
+	fileName     string
+	startedAt    time.Time
+	finishedAt   time.Time
+	err          error
+	showHelp     bool
+}
+
+type sendKeyMap struct {
+	Up      key.Binding
+	Down    key.Binding
+	Open    key.Binding
+	Back    key.Binding
+	Cancel  key.Binding
+	Dismiss key.Binding
+	Quit    key.Binding
+	Help    key.Binding
+	Refresh key.Binding
+}
+
+func (k sendKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Up, k.Down, k.Open, k.Back, k.Cancel, k.Help}
+}
+
+func (k sendKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{k.Up, k.Down, k.Open, k.Back},
+		{k.Cancel, k.Dismiss, k.Help, k.Quit, k.Refresh},
+	}
+}
+
+func defaultSendKeyMap() sendKeyMap {
+	return sendKeyMap{
+		Up:      key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
+		Down:    key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
+		Open:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open/select")),
+		Back:    key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		Cancel:  key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
+		Dismiss: key.NewBinding(key.WithKeys("enter", "esc"), key.WithHelp("enter/esc", "close")),
+		Quit:    key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
+		Help:    key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "toggle help")),
+		Refresh: key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
+	}
 }
 
 func newSendModel(ln *lantern.Lantern) sendModel {
 	ctx, cancel := context.WithCancel(context.Background())
+	items := loadSendItems(".")
+	li := newSendList(items, 0, 0)
 
-	p := progress.New()
-	p.ShowPercentage = true
-	p.Width = 50
-
-	vp := viewport.New(60, 5)
-
-	m := sendModel{
+	return sendModel{
 		state:    sendPickFile,
 		lantern:  ln,
 		ctx:      ctx,
 		cancel:   cancel,
-		progress: p,
-		viewport: vp,
+		dir:      ".",
+		list:     li,
+		progress: progress.New(progress.WithDefaultGradient(), progress.WithWidth(50)),
+		spinner:  spinner.New(spinner.WithSpinner(spinner.Dot)),
+		help:     help.New(),
+		keys:     defaultSendKeyMap(),
 		shareCh:  make(chan shareResult, 1),
 	}
-	m.readDir()
-	return m
 }
 
-func (m *sendModel) readDir() {
-	dir := m.dir
-	if dir == "" {
-		dir, _ = os.Getwd()
-		m.dir = dir
-	}
+func loadSendItems(dir string) []list.Item {
 	ents, _ := os.ReadDir(dir)
-	m.entries = nil
+	items := make([]list.Item, 0, len(ents))
 	for _, e := range ents {
 		if strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
-		m.entries = append(m.entries, dirEntry{name: e.Name(), isDir: e.IsDir()})
+		items = append(items, dirItem{name: e.Name(), isDir: e.IsDir()})
 	}
-	sort.Slice(m.entries, func(i, j int) bool {
-		if m.entries[i].isDir != m.entries[j].isDir {
-			return m.entries[i].isDir
+	sort.Slice(items, func(i, j int) bool {
+		ai := items[i].(dirItem)
+		aj := items[j].(dirItem)
+		if ai.isDir != aj.isDir {
+			return ai.isDir
 		}
-		return strings.ToLower(m.entries[i].name) < strings.ToLower(m.entries[j].name)
+		return strings.ToLower(ai.name) < strings.ToLower(aj.name)
 	})
-	if m.cursor >= len(m.entries) {
-		m.cursor = 0
-	}
+	return items
+}
+
+func newSendList(items []list.Item, width, height int) list.Model {
+	d := list.NewDefaultDelegate()
+	d.SetHeight(1)
+	d.SetSpacing(0)
+	d.ShowDescription = false
+	l := list.New(items, d, width, height)
+	l.Title = "send a file"
+	l.SetShowStatusBar(false)
+	l.SetFilteringEnabled(false)
+	l.SetShowHelp(false)
+	l.SetShowPagination(false)
+	l.Styles.Title = titleStyle
+	l.Styles.PaginationStyle = helpStyle
+	l.Styles.HelpStyle = helpStyle
+	l.Styles.FilterPrompt = lipgloss.NewStyle().Foreground(subtle)
+	return l
 }
 
 func (m sendModel) Init() tea.Cmd {
+	if m.state == sendGenerating {
+		return spinner.Tick
+	}
 	return nil
 }
 
@@ -112,6 +181,8 @@ func (m sendModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.state {
 	case sendPickFile:
 		return m.updatePickFile(msg)
+	case sendGenerating:
+		return m.updateGenerating(msg)
 	case sendWaiting:
 		return m.updateWaiting(msg)
 	case sendTransferring:
@@ -127,46 +198,76 @@ func (m sendModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m sendModel) updatePickFile(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
+		switch {
+		case key.Matches(msg, m.keys.Cancel), key.Matches(msg, m.keys.Quit):
 			m.cancel()
 			return m, tea.Quit
-		case "esc":
+		case key.Matches(msg, m.keys.Back):
 			parent := filepath.Dir(m.dir)
 			if parent != m.dir {
 				m.dir = parent
-				m.cursor = 0
-				m.readDir()
+				m.list = newSendList(loadSendItems(m.dir), m.list.Width(), m.list.Height())
 			}
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case "down", "j":
-			if m.cursor < len(m.entries)-1 {
-				m.cursor++
-			}
-		case "enter":
-			if len(m.entries) == 0 {
-				break
-			}
-			e := m.entries[m.cursor]
-			if e.isDir {
-				m.dir = filepath.Join(m.dir, e.name)
-				m.cursor = 0
-				m.readDir()
-			} else {
-				m.selected = filepath.Join(m.dir, e.name)
+		case key.Matches(msg, m.keys.Help):
+			m.showHelp = !m.showHelp
+		case key.Matches(msg, m.keys.Refresh):
+			m.list = newSendList(loadSendItems(m.dir), m.list.Width(), m.list.Height())
+		case key.Matches(msg, m.keys.Open):
+			if item, ok := m.list.SelectedItem().(dirItem); ok {
+				if item.isDir {
+					m.dir = filepath.Join(m.dir, item.name)
+					m.list = newSendList(loadSendItems(m.dir), m.list.Width(), m.list.Height())
+					return m, nil
+				}
+				m.selectedPath = filepath.Join(m.dir, item.name)
+				m.state = sendGenerating
+				m.spinner = spinner.New(spinner.WithSpinner(spinner.Dot))
 				go func() {
-					p, err := m.lantern.Share(m.ctx, m.selected)
+					p, err := m.lantern.Share(m.ctx, m.selectedPath)
 					m.shareCh <- shareResult{peer: p, err: err}
 				}()
-				m.state = sendWaiting
-				return m, nil
+				return m, spinner.Tick
 			}
 		}
 	}
-	return m, nil
+
+	var cmd tea.Cmd
+	m.list, cmd = m.list.Update(msg)
+	return m, cmd
+}
+
+func (m sendModel) updateGenerating(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+	case tea.KeyMsg:
+		switch {
+		case key.Matches(msg, m.keys.Cancel), key.Matches(msg, m.keys.Quit):
+			m.cancel()
+			return m, tea.Quit
+		}
+	case shareResult:
+		if msg.err != nil {
+			m.state = sendError
+			m.err = msg.err
+			return m, nil
+		}
+		m.peer = msg.peer
+		m.state = sendWaiting
+		return m, m.waitForEvents()
+	}
+
+	select {
+	case r := <-m.shareCh:
+		return m.updateGenerating(r)
+	default:
+	}
+
+	var cmd tea.Cmd
+	m.spinner, cmd = m.spinner.Update(msg)
+	return m, cmd
 }
 
 func (m sendModel) updateWaiting(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -184,27 +285,28 @@ func (m sendModel) updateWaiting(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "esc":
+		switch {
+		case key.Matches(msg, m.keys.Cancel), key.Matches(msg, m.keys.Quit):
 			m.cancel()
 			return m, tea.Quit
 		}
-
 	case errMsg:
 		m.state = sendError
 		m.err = msg.err
 		return m, nil
-
 	case transferProgressMsg:
 		m.bytes = msg.bytes
 		m.total = msg.total
 		m.fileName = msg.fileName
+		if m.startedAt.IsZero() {
+			m.startedAt = time.Now()
+		}
 		if msg.done {
 			m.state = sendDone
-			m.done = true
+			m.finishedAt = time.Now()
 			return m, nil
 		}
-		if m.state == sendWaiting && msg.bytes > 0 {
+		if msg.bytes > 0 {
 			m.state = sendTransferring
 		}
 		return m, m.waitForEvents()
@@ -220,21 +322,11 @@ func (m sendModel) waitForEvents() tea.Cmd {
 			case e := <-m.lantern.Events():
 				switch e.Type {
 				case lantern.EventTransferProgress:
-					return transferProgressMsg{
-						fileName: e.FileName,
-						bytes:    e.Bytes,
-						total:    e.Total,
-						done:     false,
-					}
+					return transferProgressMsg{fileName: e.FileName, bytes: e.Bytes, total: e.Total}
 				case lantern.EventTransferDone:
-					return transferProgressMsg{
-						fileName: e.FileName,
-						done:     true,
-					}
+					return transferProgressMsg{fileName: e.FileName, done: true}
 				case lantern.EventError:
 					return errMsg{e.Err}
-				default:
-					continue
 				}
 			case <-m.ctx.Done():
 				return errMsg{m.ctx.Err()}
@@ -246,42 +338,45 @@ func (m sendModel) waitForEvents() tea.Cmd {
 func (m sendModel) updateTransferring(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "esc":
+		switch {
+		case key.Matches(msg, m.keys.Cancel), key.Matches(msg, m.keys.Quit):
 			m.cancel()
 			return m, tea.Quit
 		}
-
 	case errMsg:
 		m.state = sendError
 		m.err = msg.err
 		return m, nil
-
 	case transferProgressMsg:
 		m.bytes = msg.bytes
 		m.total = msg.total
 		m.fileName = msg.fileName
+		if m.startedAt.IsZero() {
+			m.startedAt = time.Now()
+		}
 		if msg.done {
 			m.state = sendDone
-			m.done = true
+			m.finishedAt = time.Now()
 			return m, nil
 		}
 		return m, m.waitForEvents()
-
 	case progress.FrameMsg:
 		pm, cmd := m.progress.Update(msg)
 		m.progress = pm.(progress.Model)
 		return m, cmd
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
 	}
-
 	return m, nil
 }
 
 func (m sendModel) updateDone(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "enter", "esc":
+		switch {
+		case key.Matches(msg, m.keys.Dismiss), key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
 		}
 	}
@@ -291,8 +386,8 @@ func (m sendModel) updateDone(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m sendModel) updateError(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "enter", "esc":
+		switch {
+		case key.Matches(msg, m.keys.Dismiss), key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
 		}
 	}
@@ -300,100 +395,72 @@ func (m sendModel) updateError(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m sendModel) View() string {
+	if m.list.Width() == 0 || m.list.Height() == 0 {
+		m.list.SetSize(72, 18)
+	}
 	switch m.state {
 	case sendPickFile:
-		s := titleStyle.Render("send a file") + "\n\n"
-		s += infoStyle.Render(m.dir) + "\n\n"
-		if len(m.entries) == 0 {
-			s += "  (empty directory)" + "\n\n"
-		} else {
-			for i, e := range m.entries {
-				cursor := "  "
-				if i == m.cursor {
-					cursor = "› "
-				}
-				icon := " "
-				if e.isDir {
-					icon = "D"
-				}
-				s += fmt.Sprintf("%s%s %s\n", cursor, icon, e.name)
-			}
-			s += "\n"
+		m.list.Title = "send a file"
+		body := m.list.View()
+		if m.showHelp {
+			body += "\n" + m.help.View(m.keys)
 		}
-		s += helpStyle.Render("↑/↓: navigate • enter: open/select • esc: up • q: quit")
-		return appStyle.Render(s)
-
+		return appStyle.Render(body)
+	case sendGenerating:
+		return appStyle.Render(
+			titleStyle.Render("send a file") + "\n\n" +
+				m.spinner.View() + " Generating share code...\n\n" +
+				helpStyle.Render("esc: cancel"),
+		)
 	case sendWaiting:
 		if m.peer == nil {
 			return appStyle.Render(
-				titleStyle.Render("preparing...") + "\n\n" +
-					infoStyle.Render("generating share code...") + "\n\n" +
+				titleStyle.Render("generating share code...") + "\n\n" +
+					m.spinner.View() + " waiting...\n\n" +
 					helpStyle.Render("esc: cancel"),
 			)
 		}
-		code := m.peer.Code
 		return appStyle.Render(
 			titleStyle.Render("waiting for receiver") + "\n\n" +
-				infoStyle.Render("share code:") + "\n" +
-				codeStyle.Render(fmt.Sprintf("  %s  ", code)) + "\n\n" +
-				infoStyle.Render("waiting for someone to connect with this code...") + "\n\n" +
-				helpStyle.Render("esc: cancel"),
+			infoStyle.Render("share code:") + "\n" +
+			codeStyle.Render(fmt.Sprintf("  %s  ", m.peer.Code)) + "\n\n" +
+			infoStyle.Render("waiting for someone to connect with this code...") + "\n\n" +
+			helpStyle.Render("esc: cancel"),
 		)
-
 	case sendTransferring:
-		if m.total == 0 {
-			return appStyle.Render(
-				titleStyle.Render("sending...")+"\n\n"+
-					infoStyle.Render("waiting for connection...")+"\n\n"+
-					helpStyle.Render("esc: cancel"),
-			)
+		elapsed := time.Duration(0)
+		if !m.startedAt.IsZero() {
+			elapsed = time.Since(m.startedAt).Truncate(time.Second)
 		}
-		pct := float64(m.bytes) / float64(m.total)
+		pct := 0.0
+		if m.total > 0 {
+			pct = float64(m.bytes) / float64(m.total)
+		}
 		return appStyle.Render(
 			titleStyle.Render(fmt.Sprintf("sending: %s", m.fileName)) + "\n\n" +
 				m.progress.ViewAs(pct) + "\n" +
-				infoStyle.Render(fmt.Sprintf("%s / %s", formatBytes(m.bytes), formatBytes(m.total))) + "\n\n" +
+				infoStyle.Render(fmt.Sprintf("%s / %s", formatBytes(m.bytes), formatBytes(m.total))) + "\n" +
+				infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" +
 				helpStyle.Render("esc: cancel"),
 		)
-
 	case sendDone:
+		elapsed := time.Duration(0)
+		if !m.startedAt.IsZero() && !m.finishedAt.IsZero() {
+			elapsed = m.finishedAt.Sub(m.startedAt).Truncate(time.Second)
+		}
 		return appStyle.Render(
 			titleStyle.Render("sent!") + "\n\n" +
-				infoStyle.Render(fmt.Sprintf("file: %s", m.fileName)) + "\n" +
-				infoStyle.Render(fmt.Sprintf("size: %s", formatBytes(m.total))) + "\n\n" +
-				helpStyle.Render("enter: back • esc: quit"),
+			infoStyle.Render(fmt.Sprintf("file: %s", m.fileName)) + "\n" +
+			infoStyle.Render(fmt.Sprintf("size: %s", formatBytes(m.total))) + "\n" +
+			infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" +
+			helpStyle.Render("enter: close • esc: quit"),
 		)
-
 	case sendError:
 		return appStyle.Render(
 			titleStyle.Render("error") + "\n\n" +
-				errorStyle.Render(m.err.Error()) + "\n\n" +
-				helpStyle.Render("enter: back • esc: quit"),
+			errorStyle.Render(m.err.Error()) + "\n\n" +
+			helpStyle.Render("enter: close • esc: quit"),
 		)
 	}
 	return ""
-}
-
-type errMsg struct {
-	err error
-}
-
-type transferProgressMsg struct {
-	fileName string
-	bytes    int64
-	total    int64
-	done     bool
-}
-
-func formatBytes(b int64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
