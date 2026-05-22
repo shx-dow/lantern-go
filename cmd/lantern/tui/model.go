@@ -2,7 +2,10 @@ package tui
 
 import (
 	"fmt"
+	"strings"
+
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
 
@@ -38,6 +41,44 @@ func formatBytes(b int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+func contentWidth(w int) int {
+	if w <= 0 {
+		return 80
+	}
+	return w
+}
+
+func contentHeight(h int) int {
+	if h <= 0 {
+		return 20
+	}
+	return h
+}
+
+func screenCanvas(w, h int, body string) string {
+	if w <= 0 {
+		w = 80
+	}
+	if h <= 0 {
+		h = 24
+	}
+	return lipgloss.Place(w, h, lipgloss.Left, lipgloss.Top, body)
+}
+
+func wrapLine(s string, width int) string {
+	if width <= 0 || len(s) <= width {
+		return s
+	}
+	var b strings.Builder
+	for len(s) > width {
+		b.WriteString(s[:width])
+		b.WriteString("\n")
+		s = s[width:]
+	}
+	b.WriteString(s)
+	return b.String()
 }
 
 type view int
@@ -79,11 +120,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.ready = true
 		if m.current == sendView {
+			m.send.setSize(msg.Width, msg.Height)
 			updated, cmd := m.send.Update(msg)
 			m.send = updated.(sendModel)
 			return m, cmd
 		}
 		if m.current == receiveView {
+			m.receive.setSize(msg.Width, msg.Height)
 			updated, cmd := m.receive.Update(msg)
 			m.receive = updated.(receiveModel)
 			return m, cmd
@@ -133,10 +176,12 @@ func (m *model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 0:
 			m.current = sendView
 			m.send = newSendModel(m.lantern)
+			m.send.setSize(m.width, m.height)
 			return m, m.send.Init()
 		case 1:
 			m.current = receiveView
 			m.receive = newReceiveModel(m.lantern, m.outputDir)
+			m.receive.setSize(m.width, m.height)
 			return m, m.receive.Init()
 		case 2:
 			return m, tea.Quit
@@ -147,16 +192,16 @@ func (m *model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *model) View() string {
 	if !m.ready {
-		return "\n  initializing..."
+		return screenCanvas(m.width, m.height, titleStyle.Render("lantern")+"\n\ninitializing...")
 	}
 
 	switch m.current {
 	case mainMenu:
-		return m.menuView()
+		return screenCanvas(m.width, m.height, m.menuView())
 	case sendView:
-		return m.send.View()
+		return screenCanvas(m.width, m.height, m.send.View())
 	case receiveView:
-		return m.receive.View()
+		return screenCanvas(m.width, m.height, m.receive.View())
 	}
 	return ""
 }
@@ -164,23 +209,23 @@ func (m *model) View() string {
 func (m *model) menuView() string {
 	options := []string{"send a file", "receive a file", "quit"}
 
-	s := appStyle.Render(titleStyle.Render("lantern") + "\n\n")
-	s += "  peer-to-peer file sharing\n\n"
+	s := titleStyle.Render("lantern") + "\n\n"
+	s += infoStyle.Render("peer-to-peer file sharing") + "\n\n"
 
 	for i, opt := range options {
 		cursor := " "
 		if m.choice == i {
 			cursor = "›"
 		}
-		prefix := "  "
+		prefix := ""
 		if m.choice == i {
 			prefix = buttonStyle.Render(cursor + " " + opt)
 		} else {
-			prefix = "  " + cursor + " " + opt
+			prefix = cursor + " " + opt
 		}
 		s += prefix + "\n"
 	}
 
-	s += "\n" + helpStyle.Render("↑/↓: navigate • enter: select • q: quit")
+	s += "\n" + helpStyle.Render("↑/↓ navigate  enter select  q quit")
 	return s
 }

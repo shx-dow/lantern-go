@@ -44,6 +44,8 @@ type receiveModel struct {
 	startedAt time.Time
 	finishedAt time.Time
 	showHelp  bool
+	width     int
+	height    int
 }
 
 type receiveKeyMap struct {
@@ -101,6 +103,14 @@ func newReceiveModel(ln *lantern.Lantern, outputDir string) receiveModel {
 	}
 }
 
+func (m *receiveModel) setSize(w, h int) {
+	m.width = w
+	m.height = h
+	if w > 0 {
+		m.input.Width = contentWidth(w)
+	}
+}
+
 func (m receiveModel) Init() tea.Cmd {
 	return textinput.Blink
 }
@@ -123,6 +133,9 @@ func (m receiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m receiveModel) updateInputCode(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.setSize(msg.Width, msg.Height)
+		return m, nil
 	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, m.keys.Cancel), key.Matches(msg, m.keys.Quit):
@@ -167,6 +180,9 @@ func (m receiveModel) updateDiscovering(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.setSize(msg.Width, msg.Height)
+		return m, nil
 	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, m.keys.Cancel), key.Matches(msg, m.keys.Quit):
@@ -181,9 +197,7 @@ func (m receiveModel) updateDiscovering(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	var cmd tea.Cmd
-	m.spinner, cmd = m.spinner.Update(msg)
-	return m, cmd
+	return m, nil
 }
 
 func (m receiveModel) waitForReceiveEvents() tea.Cmd {
@@ -266,24 +280,17 @@ func (m receiveModel) updateError(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m receiveModel) View() string {
-	if m.input.Width == 0 {
-		m.input.Width = 30
-	}
 	switch m.state {
 	case recvInputCode:
 		body := titleStyle.Render("receive a file") + "\n\n" +
-			infoStyle.Render("enter the share code:") + "\n" +
+			infoStyle.Render("enter the share code:") + "\n\n" +
 			m.input.View()
 		if m.showHelp {
 			body += "\n\n" + helpStyle.Render("enter: confirm • esc: back • ctrl+c: quit")
 		}
-		return appStyle.Render(body)
+		return body
 	case recvDiscovering:
-		return appStyle.Render(
-			titleStyle.Render("searching for peer...") + "\n\n" +
-				m.spinner.View() + " finding peers to connect...\n\n" +
-				helpStyle.Render("esc: cancel"),
-		)
+		return titleStyle.Render("searching for peer...") + "\n\n" + m.spinner.View() + " finding peers to connect...\n\n" + helpStyle.Render("esc: cancel")
 	case recvTransferring:
 		elapsed := time.Duration(0)
 		if !m.startedAt.IsZero() {
@@ -293,31 +300,15 @@ func (m receiveModel) View() string {
 		if m.total > 0 {
 			pct = float64(m.bytes) / float64(m.total)
 		}
-		return appStyle.Render(
-			titleStyle.Render(fmt.Sprintf("receiving: %s", m.fileName)) + "\n\n" +
-				m.progress.ViewAs(pct) + "\n" +
-				infoStyle.Render(fmt.Sprintf("%s / %s", formatBytes(m.bytes), formatBytes(m.total))) + "\n" +
-				infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" +
-				helpStyle.Render("esc: cancel"),
-		)
+		return titleStyle.Render(fmt.Sprintf("receiving: %s", m.fileName)) + "\n\n" + m.progress.ViewAs(pct) + "\n" + infoStyle.Render(fmt.Sprintf("%s / %s", formatBytes(m.bytes), formatBytes(m.total))) + "\n" + infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" + helpStyle.Render("esc: cancel")
 	case recvDone:
 		elapsed := time.Duration(0)
 		if !m.startedAt.IsZero() && !m.finishedAt.IsZero() {
 			elapsed = m.finishedAt.Sub(m.startedAt).Truncate(time.Second)
 		}
-		return appStyle.Render(
-			titleStyle.Render("received!") + "\n\n" +
-			infoStyle.Render(fmt.Sprintf("file: %s", m.fileName)) + "\n" +
-			infoStyle.Render(fmt.Sprintf("size: %s", formatBytes(m.total))) + "\n" +
-			infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" +
-			helpStyle.Render("enter: close • esc: quit"),
-		)
+		return titleStyle.Render("received!") + "\n\n" + infoStyle.Render(fmt.Sprintf("file: %s", m.fileName)) + "\n" + infoStyle.Render(fmt.Sprintf("size: %s", formatBytes(m.total))) + "\n" + infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" + helpStyle.Render("enter: close • esc: quit")
 	case recvError:
-		return appStyle.Render(
-			titleStyle.Render("error") + "\n\n" +
-			errorStyle.Render(m.err.Error()) + "\n\n" +
-			helpStyle.Render("enter: close • esc: quit"),
-		)
+		return titleStyle.Render("error") + "\n\n" + errorStyle.Render(m.err.Error()) + "\n\n" + helpStyle.Render("enter: close • esc: quit")
 	}
 	return ""
 }
