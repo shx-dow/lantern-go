@@ -111,12 +111,11 @@ func (ew *EncryptedWriter) Close() error {
 }
 
 type EncryptedReader struct {
-	r       io.Reader
-	gcm     cipher.AEAD
-	chunk   int64
-	buf     []byte
-	pos     int
-	header  [4 + NonceSize]byte
+	r      io.Reader
+	gcm    cipher.AEAD
+	buf    []byte
+	pos    int
+	header [4 + NonceSize]byte
 }
 
 func NewEncryptedReader(r io.Reader, key []byte) (*EncryptedReader, error) {
@@ -133,9 +132,8 @@ func NewEncryptedReaderAt(r io.Reader, key []byte, startChunk int64) (*Encrypted
 		return nil, fmt.Errorf("new gcm: %w", err)
 	}
 	return &EncryptedReader{
-		r:     r,
-		gcm:   gcm,
-		chunk: startChunk,
+		r:   r,
+		gcm: gcm,
 	}, nil
 }
 
@@ -179,6 +177,5 @@ func (er *EncryptedReader) readChunk() error {
 		return fmt.Errorf("decrypt chunk: %w", err)
 	}
 	er.pos = 0
-	er.chunk++
 	return nil
 }

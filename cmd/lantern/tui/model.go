@@ -43,28 +43,29 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ready = true
+	}
 
-	case tea.KeyMsg:
-		switch m.current {
-		case mainMenu:
-			return m.updateMenu(msg)
-		case sendView:
-			updated, cmd := m.send.Update(msg)
-			m.send = updated.(sendModel)
-			if m.send.state == sendDone || m.send.state == sendError {
-				m.send = newSendModel(m.lantern)
-				m.current = mainMenu
-			}
-			return m, cmd
-		case receiveView:
-			updated, cmd := m.receive.Update(msg)
-			m.receive = updated.(receiveModel)
-			if m.receive.state == recvDone || m.receive.state == recvError {
-				m.receive = newReceiveModel(m.lantern, m.outputDir)
-				m.current = mainMenu
-			}
-			return m, cmd
+	switch m.current {
+	case mainMenu:
+		if key, ok := msg.(tea.KeyMsg); ok {
+			return m.updateMenu(key)
 		}
+	case sendView:
+		updated, cmd := m.send.Update(msg)
+		m.send = updated.(sendModel)
+		if m.send.state == sendDone || m.send.state == sendError {
+			m.send = newSendModel(m.lantern)
+			m.current = mainMenu
+		}
+		return m, cmd
+	case receiveView:
+		updated, cmd := m.receive.Update(msg)
+		m.receive = updated.(receiveModel)
+		if m.receive.state == recvDone || m.receive.state == recvError {
+			m.receive = newReceiveModel(m.lantern, m.outputDir)
+			m.current = mainMenu
+		}
+		return m, cmd
 	}
 
 	return m, nil

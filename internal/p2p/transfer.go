@@ -47,6 +47,7 @@ func (n *Node) RegisterShareHandler(code string, path string, progress chan Tran
 		if !state.handled.CompareAndSwap(false, true) {
 			return
 		}
+		defer close(state.progress)
 
 		dec := json.NewDecoder(s)
 		var req struct {
@@ -151,6 +152,7 @@ func (n *Node) RegisterShareHandler(code string, path string, progress chan Tran
 
 func (n *Node) RegisterReceive(ctx context.Context, pi peer.AddrInfo, code string, outputDir string, progress chan TransferProgress) {
 	go func() {
+		defer close(progress)
 		err := n.receiveFile(ctx, pi, code, outputDir, progress)
 		if err != nil {
 			progress <- TransferProgress{Err: err}
@@ -204,11 +206,15 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 		return fmt.Errorf("read meta: %w", err)
 	}
 
+	if outPath == "" {
+		outPath = filepath.Join(outputDir, filepath.Base(meta.Name))
+	}
+
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
 	}
 
-	out, err := os.OpenFile(outPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	out, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE, 0644)
 	if err != nil {
 		return fmt.Errorf("open output file: %w", err)
 	}
@@ -291,23 +297,24 @@ func checkResume(outputDir, code string) (string, int64, error) {
 	sp := statePath(outputDir, code)
 	data, err := os.ReadFile(sp)
 	if err != nil {
-		return filepath.Join(outputDir, ""), 0, nil
+		return "", 0, nil
 	}
 
 	var st resumeState
 	if err := json.Unmarshal(data, &st); err != nil {
-		return filepath.Join(outputDir, ""), 0, nil
+		os.Remove(sp)
+		return "", 0, nil
 	}
 
 	if st.Code != code {
 		os.Remove(sp)
-		return filepath.Join(outputDir, ""), 0, nil
+		return "", 0, nil
 	}
 
 	outPath := filepath.Join(outputDir, st.FileName)
 	if _, err := os.Stat(outPath); err != nil {
 		os.Remove(sp)
-		return filepath.Join(outputDir, ""), 0, nil
+		return "", 0, nil
 	}
 
 	return outPath, st.Offset, nil

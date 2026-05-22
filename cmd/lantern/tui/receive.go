@@ -273,7 +273,3 @@ func (m receiveModel) View() string {
 	}
 	return ""
 }
-
-type receiveReadyMsg struct {
-	peer *lantern.Peer
-}
