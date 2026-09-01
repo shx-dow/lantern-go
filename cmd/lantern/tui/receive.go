@@ -254,7 +254,6 @@ func (m receiveModel) updateTransferring(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.session != nil {
 				m.session.Close()
 			}
-			m.total = msg.total
 			return m, nil
 		}
 		m.bytes = msg.bytes

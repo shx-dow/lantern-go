@@ -70,17 +70,25 @@ func screenCanvas(w, h int, body string) string {
 }
 
 func wrapLine(s string, width int) string {
-	runes := []rune(s)
-	if width <= 0 || len(runes) <= width {
+	if width <= 0 || lipgloss.Width(s) <= width {
 		return s
 	}
 	var b strings.Builder
-	for len(runes) > width {
-		b.WriteString(string(runes[:width]))
-		b.WriteString("\n")
-		runes = runes[width:]
+	lineWidth := 0
+	for _, r := range s {
+		if r == '\n' {
+			b.WriteRune(r)
+			lineWidth = 0
+			continue
+		}
+		runeWidth := lipgloss.Width(string(r))
+		if lineWidth > 0 && lineWidth+runeWidth > width {
+			b.WriteByte('\n')
+			lineWidth = 0
+		}
+		b.WriteRune(r)
+		lineWidth += runeWidth
 	}
-	b.WriteString(string(runes))
 	return b.String()
 }
 

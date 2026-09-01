@@ -498,8 +498,6 @@ func (m sendModel) updateWaiting(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		return m, nil
 	case transferProgressMsg:
-		m.bytes = msg.bytes
-		m.total = msg.total
 		m.fileName = msg.fileName
 		if m.startedAt.IsZero() {
 			m.startedAt = time.Now()
@@ -512,6 +510,8 @@ func (m sendModel) updateWaiting(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		m.bytes = msg.bytes
+		m.total = msg.total
 		if msg.bytes > 0 {
 			m.state = sendTransferring
 		}
@@ -560,8 +560,6 @@ func (m sendModel) updateTransferring(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case transferProgressMsg:
-		m.bytes = msg.bytes
-		m.total = msg.total
 		m.fileName = msg.fileName
 		if m.startedAt.IsZero() {
 			m.startedAt = time.Now()
@@ -574,6 +572,8 @@ func (m sendModel) updateTransferring(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		m.bytes = msg.bytes
+		m.total = msg.total
 		return m, m.waitForEvents()
 	case progress.FrameMsg:
 		pm, cmd := m.progress.Update(msg)
