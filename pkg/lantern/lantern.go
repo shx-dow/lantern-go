@@ -78,7 +78,7 @@ type Session struct {
 	unsubscribe func()
 	done        chan struct{}
 	state       TransferState
-	closeOnce   sync.Once
+	finishOnce  sync.Once
 	doneOnce    sync.Once
 }
 
@@ -101,15 +101,19 @@ func (s *Session) State() TransferState {
 func (s *Session) Cancel() { s.Close() }
 
 func (s *Session) Close() {
-	s.closeOnce.Do(func() {
+	s.finish(TransferCanceled)
+}
+
+func (s *Session) finish(state TransferState) {
+	s.finishOnce.Do(func() {
 		s.cancel()
-		s.unsubscribe()
 		s.mu.Lock()
 		if s.state == TransferPending || s.state == TransferRunning {
-			s.state = TransferCanceled
+			s.state = state
 		}
 		s.mu.Unlock()
 		s.doneOnce.Do(func() { close(s.done) })
+		go s.unsubscribe()
 	})
 }
 
@@ -173,21 +177,22 @@ func (l *Lantern) newSession(ctx context.Context, id string) *Session {
 		done:   make(chan struct{}),
 	}
 	s.events, s.unsubscribe = l.subscribe(128, func(e Event) {
-		if currentID := s.ID(); currentID != "" && e.TransferID != currentID {
+		if currentID := s.ID(); currentID == "" || e.TransferID != currentID {
 			return
 		}
-		s.mu.Lock()
 		if e.Type == EventTransferDone {
-			s.state = TransferDone
+			s.finish(TransferDone)
 		} else {
-			s.state = TransferFailed
+			s.finish(TransferFailed)
 		}
-		s.mu.Unlock()
-		s.doneOnce.Do(func() { close(s.done) })
 	})
 	s.mu.Lock()
 	s.state = TransferRunning
 	s.mu.Unlock()
+	go func() {
+		<-sessionCtx.Done()
+		s.finish(TransferCanceled)
+	}()
 	return s
 }
 

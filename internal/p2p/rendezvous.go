@@ -30,7 +30,8 @@ func (n *Node) AdvertiseLocal(code string) error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(os.TempDir(), "lantern-peer-*")
+	destination := n.peerFilePath(code)
+	tmp, err := os.CreateTemp(filepath.Dir(destination), ".lantern-peer-*")
 	if err != nil {
 		return fmt.Errorf("create local advertisement: %w", err)
 	}
@@ -47,7 +48,7 @@ func (n *Node) AdvertiseLocal(code string) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close local advertisement: %w", err)
 	}
-	if err := os.Rename(tmpPath, n.peerFilePath(code)); err != nil {
+	if err := os.Rename(tmpPath, destination); err != nil {
 		return fmt.Errorf("publish local advertisement: %w", err)
 	}
 	return nil
