@@ -58,3 +58,10 @@ func TestSaveResumeRejectsOffsetPastFileSize(t *testing.T) {
 		t.Fatal("expected invalid offset error")
 	}
 }
+
+func TestSaveResumeRejectsPathLikeCode(t *testing.T) {
+	err := SaveResume(t.TempDir(), ResumeState{Code: "../escape", FileName: "file", FileSize: 1, Offset: 0})
+	if err == nil {
+		t.Fatal("path-like code was accepted")
+	}
+}

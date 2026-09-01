@@ -168,6 +168,9 @@ func TestAuthProofBindsChallengeAndOffset(t *testing.T) {
 	if VerifyAuthProof("wrong", challenge, 12, proof) || VerifyAuthProof("secret", challenge, 13, proof) {
 		t.Fatal("proof accepted with altered credentials")
 	}
+	if _, err := AuthProof("secret", challenge, -1); err == nil {
+		t.Fatal("negative offset was accepted")
+	}
 }
 
 func TestDecryptRejectsTamperedCiphertext(t *testing.T) {

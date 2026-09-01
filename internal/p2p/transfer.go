@@ -268,6 +268,9 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 		if offset > meta.Size || info.Size() < offset {
 			return fmt.Errorf("resume offset %d is invalid for output size %d and source size %d", offset, info.Size(), meta.Size)
 		}
+		if err := out.Truncate(offset); err != nil {
+			return fmt.Errorf("truncate partial output: %w", err)
+		}
 		if _, err := out.Seek(offset, io.SeekStart); err != nil {
 			return fmt.Errorf("seek output: %w", err)
 		}

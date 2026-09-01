@@ -47,7 +47,7 @@ func LoadResume(outputDir, code string) (ResumeState, bool, error) {
 
 // SaveResume atomically replaces the resume state with a private file.
 func SaveResume(outputDir string, state ResumeState) error {
-	if !validState(state, state.Code) {
+	if !validCode(state.Code) || !validState(state, state.Code) {
 		return errors.New("invalid resume state")
 	}
 	data, err := json.Marshal(state)
@@ -92,11 +92,22 @@ func ClearResume(outputDir, code string) error {
 }
 
 func PartialPath(outputDir, code, fileName string) string {
-	return filepath.Join(outputDir, ".lantern-"+code+"-"+filepath.Base(fileName)+".part")
+	return filepath.Join(outputDir, ".lantern-"+safeCode(code)+"-"+filepath.Base(fileName)+".part")
 }
 
 func statePath(outputDir, code string) string {
-	return filepath.Join(outputDir, "."+code+".lantern-state")
+	return filepath.Join(outputDir, "."+safeCode(code)+".lantern-state")
+}
+
+func safeCode(code string) string {
+	if code == "" || code == "." || code == ".." || filepath.Base(code) != code {
+		return "invalid-code"
+	}
+	return code
+}
+
+func validCode(code string) bool {
+	return safeCode(code) == code
 }
 
 func validState(state ResumeState, code string) bool {

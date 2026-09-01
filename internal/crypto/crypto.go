@@ -38,6 +38,9 @@ func AuthProof(code string, challenge []byte, offset int64) ([]byte, error) {
 	if len(challenge) != 32 {
 		return nil, errors.New("challenge must be 32 bytes")
 	}
+	if offset < 0 {
+		return nil, errors.New("offset must not be negative")
+	}
 	key, err := deriveKey(code, "request-authentication-key")
 	if err != nil {
 		return nil, err
