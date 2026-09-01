@@ -21,13 +21,15 @@ type transferProgressMsg struct {
 }
 
 type shareResult struct {
-	peer *lantern.Peer
-	err  error
+	peer    *lantern.Peer
+	session *lantern.Session
+	err     error
 }
 
 type receiveResult struct {
-	peer *lantern.Peer
-	err  error
+	peer    *lantern.Peer
+	session *lantern.Session
+	err     error
 }
 
 func formatBytes(b int64) string {
@@ -68,16 +70,17 @@ func screenCanvas(w, h int, body string) string {
 }
 
 func wrapLine(s string, width int) string {
-	if width <= 0 || len(s) <= width {
+	runes := []rune(s)
+	if width <= 0 || len(runes) <= width {
 		return s
 	}
 	var b strings.Builder
-	for len(s) > width {
-		b.WriteString(s[:width])
+	for len(runes) > width {
+		b.WriteString(string(runes[:width]))
 		b.WriteString("\n")
-		s = s[width:]
+		runes = runes[width:]
 	}
-	b.WriteString(s)
+	b.WriteString(string(runes))
 	return b.String()
 }
 

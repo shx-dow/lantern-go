@@ -64,5 +64,4 @@ var (
 	railStyle = lipgloss.NewStyle().
 			Foreground(highlight).
 			Bold(true)
-
 )
