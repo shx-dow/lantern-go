@@ -129,3 +129,71 @@ func TestEncryptResume(t *testing.T) {
 		t.Fatal("resume round-trip failed")
 	}
 }
+
+func TestEncryptingSameDataUsesFreshNonces(t *testing.T) {
+	key, err := DeriveKey("nonce-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plaintext := bytes.Repeat([]byte("same payload"), 1000)
+	var first, second bytes.Buffer
+	for _, out := range []*bytes.Buffer{&first, &second} {
+		w, err := NewEncryptedWriter(out, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(plaintext); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if bytes.Equal(first.Bytes(), second.Bytes()) {
+		t.Fatal("same plaintext produced identical encrypted streams")
+	}
+}
+
+func TestAuthProofBindsChallengeAndOffset(t *testing.T) {
+	challenge := bytes.Repeat([]byte{7}, 32)
+	proof, err := AuthProof("secret", challenge, 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !VerifyAuthProof("secret", challenge, 12, proof) {
+		t.Fatal("valid proof was rejected")
+	}
+	if VerifyAuthProof("wrong", challenge, 12, proof) || VerifyAuthProof("secret", challenge, 13, proof) {
+		t.Fatal("proof accepted with altered credentials")
+	}
+}
+
+func TestDecryptRejectsTamperedCiphertext(t *testing.T) {
+	key, err := DeriveKey("tamper-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire bytes.Buffer
+	w, err := NewEncryptedWriter(&wire, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("secret")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	encoded := wire.Bytes()
+	encoded[len(encoded)-1] ^= 1
+
+	r, err := NewEncryptedReader(bytes.NewReader(encoded), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(r); err == nil {
+		t.Fatal("tampered ciphertext was accepted")
+	}
+}

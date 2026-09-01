@@ -3,6 +3,8 @@ package crypto
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -12,8 +14,6 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
-
-
 const (
 	ChunkSize = 64 * 1024
 	KeySize   = 32
@@ -22,7 +22,11 @@ const (
 )
 
 func DeriveKey(code string) ([]byte, error) {
-	r := hkdf.New(sha256.New, []byte(code), []byte("lantern-pake-v1"), []byte("file-encryption-key"))
+	return deriveKey(code, "file-encryption-key")
+}
+
+func deriveKey(code, info string) ([]byte, error) {
+	r := hkdf.New(sha256.New, []byte(code), []byte("lantern-transfer-v2"), []byte(info))
 	key := make([]byte, KeySize)
 	if _, err := io.ReadFull(r, key); err != nil {
 		return nil, fmt.Errorf("derive key: %w", err)
@@ -30,11 +34,32 @@ func DeriveKey(code string) ([]byte, error) {
 	return key, nil
 }
 
+func AuthProof(code string, challenge []byte, offset int64) ([]byte, error) {
+	if len(challenge) != 32 {
+		return nil, errors.New("challenge must be 32 bytes")
+	}
+	key, err := deriveKey(code, "request-authentication-key")
+	if err != nil {
+		return nil, err
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte("lantern-transfer-request-v2"))
+	mac.Write(challenge)
+	var encodedOffset [8]byte
+	binary.BigEndian.PutUint64(encodedOffset[:], uint64(offset))
+	mac.Write(encodedOffset[:])
+	return mac.Sum(nil), nil
+}
+
+func VerifyAuthProof(code string, challenge []byte, offset int64, proof []byte) bool {
+	want, err := AuthProof(code, challenge, offset)
+	return err == nil && hmac.Equal(want, proof)
+}
+
 type EncryptedWriter struct {
 	w       io.Writer
 	block   cipher.Block
 	gcm     cipher.AEAD
-	chunk   int64
 	buf     []byte
 	scratch [4 + NonceSize + ChunkSize + TagSize]byte
 }
@@ -43,7 +68,7 @@ func NewEncryptedWriter(w io.Writer, key []byte) (*EncryptedWriter, error) {
 	return NewEncryptedWriterAt(w, key, 0)
 }
 
-func NewEncryptedWriterAt(w io.Writer, key []byte, startChunk int64) (*EncryptedWriter, error) {
+func NewEncryptedWriterAt(w io.Writer, key []byte, _ int64) (*EncryptedWriter, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("new cipher: %w", err)
@@ -56,7 +81,6 @@ func NewEncryptedWriterAt(w io.Writer, key []byte, startChunk int64) (*Encrypted
 		w:     w,
 		block: block,
 		gcm:   gcm,
-		chunk: startChunk,
 		buf:   make([]byte, 0, ChunkSize),
 	}, nil
 }
@@ -88,8 +112,9 @@ func (ew *EncryptedWriter) flush() error {
 	}
 
 	var nonce [NonceSize]byte
-	binary.BigEndian.PutUint64(nonce[4:], uint64(ew.chunk))
-	ew.chunk++
+	if _, err := crand.Read(nonce[:]); err != nil {
+		return fmt.Errorf("generate nonce: %w", err)
+	}
 
 	ciphertext := ew.gcm.Seal(nil, nonce[:], ew.buf, nil)
 	ew.buf = ew.buf[:0]
@@ -100,8 +125,25 @@ func (ew *EncryptedWriter) flush() error {
 	copy(ew.scratch[4+NonceSize:], ciphertext)
 
 	totalLen := 4 + NonceSize + payloadLen
-	if _, err := ew.w.Write(ew.scratch[:totalLen]); err != nil {
+	if err := writeFull(ew.w, ew.scratch[:totalLen]); err != nil {
 		return fmt.Errorf("write encrypted chunk: %w", err)
+	}
+	return nil
+}
+
+func writeFull(w io.Writer, p []byte) error {
+	for len(p) > 0 {
+		n, err := w.Write(p)
+		if n < 0 || n > len(p) {
+			return fmt.Errorf("invalid write count %d", n)
+		}
+		p = p[n:]
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
 	}
 	return nil
 }
@@ -122,7 +164,7 @@ func NewEncryptedReader(r io.Reader, key []byte) (*EncryptedReader, error) {
 	return NewEncryptedReaderAt(r, key, 0)
 }
 
-func NewEncryptedReaderAt(r io.Reader, key []byte, startChunk int64) (*EncryptedReader, error) {
+func NewEncryptedReaderAt(r io.Reader, key []byte, _ int64) (*EncryptedReader, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("new cipher: %w", err)
