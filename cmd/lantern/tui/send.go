@@ -31,13 +31,13 @@ const (
 	sendError
 )
 
-	type dirItem struct {
-		path  string
-		name  string
-		isDir bool
-		size  int64
-		mod   time.Time
-	}
+type dirItem struct {
+	path  string
+	name  string
+	isDir bool
+	size  int64
+	mod   time.Time
+}
 
 func (i dirItem) FilterValue() string { return i.name }
 
@@ -84,7 +84,9 @@ type sendModel struct {
 	help     help.Model
 	keys     sendKeyMap
 	peer     *lantern.Peer
+	session  *lantern.Session
 	shareCh  chan shareResult
+	events   <-chan lantern.Event
 	viewport viewport.Model
 
 	selectedPath string
@@ -356,7 +358,7 @@ func (m *sendModel) setSize(w, h int) {
 	m.height = h
 	if w > 0 && h > 0 {
 		m.list.SetSize(w/2, h-8)
-		m.viewport.Width = w/2
+		m.viewport.Width = w / 2
 		m.viewport.Height = h - 8
 	}
 }
@@ -418,8 +420,8 @@ func (m sendModel) updatePickFile(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state = sendGenerating
 				m.spinner = spinner.New(spinner.WithSpinner(spinner.Dot))
 				go func() {
-					p, err := m.lantern.Share(m.ctx, m.selectedPath)
-					m.shareCh <- shareResult{peer: p, err: err}
+					s, p, err := m.lantern.ShareSession(m.ctx, m.selectedPath)
+					m.shareCh <- shareResult{peer: p, session: s, err: err}
 				}()
 				return m, spinner.Tick
 			}
@@ -440,6 +442,10 @@ func (m sendModel) updateGenerating(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.peer = r.peer
+		m.session = r.session
+		if m.session != nil {
+			m.events = m.session.Events()
+		}
 		m.state = sendWaiting
 		return m, m.waitForEvents()
 	default:
@@ -472,6 +478,10 @@ func (m sendModel) updateWaiting(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.peer = r.peer
+		m.session = r.session
+		if m.session != nil {
+			m.events = m.session.Events()
+		}
 		return m, m.waitForEvents()
 	default:
 	}
@@ -488,8 +498,6 @@ func (m sendModel) updateWaiting(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		return m, nil
 	case transferProgressMsg:
-		m.bytes = msg.bytes
-		m.total = msg.total
 		m.fileName = msg.fileName
 		if m.startedAt.IsZero() {
 			m.startedAt = time.Now()
@@ -497,8 +505,13 @@ func (m sendModel) updateWaiting(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.done {
 			m.state = sendDone
 			m.finishedAt = time.Now()
+			if m.session != nil {
+				m.session.Close()
+			}
 			return m, nil
 		}
+		m.bytes = msg.bytes
+		m.total = msg.total
 		if msg.bytes > 0 {
 			m.state = sendTransferring
 		}
@@ -512,7 +525,10 @@ func (m sendModel) waitForEvents() tea.Cmd {
 	return func() tea.Msg {
 		for {
 			select {
-			case e := <-m.lantern.Events():
+			case e, ok := <-m.events:
+				if !ok {
+					return errMsg{fmt.Errorf("event stream closed")}
+				}
 				switch e.Type {
 				case lantern.EventTransferProgress:
 					return transferProgressMsg{fileName: e.FileName, bytes: e.Bytes, total: e.Total}
@@ -539,10 +555,11 @@ func (m sendModel) updateTransferring(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case errMsg:
 		m.state = sendError
 		m.err = msg.err
+		if m.session != nil {
+			m.session.Close()
+		}
 		return m, nil
 	case transferProgressMsg:
-		m.bytes = msg.bytes
-		m.total = msg.total
 		m.fileName = msg.fileName
 		if m.startedAt.IsZero() {
 			m.startedAt = time.Now()
@@ -550,8 +567,13 @@ func (m sendModel) updateTransferring(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.done {
 			m.state = sendDone
 			m.finishedAt = time.Now()
+			if m.session != nil {
+				m.session.Close()
+			}
 			return m, nil
 		}
+		m.bytes = msg.bytes
+		m.total = msg.total
 		return m, m.waitForEvents()
 	case progress.FrameMsg:
 		pm, cmd := m.progress.Update(msg)

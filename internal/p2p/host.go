@@ -3,7 +3,10 @@ package p2p
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"os"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-kad-dht"
@@ -13,7 +16,7 @@ import (
 	"github.com/multiformats/go-multiaddr"
 )
 
-const ProtocolID = "/lantern/transfer/1.0.0"
+const ProtocolID = "/lantern/transfer/2.0.0"
 
 var DefaultBootstrapPeers = []string{
 	"/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
@@ -23,14 +26,23 @@ var DefaultBootstrapPeers = []string{
 }
 
 type Node struct {
-	Host   host.Host
-	DHT    *dht.IpfsDHT
-	ctx    context.Context
-	cancel context.CancelFunc
+	Host     host.Host
+	DHT      *dht.IpfsDHT
+	ctx      context.Context
+	cancel   context.CancelFunc
+	localDir string
 }
 
-func NewNode(port int, bootstrapPeers []string) (*Node, error) {
+func NewNode(port int, bootstrapPeers []string, dataDirs ...string) (*Node, error) {
 	ctx, cancel := context.WithCancel(context.Background())
+	localDir := os.TempDir()
+	if len(dataDirs) > 0 && dataDirs[0] != "" {
+		localDir = dataDirs[0]
+	}
+	if err := os.MkdirAll(localDir, 0700); err != nil {
+		cancel()
+		return nil, fmt.Errorf("create data directory: %w", err)
+	}
 
 	tcpAddr := fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", port)
 	quicAddr := fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", port)
@@ -83,10 +95,11 @@ func NewNode(port int, bootstrapPeers []string) (*Node, error) {
 	}
 
 	node := &Node{
-		Host:   h,
-		DHT:    d,
-		ctx:    ctx,
-		cancel: cancel,
+		Host:     h,
+		DHT:      d,
+		ctx:      ctx,
+		cancel:   cancel,
+		localDir: localDir,
 	}
 
 	node.setupMDNS()
@@ -115,16 +128,22 @@ func (m *mdnsDiscovery) HandlePeerFound(pi peer.AddrInfo) {
 	}()
 }
 
-func (n *Node) Close() {
+func (n *Node) Close() error {
 	n.cancel()
-	n.DHT.Close()
-	n.Host.Close()
+	var dhtErr, hostErr error
+	if n.DHT != nil {
+		dhtErr = n.DHT.Close()
+	}
+	if n.Host != nil {
+		hostErr = n.Host.Close()
+	}
+	return errors.Join(dhtErr, hostErr)
 }
 
 func GenerateCode() (string, error) {
-	b := make([]byte, 3)
+	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("generate code: %w", err)
 	}
-	return fmt.Sprintf("%x", b), nil
+	return hex.EncodeToString(b), nil
 }

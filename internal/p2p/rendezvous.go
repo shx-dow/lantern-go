@@ -13,8 +13,12 @@ import (
 	"github.com/multiformats/go-multihash"
 )
 
-func peerFilePath(code string) string {
-	return filepath.Join(os.TempDir(), "lantern-"+code+".peer")
+func (n *Node) peerFilePath(code string) string {
+	dir := n.localDir
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, "lantern-"+code+".peer")
 }
 
 func (n *Node) AdvertiseLocal(code string) error {
@@ -26,7 +30,28 @@ func (n *Node) AdvertiseLocal(code string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(peerFilePath(code), data, 0644)
+	destination := n.peerFilePath(code)
+	tmp, err := os.CreateTemp(filepath.Dir(destination), ".lantern-peer-*")
+	if err != nil {
+		return fmt.Errorf("create local advertisement: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return fmt.Errorf("protect local advertisement: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write local advertisement: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close local advertisement: %w", err)
+	}
+	if err := os.Rename(tmpPath, destination); err != nil {
+		return fmt.Errorf("publish local advertisement: %w", err)
+	}
+	return nil
 }
 
 func (n *Node) DiscoverLocal(ctx context.Context, code string) (*peer.AddrInfo, error) {
@@ -35,20 +60,20 @@ func (n *Node) DiscoverLocal(ctx context.Context, code string) (*peer.AddrInfo, 
 		return nil, ctx.Err()
 	default:
 	}
-	data, err := os.ReadFile(peerFilePath(code))
+	data, err := os.ReadFile(n.peerFilePath(code))
 	if err != nil {
 		return nil, err
 	}
 	var info peer.AddrInfo
 	if err := json.Unmarshal(data, &info); err != nil {
-		os.Remove(peerFilePath(code))
+		os.Remove(n.peerFilePath(code))
 		return nil, err
 	}
 	return &info, nil
 }
 
 func (n *Node) ClearLocal(code string) {
-	os.Remove(peerFilePath(code))
+	os.Remove(n.peerFilePath(code))
 }
 
 func (n *Node) Advertise(ctx context.Context, code string) error {

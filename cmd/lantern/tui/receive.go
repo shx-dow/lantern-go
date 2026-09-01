@@ -25,27 +25,29 @@ const (
 )
 
 type receiveModel struct {
-	state     receiveState
-	lantern   *lantern.Lantern
-	ctx       context.Context
-	cancel    context.CancelFunc
-	input     textinput.Model
-	peer      *lantern.Peer
-	progress  progress.Model
-	spinner   spinner.Model
-	help      help.Model
-	keys      receiveKeyMap
-	bytes     int64
-	total     int64
-	fileName  string
-	err       error
-	outputDir string
-	receiveCh chan receiveResult
-	startedAt time.Time
+	state      receiveState
+	lantern    *lantern.Lantern
+	ctx        context.Context
+	cancel     context.CancelFunc
+	input      textinput.Model
+	peer       *lantern.Peer
+	session    *lantern.Session
+	progress   progress.Model
+	spinner    spinner.Model
+	help       help.Model
+	keys       receiveKeyMap
+	bytes      int64
+	total      int64
+	fileName   string
+	err        error
+	outputDir  string
+	receiveCh  chan receiveResult
+	events     <-chan lantern.Event
+	startedAt  time.Time
 	finishedAt time.Time
-	showHelp  bool
-	width     int
-	height    int
+	showHelp   bool
+	width      int
+	height     int
 }
 
 type receiveKeyMap struct {
@@ -83,7 +85,7 @@ func newReceiveModel(ln *lantern.Lantern, outputDir string) receiveModel {
 	ti := textinput.New()
 	ti.Placeholder = "enter share code"
 	ti.Focus()
-	ti.CharLimit = 16
+	ti.CharLimit = 64
 	ti.Width = 30
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -151,8 +153,8 @@ func (m receiveModel) updateInputCode(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state = recvDiscovering
 				m.spinner = spinner.New(spinner.WithSpinner(spinner.Dot))
 				go func() {
-					peer, err := m.lantern.Receive(m.ctx, code, m.outputDir)
-					m.receiveCh <- receiveResult{peer: peer, err: err}
+					s, peer, err := m.lantern.ReceiveSession(m.ctx, code, m.outputDir)
+					m.receiveCh <- receiveResult{peer: peer, session: s, err: err}
 				}()
 				return m, spinner.Tick
 			}
@@ -173,6 +175,10 @@ func (m receiveModel) updateDiscovering(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.peer = r.peer
+		m.session = r.session
+		if m.session != nil {
+			m.events = m.session.Events()
+		}
 		m.state = recvTransferring
 		m.startedAt = time.Now()
 		return m, m.waitForReceiveEvents()
@@ -204,7 +210,10 @@ func (m receiveModel) waitForReceiveEvents() tea.Cmd {
 	return func() tea.Msg {
 		for {
 			select {
-			case e := <-m.lantern.Events():
+			case e, ok := <-m.events:
+				if !ok {
+					return errMsg{fmt.Errorf("event stream closed")}
+				}
 				switch e.Type {
 				case lantern.EventTransferProgress:
 					return transferProgressMsg{fileName: e.FileName, bytes: e.Bytes, total: e.Total}
@@ -233,13 +242,18 @@ func (m receiveModel) updateTransferring(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case errMsg:
 		m.state = recvError
 		m.err = msg.err
+		if m.session != nil {
+			m.session.Close()
+		}
 		return m, nil
 	case transferProgressMsg:
 		m.fileName = msg.fileName
 		if msg.done {
 			m.state = recvDone
 			m.finishedAt = time.Now()
-			m.total = msg.total
+			if m.session != nil {
+				m.session.Close()
+			}
 			return m, nil
 		}
 		m.bytes = msg.bytes

@@ -27,7 +27,7 @@ func init() {
 }
 
 func main() {
-	ln, err := lantern.New(lantern.Config{DataDir: "."})
+	ln, err := lantern.New(lantern.Config{})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -62,20 +62,24 @@ func runSend(ctx context.Context, ln *lantern.Lantern, args []string) {
 		log.Fatal("usage: lantern send <path>")
 	}
 
-	peer, err := ln.Share(ctx, args[2])
+	session, peer, err := ln.ShareSession(ctx, args[2])
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer session.Close()
 
 	fmt.Printf("share code: %s\n", peer.Code)
 	fmt.Println("waiting for receiver...")
 
 	for {
 		select {
-		case e := <-ln.Events():
+		case e, ok := <-session.Events():
+			if !ok {
+				return
+			}
 			switch e.Type {
 			case lantern.EventTransferProgress:
-				pct := float64(e.Bytes) / float64(e.Total) * 100
+				pct := progressPercent(e.Bytes, e.Total)
 				fmt.Printf("\rprogress: %.1f%% (%s / %s)", pct, formatBytes(e.Bytes), formatBytes(e.Total))
 			case lantern.EventTransferDone:
 				fmt.Printf("\nsent %s\n", peer.FileName)
@@ -100,19 +104,23 @@ func runReceive(ctx context.Context, ln *lantern.Lantern, args []string) {
 		outputDir = args[3]
 	}
 
-	peer, err := ln.Receive(ctx, args[2], outputDir)
+	session, peer, err := ln.ReceiveSession(ctx, args[2], outputDir)
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer session.Close()
 
 	fmt.Printf("connecting to %s...\n", peer.ID)
 
 	for {
 		select {
-		case e := <-ln.Events():
+		case e, ok := <-session.Events():
+			if !ok {
+				return
+			}
 			switch e.Type {
 			case lantern.EventTransferProgress:
-				pct := float64(e.Bytes) / float64(e.Total) * 100
+				pct := progressPercent(e.Bytes, e.Total)
 				fmt.Printf("\rprogress: %.1f%% (%s / %s)", pct, formatBytes(e.Bytes), formatBytes(e.Total))
 			case lantern.EventTransferDone:
 				fmt.Printf("\nreceived: %s\n", e.FileName)
@@ -131,6 +139,7 @@ func runReceive(ctx context.Context, ln *lantern.Lantern, args []string) {
 func handleSignal(cancel context.CancelFunc) {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
+	defer signal.Stop(sig)
 	<-sig
 	fmt.Println("\ninterrupted")
 	cancel()
@@ -147,4 +156,11 @@ func formatBytes(b int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+func progressPercent(bytes, total int64) float64 {
+	if total <= 0 {
+		return 100
+	}
+	return float64(bytes) / float64(total) * 100
 }
