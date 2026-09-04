@@ -9,6 +9,15 @@ import (
 
 const MaxMetadataSize = 64 * 1024
 
+// TransferRequest is the receiver-to-sender handshake sent before any
+// file bytes flow. It is intentionally small JSON so the sender can
+// dispatch to the right share before switching to framed metadata.
+type TransferRequest struct {
+	Offset    int64  `json:"offset,omitempty"`
+	Challenge []byte `json:"challenge"`
+	Proof     []byte `json:"proof"`
+}
+
 // WriteMetadata writes one length-delimited JSON metadata frame.
 // The frame is deliberately separate from the file stream so readers never
 // need a buffering JSON decoder before consuming file bytes.
@@ -23,10 +32,10 @@ func WriteMetadata(w io.Writer, metadata any) error {
 
 	var header [4]byte
 	binary.BigEndian.PutUint32(header[:], uint32(len(payload)))
-	if err := writeFull(w, header[:]); err != nil {
+	if err := WriteFull(w, header[:]); err != nil {
 		return fmt.Errorf("write metadata length: %w", err)
 	}
-	if err := writeFull(w, payload); err != nil {
+	if err := WriteFull(w, payload); err != nil {
 		return fmt.Errorf("write metadata: %w", err)
 	}
 	return nil
@@ -55,6 +64,11 @@ func ReadMetadata(r io.Reader, dst any) error {
 }
 
 func writeFull(w io.Writer, p []byte) error {
+	return WriteFull(w, p)
+}
+
+// WriteFull writes all of p to w, guarding against short writes.
+func WriteFull(w io.Writer, p []byte) error {
 	for len(p) > 0 {
 		n, err := w.Write(p)
 		if n < 0 || n > len(p) {

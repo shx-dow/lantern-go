@@ -113,3 +113,63 @@ func TestTransferResumesAndVerifiesExistingPrefix(t *testing.T) {
 		t.Fatal("resumed file differs from source")
 	}
 }
+
+func TestTwoSharesOnOneHostDispatchIndependently(t *testing.T) {
+	sourceDir := t.TempDir()
+	outA := t.TempDir()
+	outB := t.TempDir()
+	pathA := filepath.Join(sourceDir, "a.bin")
+	pathB := filepath.Join(sourceDir, "b.bin")
+	wantA := []byte("alpha-payload-12345")
+	wantB := []byte("beta-payload-67890-longer")
+	if err := os.WriteFile(pathA, wantA, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pathB, wantB, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	senderHost, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer senderHost.Close()
+	receiverHost, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer receiverHost.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sender := &Node{Host: senderHost, ctx: ctx}
+	receiver := &Node{Host: receiverHost, ctx: ctx}
+	codeA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	codeB := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	if err := sender.RegisterShareHandler(codeA, pathA, make(chan TransferProgress, 32)); err != nil {
+		t.Fatal(err)
+	}
+	if err := sender.RegisterShareHandler(codeB, pathB, make(chan TransferProgress, 32)); err != nil {
+		t.Fatal(err)
+	}
+
+	pi := peer.AddrInfo{ID: senderHost.ID(), Addrs: senderHost.Addrs()}
+	if err := receiver.receiveFile(ctx, pi, codeA, outA, make(chan TransferProgress, 32)); err != nil {
+		t.Fatal(err)
+	}
+	if err := receiver.receiveFile(ctx, pi, codeB, outB, make(chan TransferProgress, 32)); err != nil {
+		t.Fatal(err)
+	}
+
+	gotA, err := os.ReadFile(filepath.Join(outA, "a.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotB, err := os.ReadFile(filepath.Join(outB, "b.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotA) != string(wantA) || string(gotB) != string(wantB) {
+		t.Fatal("multi-share dispatch returned wrong files")
+	}
+}

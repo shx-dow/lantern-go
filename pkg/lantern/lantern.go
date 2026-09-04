@@ -233,7 +233,10 @@ func (l *Lantern) share(ctx context.Context, path string, session *Session) (*Pe
 	go l.forwardProgress(progress, code)
 
 	advCtx, advCancel := context.WithCancel(ctx)
-	l.node.RegisterShareHandler(code, path, progress, advCancel)
+	if err := l.node.RegisterShareHandler(code, path, progress, advCancel); err != nil {
+		advCancel()
+		return nil, err
+	}
 
 	if err := l.node.AdvertiseLocal(code); err != nil {
 		advCancel()

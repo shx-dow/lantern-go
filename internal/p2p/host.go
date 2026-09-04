@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-kad-dht"
@@ -31,6 +32,10 @@ type Node struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	localDir string
+
+	mu          sync.Mutex
+	shares      map[string]*shareState
+	handlerOnce sync.Once
 }
 
 func NewNode(port int, bootstrapPeers []string, dataDirs ...string) (*Node, error) {

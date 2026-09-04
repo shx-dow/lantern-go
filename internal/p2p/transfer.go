@@ -36,90 +36,139 @@ type TransferProgress struct {
 type shareState struct {
 	code     string
 	filePath string
+	fileName string
+	fileSize int64
+	fileHash string
 	handled  atomic.Bool
 	progress chan TransferProgress
 	done     func()
 }
 
-func (n *Node) RegisterShareHandler(code string, path string, progress chan TransferProgress, done ...func()) {
+func (n *Node) RegisterShareHandler(code string, path string, progress chan TransferProgress, done ...func()) error {
+	if code == "" {
+		return fmt.Errorf("share code must not be empty")
+	}
+	if progress == nil {
+		return fmt.Errorf("progress channel must not be nil")
+	}
 	stop := func() {}
 	if len(done) > 0 && done[0] != nil {
 		stop = done[0]
 	}
-	state := &shareState{code: code, filePath: path, progress: progress, done: stop}
-	state.handled.Store(false)
 
-	n.Host.SetStreamHandler(ProtocolID, func(s network.Stream) {
-		defer s.Close()
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open file: %w", err)
+	}
+	fi, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return fmt.Errorf("stat file: %w", err)
+	}
+	if fi.IsDir() {
+		file.Close()
+		return fmt.Errorf("path is a directory: %s", path)
+	}
+	fullHash, err := hashFile(file)
+	file.Close()
+	if err != nil {
+		return fmt.Errorf("hash file: %w", err)
+	}
 
-		dec := json.NewDecoder(s)
-		var req struct {
-			Offset    int64  `json:"offset,omitempty"`
-			Challenge []byte `json:"challenge"`
-			Proof     []byte `json:"proof"`
-		}
-		if err := dec.Decode(&req); err != nil {
-			return
-		}
-		if req.Offset < 0 {
-			return
-		}
-		if !crypto.VerifyAuthProof(state.code, req.Challenge, req.Offset, req.Proof) {
-			return
-		}
-		if !state.handled.CompareAndSwap(false, true) {
-			return
-		}
-		defer close(state.progress)
-		defer state.done()
-		defer n.ClearLocal(state.code)
+	state := &shareState{
+		code:     code,
+		filePath: path,
+		fileName: filepath.Base(path),
+		fileSize: fi.Size(),
+		fileHash: fmt.Sprintf("%x", fullHash),
+		progress: progress,
+		done:     stop,
+	}
 
-		file, err := os.Open(state.filePath)
-		if err != nil {
-			progress <- TransferProgress{Err: fmt.Errorf("open file: %w", err)}
-			return
-		}
-		defer file.Close()
+	n.mu.Lock()
+	if n.shares == nil {
+		n.shares = make(map[string]*shareState)
+	}
+	n.shares[code] = state
+	n.mu.Unlock()
 
-		fi, err := file.Stat()
-		if err != nil {
-			progress <- TransferProgress{Err: fmt.Errorf("stat file: %w", err)}
-			return
-		}
+	n.handlerOnce.Do(func() {
+		n.Host.SetStreamHandler(ProtocolID, n.serveShare)
+	})
+	return nil
+}
 
-		fullHash, err := hashFile(file)
-		if err != nil {
-			progress <- TransferProgress{Err: fmt.Errorf("hash file: %w", err)}
-			return
-		}
+func (n *Node) serveShare(s network.Stream) {
+	defer s.Close()
 
-		if req.Offset > fi.Size() {
-			progress <- TransferProgress{Err: fmt.Errorf("resume offset %d exceeds file size %d", req.Offset, fi.Size())}
-			return
-		}
-		if _, err := file.Seek(req.Offset, io.SeekStart); err != nil {
-			progress <- TransferProgress{Err: fmt.Errorf("seek: %w", err)}
-			return
-		}
-		startChunk := req.Offset / int64(crypto.ChunkSize)
+	dec := json.NewDecoder(s)
+	var req protocol.TransferRequest
+	if err := dec.Decode(&req); err != nil {
+		return
+	}
+	if req.Offset < 0 {
+		return
+	}
+	if len(req.Challenge) != 32 || len(req.Proof) == 0 {
+		return
+	}
 
-		key, err := crypto.DeriveKey(state.code)
-		if err != nil {
-			progress <- TransferProgress{Err: fmt.Errorf("derive key: %w", err)}
-			return
-		}
+	state := n.matchShare(req)
+	if state == nil {
+		return
+	}
+	if !state.handled.CompareAndSwap(false, true) {
+		return
+	}
+	progress := state.progress
+	defer close(progress)
+	defer state.done()
+	defer n.ClearLocal(state.code)
+	defer n.forgetShare(state.code)
 
-		ew, err := crypto.NewEncryptedWriterAt(s, key, startChunk)
-		if err != nil {
-			progress <- TransferProgress{Err: fmt.Errorf("create encrypt: %w", err)}
-			return
-		}
+	file, err := os.Open(state.filePath)
+	if err != nil {
+		progress <- TransferProgress{Err: fmt.Errorf("open file: %w", err)}
+		return
+	}
+	defer file.Close()
 
-		meta := FileMeta{
-			Name: filepath.Base(state.filePath),
-			Size: fi.Size(),
-			Hash: fmt.Sprintf("%x", fullHash),
-		}
+	fi, err := file.Stat()
+	if err != nil {
+		progress <- TransferProgress{Err: fmt.Errorf("stat file: %w", err)}
+		return
+	}
+	if fi.Size() != state.fileSize {
+		progress <- TransferProgress{Err: fmt.Errorf("file changed during share: was %d bytes, now %d", state.fileSize, fi.Size())}
+		return
+	}
+
+	if req.Offset > fi.Size() {
+		progress <- TransferProgress{Err: fmt.Errorf("resume offset %d exceeds file size %d", req.Offset, fi.Size())}
+		return
+	}
+	if _, err := file.Seek(req.Offset, io.SeekStart); err != nil {
+		progress <- TransferProgress{Err: fmt.Errorf("seek: %w", err)}
+		return
+	}
+
+	key, err := crypto.DeriveKey(state.code)
+	if err != nil {
+		progress <- TransferProgress{Err: fmt.Errorf("derive key: %w", err)}
+		return
+	}
+
+	ew, err := crypto.NewEncryptedWriterAt(s, key, 0)
+	if err != nil {
+		progress <- TransferProgress{Err: fmt.Errorf("create encrypt: %w", err)}
+		return
+	}
+
+	meta := FileMeta{
+		Name: state.fileName,
+		Size: state.fileSize,
+		Hash: state.fileHash,
+	}
 
 		if err := protocol.WriteMetadata(ew, meta); err != nil {
 			progress <- TransferProgress{Err: fmt.Errorf("send meta: %w", err)}
@@ -162,7 +211,23 @@ func (n *Node) RegisterShareHandler(code string, path string, progress chan Tran
 			Total:    meta.Size,
 			Done:     true,
 		}
-	})
+}
+
+func (n *Node) matchShare(req protocol.TransferRequest) *shareState {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for _, state := range n.shares {
+		if crypto.VerifyAuthProof(state.code, req.Challenge, req.Offset, req.Proof) {
+			return state
+		}
+	}
+	return nil
+}
+
+func (n *Node) forgetShare(code string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	delete(n.shares, code)
 }
 
 func (n *Node) RegisterReceive(ctx context.Context, pi peer.AddrInfo, code string, outputDir string, progress chan TransferProgress) {
@@ -205,11 +270,7 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 	if err != nil {
 		return fmt.Errorf("create authentication proof: %w", err)
 	}
-	req := struct {
-		Offset    int64  `json:"offset,omitempty"`
-		Challenge []byte `json:"challenge"`
-		Proof     []byte `json:"proof"`
-	}{Offset: offset, Challenge: challenge, Proof: proof}
+	req := protocol.TransferRequest{Offset: offset, Challenge: challenge, Proof: proof}
 	enc := json.NewEncoder(s)
 	if err := enc.Encode(req); err != nil {
 		return fmt.Errorf("send request: %w", err)
@@ -220,12 +281,7 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 		return fmt.Errorf("derive key: %w", err)
 	}
 
-	var startChunk int64
-	if offset > 0 {
-		startChunk = offset / int64(crypto.ChunkSize)
-	}
-
-	er, err := crypto.NewEncryptedReaderAt(s, key, startChunk)
+	er, err := crypto.NewEncryptedReaderAt(s, key, 0)
 	if err != nil {
 		return fmt.Errorf("create decrypt: %w", err)
 	}
@@ -306,7 +362,7 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 		n, err := er.Read(buf)
 		if n > 0 {
 			h.Write(buf[:n])
-			if werr := writeFull(out, buf[:n]); werr != nil {
+			if werr := protocol.WriteFull(out, buf[:n]); werr != nil {
 				storage.SaveResume(outputDir, storage.ResumeState{Code: code, FileName: meta.Name, FileSize: meta.Size, Offset: received})
 				return fmt.Errorf("write file: %w", werr)
 			}
@@ -354,23 +410,6 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 		Bytes:    received,
 		Total:    meta.Size,
 		Done:     true,
-	}
-	return nil
-}
-
-func writeFull(w io.Writer, p []byte) error {
-	for len(p) > 0 {
-		n, err := w.Write(p)
-		if n < 0 || n > len(p) {
-			return fmt.Errorf("invalid write count %d", n)
-		}
-		p = p[n:]
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
-		}
 	}
 	return nil
 }
