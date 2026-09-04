@@ -320,13 +320,20 @@ func (l *Lantern) Close() error {
 
 func (l *Lantern) emit(e Event) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
+	subs := make([]subscription, 0, len(l.subscribers))
+	for _, sub := range l.subscribers {
+		subs = append(subs, sub)
+	}
+	events := l.events
+	l.mu.Unlock()
+
 	select {
-	case l.events <- e:
+	case events <- e:
 	default:
 	}
-	for _, sub := range l.subscribers {
-		if e.Type == EventTransferDone || e.Type == EventError {
+	terminal := e.Type == EventTransferDone || e.Type == EventError
+	for _, sub := range subs {
+		if terminal {
 			select {
 			case sub.channel <- e:
 			default:
@@ -345,7 +352,7 @@ func (l *Lantern) emit(e Event) {
 			default:
 			}
 		}
-		if (e.Type == EventTransferDone || e.Type == EventError) && sub.terminal != nil {
+		if terminal && sub.terminal != nil {
 			sub.terminal(e)
 		}
 	}
