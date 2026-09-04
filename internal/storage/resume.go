@@ -18,7 +18,10 @@ type ResumeState struct {
 // LoadResume returns a valid resume state. Invalid or stale state is removed
 // and treated as no resumable transfer.
 func LoadResume(outputDir, code string) (ResumeState, bool, error) {
-	path := statePath(outputDir, code)
+	path, err := statePath(outputDir, code)
+	if err != nil {
+		return ResumeState{}, false, err
+	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return ResumeState{}, false, nil
@@ -33,7 +36,12 @@ func LoadResume(outputDir, code string) (ResumeState, bool, error) {
 		return ResumeState{}, false, nil
 	}
 
-	info, err := os.Stat(PartialPath(outputDir, state.Code, state.FileName))
+	partial, err := PartialPath(outputDir, state.Code, state.FileName)
+	if err != nil {
+		_ = os.Remove(path)
+		return ResumeState{}, false, nil
+	}
+	info, err := os.Stat(partial)
 	if errors.Is(err, os.ErrNotExist) || (err == nil && info.Size() < state.Offset) {
 		_ = os.Remove(path)
 		return ResumeState{}, false, nil
@@ -47,7 +55,10 @@ func LoadResume(outputDir, code string) (ResumeState, bool, error) {
 
 // SaveResume atomically replaces the resume state with a private file.
 func SaveResume(outputDir string, state ResumeState) error {
-	if !validCode(state.Code) || !validState(state, state.Code) {
+	if _, err := safeCode(state.Code); err != nil {
+		return err
+	}
+	if !validState(state, state.Code) {
 		return errors.New("invalid resume state")
 	}
 	data, err := json.Marshal(state)
@@ -77,37 +88,49 @@ func SaveResume(outputDir string, state ResumeState) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close resume state: %w", err)
 	}
-	if err := os.Rename(tmpPath, statePath(outputDir, state.Code)); err != nil {
+	dest, err := statePath(outputDir, state.Code)
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, dest); err != nil {
 		return fmt.Errorf("replace resume state: %w", err)
 	}
 	return nil
 }
 
 func ClearResume(outputDir, code string) error {
-	err := os.Remove(statePath(outputDir, code))
+	path, err := statePath(outputDir, code)
+	if err != nil {
+		return err
+	}
+	err = os.Remove(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	return err
 }
 
-func PartialPath(outputDir, code, fileName string) string {
-	return filepath.Join(outputDir, ".lantern-"+safeCode(code)+"-"+filepath.Base(fileName)+".part")
-}
-
-func statePath(outputDir, code string) string {
-	return filepath.Join(outputDir, "."+safeCode(code)+".lantern-state")
-}
-
-func safeCode(code string) string {
-	if code == "" || code == "." || code == ".." || filepath.Base(code) != code {
-		return "invalid-code"
+func PartialPath(outputDir, code, fileName string) (string, error) {
+	safe, err := safeCode(code)
+	if err != nil {
+		return "", err
 	}
-	return code
+	return filepath.Join(outputDir, ".lantern-"+safe+"-"+filepath.Base(fileName)+".part"), nil
 }
 
-func validCode(code string) bool {
-	return safeCode(code) == code
+func statePath(outputDir, code string) (string, error) {
+	safe, err := safeCode(code)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(outputDir, "."+safe+".lantern-state"), nil
+}
+
+func safeCode(code string) (string, error) {
+	if code == "" || code == "." || code == ".." || filepath.Base(code) != code {
+		return "", fmt.Errorf("invalid code %q", code)
+	}
+	return code, nil
 }
 
 func validState(state ResumeState, code string) bool {

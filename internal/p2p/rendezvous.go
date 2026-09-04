@@ -13,12 +13,15 @@ import (
 	"github.com/multiformats/go-multihash"
 )
 
-func (n *Node) peerFilePath(code string) string {
+func (n *Node) peerFilePath(code string) (string, error) {
+	if code == "" || code == "." || code == ".." || filepath.Base(code) != code {
+		return "", fmt.Errorf("invalid code %q", code)
+	}
 	dir := n.localDir
 	if dir == "" {
 		dir = os.TempDir()
 	}
-	return filepath.Join(dir, "lantern-"+code+".peer")
+	return filepath.Join(dir, "lantern-"+code+".peer"), nil
 }
 
 func (n *Node) AdvertiseLocal(code string) error {
@@ -26,11 +29,17 @@ func (n *Node) AdvertiseLocal(code string) error {
 		ID:    n.Host.ID(),
 		Addrs: n.Host.Addrs(),
 	}
+	if info.ID == "" {
+		return fmt.Errorf("local host has no peer ID")
+	}
 	data, err := json.Marshal(info)
 	if err != nil {
 		return err
 	}
-	destination := n.peerFilePath(code)
+	destination, err := n.peerFilePath(code)
+	if err != nil {
+		return err
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(destination), ".lantern-peer-*")
 	if err != nil {
 		return fmt.Errorf("create local advertisement: %w", err)
@@ -60,20 +69,32 @@ func (n *Node) DiscoverLocal(ctx context.Context, code string) (*peer.AddrInfo, 
 		return nil, ctx.Err()
 	default:
 	}
-	data, err := os.ReadFile(n.peerFilePath(code))
+	path, err := n.peerFilePath(code)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	var info peer.AddrInfo
 	if err := json.Unmarshal(data, &info); err != nil {
-		os.Remove(n.peerFilePath(code))
+		os.Remove(path)
 		return nil, err
+	}
+	if info.ID == "" {
+		os.Remove(path)
+		return nil, fmt.Errorf("local advertisement has no peer ID")
 	}
 	return &info, nil
 }
 
 func (n *Node) ClearLocal(code string) {
-	os.Remove(n.peerFilePath(code))
+	path, err := n.peerFilePath(code)
+	if err != nil {
+		return
+	}
+	os.Remove(path)
 }
 
 func (n *Node) Advertise(ctx context.Context, code string) error {
@@ -108,7 +129,7 @@ func (n *Node) Discover(ctx context.Context, code string) (peer.AddrInfo, error)
 
 	for {
 		if pi, err := n.DiscoverLocal(ctx, code); err == nil {
-			go n.ClearLocal(code)
+			n.ClearLocal(code)
 			return *pi, nil
 		}
 

@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/shx-dow/lantern-go/internal/format"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
 
@@ -314,13 +315,13 @@ func (m receiveModel) View() string {
 		if m.total > 0 {
 			pct = float64(m.bytes) / float64(m.total)
 		}
-		return titleStyle.Render(fmt.Sprintf("receiving: %s", m.fileName)) + "\n\n" + m.progress.ViewAs(pct) + "\n" + infoStyle.Render(fmt.Sprintf("%s / %s", formatBytes(m.bytes), formatBytes(m.total))) + "\n" + infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" + helpStyle.Render("esc: cancel")
+		return titleStyle.Render(fmt.Sprintf("receiving: %s", m.fileName)) + "\n\n" + m.progress.ViewAs(pct) + "\n" + infoStyle.Render(fmt.Sprintf("%s / %s", format.Bytes(m.bytes), format.Bytes(m.total))) + "\n" + infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" + helpStyle.Render("esc: cancel")
 	case recvDone:
 		elapsed := time.Duration(0)
 		if !m.startedAt.IsZero() && !m.finishedAt.IsZero() {
 			elapsed = m.finishedAt.Sub(m.startedAt).Truncate(time.Second)
 		}
-		return titleStyle.Render("received!") + "\n\n" + infoStyle.Render(fmt.Sprintf("file: %s", m.fileName)) + "\n" + infoStyle.Render(fmt.Sprintf("size: %s", formatBytes(m.total))) + "\n" + infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" + helpStyle.Render("enter: close • esc: quit")
+		return titleStyle.Render("received!") + "\n\n" + infoStyle.Render(fmt.Sprintf("file: %s", m.fileName)) + "\n" + infoStyle.Render(fmt.Sprintf("size: %s", format.Bytes(m.total))) + "\n" + infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" + helpStyle.Render("enter: close • esc: quit")
 	case recvError:
 		return titleStyle.Render("error") + "\n\n" + errorStyle.Render(m.err.Error()) + "\n\n" + helpStyle.Render("enter: close • esc: quit")
 	}

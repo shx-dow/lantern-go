@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/shx-dow/lantern-go/cmd/lantern/tui"
+	"github.com/shx-dow/lantern-go/internal/format"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
 
@@ -80,7 +81,7 @@ func runSend(ctx context.Context, ln *lantern.Lantern, args []string) {
 			switch e.Type {
 			case lantern.EventTransferProgress:
 				pct := progressPercent(e.Bytes, e.Total)
-				fmt.Printf("\rprogress: %.1f%% (%s / %s)", pct, formatBytes(e.Bytes), formatBytes(e.Total))
+				fmt.Printf("\rprogress: %.1f%% (%s / %s)", pct, format.Bytes(e.Bytes), format.Bytes(e.Total))
 			case lantern.EventTransferDone:
 				fmt.Printf("\nsent %s\n", peer.FileName)
 				return
@@ -121,7 +122,7 @@ func runReceive(ctx context.Context, ln *lantern.Lantern, args []string) {
 			switch e.Type {
 			case lantern.EventTransferProgress:
 				pct := progressPercent(e.Bytes, e.Total)
-				fmt.Printf("\rprogress: %.1f%% (%s / %s)", pct, formatBytes(e.Bytes), formatBytes(e.Total))
+				fmt.Printf("\rprogress: %.1f%% (%s / %s)", pct, format.Bytes(e.Bytes), format.Bytes(e.Total))
 			case lantern.EventTransferDone:
 				fmt.Printf("\nreceived: %s\n", e.FileName)
 				return
@@ -143,19 +144,6 @@ func handleSignal(cancel context.CancelFunc) {
 	<-sig
 	fmt.Println("\ninterrupted")
 	cancel()
-}
-
-func formatBytes(b int64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 func progressPercent(bytes, total int64) float64 {

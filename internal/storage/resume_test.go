@@ -8,7 +8,11 @@ import (
 func TestResumeStateRoundTripIsPrivate(t *testing.T) {
 	dir := t.TempDir()
 	name := "photo.bin"
-	if err := os.WriteFile(PartialPath(dir, "code", name), make([]byte, 10), 0600); err != nil {
+	partial, err := PartialPath(dir, "code", name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(partial, make([]byte, 10), 0600); err != nil {
 		t.Fatal(err)
 	}
 	want := ResumeState{Code: "code", FileName: name, FileSize: 20, Offset: 10}
@@ -24,7 +28,11 @@ func TestResumeStateRoundTripIsPrivate(t *testing.T) {
 		t.Fatalf("got (%+v, %v), want (%+v, true)", got, ok, want)
 	}
 
-	info, err := os.Stat(statePath(dir, "code"))
+	state, err := statePath(dir, "code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +43,10 @@ func TestResumeStateRoundTripIsPrivate(t *testing.T) {
 
 func TestLoadResumeDiscardsInvalidState(t *testing.T) {
 	dir := t.TempDir()
-	path := statePath(dir, "code")
+	path, err := statePath(dir, "code")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(`{"code":"code","file_name":"../secret","file_size":10,"offset":2}`), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -63,5 +74,14 @@ func TestSaveResumeRejectsPathLikeCode(t *testing.T) {
 	err := SaveResume(t.TempDir(), ResumeState{Code: "../escape", FileName: "file", FileSize: 1, Offset: 0})
 	if err == nil {
 		t.Fatal("path-like code was accepted")
+	}
+}
+
+func TestPartialPathRejectsPathLikeCode(t *testing.T) {
+	if _, err := PartialPath(t.TempDir(), "../escape", "file"); err == nil {
+		t.Fatal("path-like code was accepted")
+	}
+	if _, err := PartialPath(t.TempDir(), "", "file"); err == nil {
+		t.Fatal("empty code was accepted")
 	}
 }

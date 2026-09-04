@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/shx-dow/lantern-go/internal/format"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
 
@@ -66,7 +67,7 @@ func (i dirItem) detailLines() []string {
 	return []string{
 		"type: file",
 		fmt.Sprintf("name: %s", i.name),
-		fmt.Sprintf("size: %s", formatBytes(i.size)),
+		fmt.Sprintf("size: %s", format.Bytes(i.size)),
 		fmt.Sprintf("modified: %s", i.mod.Format("2006-01-02 15:04")),
 		fmt.Sprintf("path: %s", i.path),
 	}
@@ -263,7 +264,7 @@ func (m sendModel) renderPicker() string {
 			if it.isDir {
 				selectedMeta = "directory"
 			} else {
-				selectedMeta = formatBytes(it.size)
+				selectedMeta = format.Bytes(it.size)
 			}
 			selectedLine = railStyle.Render("▌") + " " + headingStyle.Render(selectedName)
 		}
@@ -629,13 +630,13 @@ func (m sendModel) View() string {
 		if m.total > 0 {
 			pct = float64(m.bytes) / float64(m.total)
 		}
-		return titleStyle.Render(fmt.Sprintf("sending: %s", m.fileName)) + "\n\n" + m.progress.ViewAs(pct) + "\n" + infoStyle.Render(fmt.Sprintf("%s / %s", formatBytes(m.bytes), formatBytes(m.total))) + "\n" + infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" + helpStyle.Render("esc: cancel")
+		return titleStyle.Render(fmt.Sprintf("sending: %s", m.fileName)) + "\n\n" + m.progress.ViewAs(pct) + "\n" + infoStyle.Render(fmt.Sprintf("%s / %s", format.Bytes(m.bytes), format.Bytes(m.total))) + "\n" + infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" + helpStyle.Render("esc: cancel")
 	case sendDone:
 		elapsed := time.Duration(0)
 		if !m.startedAt.IsZero() && !m.finishedAt.IsZero() {
 			elapsed = m.finishedAt.Sub(m.startedAt).Truncate(time.Second)
 		}
-		return titleStyle.Render("sent!") + "\n\n" + infoStyle.Render(fmt.Sprintf("file: %s", m.fileName)) + "\n" + infoStyle.Render(fmt.Sprintf("size: %s", formatBytes(m.total))) + "\n" + infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" + helpStyle.Render("enter: close • esc: quit")
+		return titleStyle.Render("sent!") + "\n\n" + infoStyle.Render(fmt.Sprintf("file: %s", m.fileName)) + "\n" + infoStyle.Render(fmt.Sprintf("size: %s", format.Bytes(m.total))) + "\n" + infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" + helpStyle.Render("enter: close • esc: quit")
 	case sendError:
 		return titleStyle.Render("error") + "\n\n" + errorStyle.Render(m.err.Error()) + "\n\n" + helpStyle.Render("enter: close • esc: quit")
 	}

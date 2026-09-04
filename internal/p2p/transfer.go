@@ -258,7 +258,10 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 	var outPath string
 	var offset int64
 	if hasResume {
-		outPath = storage.PartialPath(outputDir, code, resume.FileName)
+		outPath, err = storage.PartialPath(outputDir, code, resume.FileName)
+		if err != nil {
+			return fmt.Errorf("resume path: %w", err)
+		}
 		offset = resume.Offset
 	}
 
@@ -292,7 +295,10 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 	}
 
 	if outPath == "" {
-		outPath = storage.PartialPath(outputDir, code, meta.Name)
+		outPath, err = storage.PartialPath(outputDir, code, meta.Name)
+		if err != nil {
+			return fmt.Errorf("output path: %w", err)
+		}
 	} else if filepath.Base(meta.Name) != filepath.Base(resume.FileName) {
 		return fmt.Errorf("resume file name changed from %s to %s", resume.FileName, meta.Name)
 	}

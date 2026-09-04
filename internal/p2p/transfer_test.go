@@ -75,7 +75,11 @@ func TestTransferResumesAndVerifiesExistingPrefix(t *testing.T) {
 	}
 	code := "abcdef0123456789abcdef0123456789"
 	prefix := crypto.ChunkSize + 31
-	if err := os.WriteFile(storage.PartialPath(outputDir, code, name), want[:prefix], 0600); err != nil {
+	partial, err := storage.PartialPath(outputDir, code, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(partial, want[:prefix], 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := storage.SaveResume(outputDir, storage.ResumeState{
