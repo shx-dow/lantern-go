@@ -177,7 +177,7 @@ func (l *Lantern) newSession(ctx context.Context, id string) *Session {
 		done:   make(chan struct{}),
 	}
 	s.events, s.unsubscribe = l.subscribe(128, func(e Event) {
-		if currentID := s.ID(); currentID == "" || e.TransferID != currentID {
+		if e.TransferID != s.ID() {
 			return
 		}
 		if e.Type == EventTransferDone {
@@ -197,12 +197,20 @@ func (l *Lantern) newSession(ctx context.Context, id string) *Session {
 }
 
 func (l *Lantern) Share(ctx context.Context, path string) (*Peer, error) {
-	return l.share(ctx, path, nil)
+	code, err := p2p.GenerateCode()
+	if err != nil {
+		return nil, fmt.Errorf("generate code: %w", err)
+	}
+	return l.shareWithCode(ctx, path, code)
 }
 
 func (l *Lantern) ShareSession(ctx context.Context, path string) (*Session, *Peer, error) {
-	session := l.newSession(ctx, "")
-	peer, err := l.share(session.ctx, path, session)
+	code, err := p2p.GenerateCode()
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate code: %w", err)
+	}
+	session := l.newSession(ctx, code)
+	peer, err := l.shareWithCode(session.ctx, path, code)
 	if err != nil {
 		session.Close()
 		return nil, nil, err
@@ -210,23 +218,16 @@ func (l *Lantern) ShareSession(ctx context.Context, path string) (*Session, *Pee
 	return session, peer, nil
 }
 
-func (l *Lantern) share(ctx context.Context, path string, session *Session) (*Peer, error) {
+func (l *Lantern) shareWithCode(ctx context.Context, path string, code string) (*Peer, error) {
+	if code == "" {
+		return nil, fmt.Errorf("share code must not be empty")
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("stat path: %w", err)
 	}
 	if info.IsDir() {
 		return nil, fmt.Errorf("path is a directory: %s", path)
-	}
-
-	code, err := p2p.GenerateCode()
-	if err != nil {
-		return nil, fmt.Errorf("generate code: %w", err)
-	}
-	if session != nil {
-		session.mu.Lock()
-		session.id = code
-		session.mu.Unlock()
 	}
 
 	progress := make(chan p2p.TransferProgress)
@@ -261,12 +262,12 @@ func (l *Lantern) share(ctx context.Context, path string, session *Session) (*Pe
 }
 
 func (l *Lantern) Receive(ctx context.Context, code string, outputDir string) (*Peer, error) {
-	return l.receive(ctx, code, outputDir, nil)
+	return l.receive(ctx, code, outputDir)
 }
 
 func (l *Lantern) ReceiveSession(ctx context.Context, code string, outputDir string) (*Session, *Peer, error) {
 	session := l.newSession(ctx, code)
-	peer, err := l.receive(session.ctx, code, outputDir, session)
+	peer, err := l.receive(session.ctx, code, outputDir)
 	if err != nil {
 		session.Close()
 		return nil, nil, err
@@ -274,7 +275,7 @@ func (l *Lantern) ReceiveSession(ctx context.Context, code string, outputDir str
 	return session, peer, nil
 }
 
-func (l *Lantern) receive(ctx context.Context, code string, outputDir string, _ *Session) (*Peer, error) {
+func (l *Lantern) receive(ctx context.Context, code string, outputDir string) (*Peer, error) {
 	pi, err := l.node.Discover(ctx, code)
 	if err != nil {
 		return nil, fmt.Errorf("discover: %w", err)

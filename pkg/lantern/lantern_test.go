@@ -38,8 +38,19 @@ func TestSubscribeAfterCloseIsClosed(t *testing.T) {
 	}
 }
 
-func TestSessionTracksOnlyItsTransfer(t *testing.T) {
+func TestNewSessionHasIDImmediately(t *testing.T) {
 	l := &Lantern{
+		events:      make(chan Event, 1),
+		subscribers: make(map[uint64]subscription),
+	}
+	s := l.newSession(context.Background(), "code-1")
+	defer s.Close()
+	if s.ID() != "code-1" {
+		t.Fatalf("session ID is %q, want code-1", s.ID())
+	}
+}
+
+func TestSessionTracksOnlyItsTransfer(t *testing.T) {	l := &Lantern{
 		events:      make(chan Event, 1),
 		subscribers: make(map[uint64]subscription),
 	}
