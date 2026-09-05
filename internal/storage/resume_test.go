@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/json"
 	"os"
 	"testing"
 )
@@ -28,38 +29,93 @@ func TestResumeStateRoundTripIsPrivate(t *testing.T) {
 		t.Fatalf("got (%+v, %v), want (%+v, true)", got, ok, want)
 	}
 
-	state, err := statePath(dir, "code")
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(state)
-	if err != nil {
-		t.Fatal(err)
+	var stateFile os.FileInfo
+	for _, e := range entries {
+		if e.Name() == ".code.lantern-state" {
+			stateFile, err = e.Info()
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
-	if info.Mode().Perm() != 0600 {
-		t.Fatalf("resume state permissions are %o, want 600", info.Mode().Perm())
+	if stateFile == nil {
+		t.Fatal("resume state file was not created")
+	}
+	if stateFile.Mode().Perm() != 0600 {
+		t.Fatalf("resume state permissions are %o, want 600", stateFile.Mode().Perm())
 	}
 }
 
 func TestLoadResumeDiscardsInvalidState(t *testing.T) {
+	cases := map[string]ResumeState{
+		"traversal filename": {Code: "code", FileName: "../secret", FileSize: 10, Offset: 2},
+		"dot filename":       {Code: "code", FileName: ".", FileSize: 10, Offset: 2},
+		"empty filename":     {Code: "code", FileName: "", FileSize: 10, Offset: 2},
+		"offset past size":   {Code: "code", FileName: "f", FileSize: 10, Offset: 11},
+		"negative offset":    {Code: "code", FileName: "f", FileSize: 10, Offset: -1},
+		"negative size":      {Code: "code", FileName: "f", FileSize: -1, Offset: 0},
+		"code mismatch":      {Code: "other", FileName: "f", FileSize: 10, Offset: 2},
+	}
+	for name, state := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path, err := statePath(dir, "code")
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, ok, err := LoadResume(dir, "code"); err != nil || ok {
+				t.Fatalf("invalid state accepted (ok=%v, err=%v)", ok, err)
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("invalid state still exists: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadResumeDiscardsCorruptState(t *testing.T) {
 	dir := t.TempDir()
 	path, err := statePath(dir, "code")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(`{"code":"code","file_name":"../secret","file_size":10,"offset":2}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{not json`), 0600); err != nil {
 		t.Fatal(err)
 	}
+	if _, ok, err := LoadResume(dir, "code"); err != nil || ok {
+		t.Fatalf("corrupt state accepted (ok=%v, err=%v)", ok, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("corrupt state still exists: %v", err)
+	}
+}
 
-	_, ok, err := LoadResume(dir, "code")
+func TestLoadResumeTreatsMissingPartialAsFresh(t *testing.T) {
+	dir := t.TempDir()
+	// Valid state but the .part file was deleted: resume must be refused
+	// and the stale state removed rather than failing the transfer.
+	if err := SaveResume(dir, ResumeState{Code: "code", FileName: "f", FileSize: 10, Offset: 5}); err != nil {
+		t.Fatal(err)
+	}
+	partial, err := PartialPath(dir, "code", "f")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok {
-		t.Fatal("invalid state was accepted")
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("invalid state still exists: %v", err)
+	_ = os.Remove(partial)
+	if _, ok, err := LoadResume(dir, "code"); err != nil || ok {
+		t.Fatalf("stale state accepted (ok=%v, err=%v)", ok, err)
 	}
 }
 

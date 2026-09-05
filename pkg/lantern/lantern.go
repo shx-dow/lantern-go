@@ -9,12 +9,16 @@ import (
 	"github.com/shx-dow/lantern-go/internal/p2p"
 )
 
+// Config selects the listen port, the directory for local advertisements,
+// and explicit bootstrap peers (defaults to the public libp2p bootstraps).
 type Config struct {
 	Port      int
 	DataDir   string
 	Bootstrap []string
 }
 
+// EventType classifies a Lantern event; progress events may be dropped
+// under backpressure but terminal events (done/error) are always delivered.
 type EventType int
 
 const (
@@ -25,6 +29,8 @@ const (
 	EventError
 )
 
+// TransferState is the lifecycle of a Session; it moves forward only,
+// ending in done, failed, or canceled.
 type TransferState int
 
 const (
@@ -35,6 +41,8 @@ const (
 	TransferCanceled
 )
 
+// Event is a transfer lifecycle notification. TransferID correlates it
+// with the Session that produced it; Err is set only on EventError.
 type Event struct {
 	TransferID string
 	Type       EventType
@@ -46,6 +54,8 @@ type Event struct {
 	Err        error
 }
 
+// Peer describes the other side of a transfer: its peer ID, the share
+// code, and (for shares) the advertised file.
 type Peer struct {
 	ID       string
 	Code     string
@@ -53,6 +63,8 @@ type Peer struct {
 	FileSize int64
 }
 
+// Lantern is the high-level transfer API. Use ShareSession/ReceiveSession
+// for transfers; the zero value is not usable, construct via New.
 type Lantern struct {
 	node           *p2p.Node
 	events         chan Event
@@ -64,11 +76,21 @@ type Lantern struct {
 	closed         bool
 }
 
+// Event buffer sizes: broadcasts tolerate slow consumers by dropping
+// progress events, while per-session buffers are generous enough that a
+// terminal event is never lost behind progress backlog.
+const (
+	broadcastBufferSize = 64
+	sessionBufferSize   = 128
+)
+
 type subscription struct {
 	channel  chan Event
 	terminal func(Event)
 }
 
+// Session tracks one transfer: its events, terminal state, and
+// cancellation. Close is idempotent; the first terminal event wins.
 type Session struct {
 	mu          sync.RWMutex
 	id          string
@@ -79,27 +101,33 @@ type Session struct {
 	done        chan struct{}
 	state       TransferState
 	finishOnce  sync.Once
-	doneOnce    sync.Once
 }
 
+// ID returns the share code this session tracks. It is fixed at creation.
 func (s *Session) ID() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.id
 }
 
+// Events streams this session's events; the channel closes when the
+// session finishes or is closed.
 func (s *Session) Events() <-chan Event { return s.events }
 
+// Done closes when the session reaches a terminal state.
 func (s *Session) Done() <-chan struct{} { return s.done }
 
+// State reports the session's current lifecycle state.
 func (s *Session) State() TransferState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.state
 }
 
+// Cancel is shorthand for Close.
 func (s *Session) Cancel() { s.Close() }
 
+// Close cancels the transfer and releases the session. It is idempotent.
 func (s *Session) Close() {
 	s.finish(TransferCanceled)
 }
@@ -112,11 +140,13 @@ func (s *Session) finish(state TransferState) {
 			s.state = state
 		}
 		s.mu.Unlock()
-		s.doneOnce.Do(func() { close(s.done) })
+		close(s.done)
 		go s.unsubscribe()
 	})
 }
 
+// New starts the p2p node and returns a Lantern bound to it. An empty
+// DataDir falls back to the OS temp dir.
 func New(cfg Config) (*Lantern, error) {
 	if cfg.DataDir == "" {
 		cfg.DataDir = os.TempDir()
@@ -129,16 +159,20 @@ func New(cfg Config) (*Lantern, error) {
 
 	l := &Lantern{
 		node:        node,
-		events:      make(chan Event, 64),
+		events:      make(chan Event, broadcastBufferSize),
 		subscribers: make(map[uint64]subscription),
 	}
 	return l, nil
 }
 
+// Events exposes the global broadcast channel. Prefer Session.Events for
+// per-transfer handling; progress events here may be dropped.
 func (l *Lantern) Events() <-chan Event {
 	return l.events
 }
 
+// Subscribe adds a broadcast listener with the given buffer size; the
+// returned function unsubscribes and closes the channel.
 func (l *Lantern) Subscribe(buffer int) (<-chan Event, func()) {
 	return l.subscribe(buffer, nil)
 }
@@ -173,10 +207,10 @@ func (l *Lantern) newSession(ctx context.Context, id string) *Session {
 		id:     id,
 		ctx:    sessionCtx,
 		cancel: cancel,
-		state:  TransferPending,
+		state:  TransferRunning,
 		done:   make(chan struct{}),
 	}
-	s.events, s.unsubscribe = l.subscribe(128, func(e Event) {
+	s.events, s.unsubscribe = l.subscribe(sessionBufferSize, func(e Event) {
 		if e.TransferID != s.ID() {
 			return
 		}
@@ -189,21 +223,13 @@ func (l *Lantern) newSession(ctx context.Context, id string) *Session {
 	s.mu.Lock()
 	s.state = TransferRunning
 	s.mu.Unlock()
-	go func() {
-		<-sessionCtx.Done()
-		s.finish(TransferCanceled)
-	}()
+	context.AfterFunc(sessionCtx, func() { s.finish(TransferCanceled) })
 	return s
 }
 
-func (l *Lantern) Share(ctx context.Context, path string) (*Peer, error) {
-	code, err := p2p.GenerateCode()
-	if err != nil {
-		return nil, fmt.Errorf("generate code: %w", err)
-	}
-	return l.shareWithCode(ctx, path, code)
-}
-
+// ShareSession advertises path under a fresh code and returns a session
+// tracking the transfer. The session's context drives advertisement and
+// the transfer; closing it stops both.
 func (l *Lantern) ShareSession(ctx context.Context, path string) (*Session, *Peer, error) {
 	code, err := p2p.GenerateCode()
 	if err != nil {
@@ -230,8 +256,7 @@ func (l *Lantern) shareWithCode(ctx context.Context, path string, code string) (
 		return nil, fmt.Errorf("path is a directory: %s", path)
 	}
 
-	progress := make(chan p2p.TransferProgress)
-	go l.forwardProgress(progress, code)
+	progress := make(chan p2p.TransferProgress, broadcastBufferSize)
 
 	advCtx, advCancel := context.WithCancel(ctx)
 	if err := l.node.RegisterShareHandler(code, path, progress, advCancel); err != nil {
@@ -243,6 +268,8 @@ func (l *Lantern) shareWithCode(ctx context.Context, path string, code string) (
 		advCancel()
 		return nil, fmt.Errorf("local advertise: %w", err)
 	}
+
+	go l.forwardProgress(advCtx, progress, code)
 
 	go func() {
 		if err := l.node.Advertise(advCtx, code); err != nil && ctx.Err() == nil {
@@ -261,10 +288,9 @@ func (l *Lantern) shareWithCode(ctx context.Context, path string, code string) (
 	}, nil
 }
 
-func (l *Lantern) Receive(ctx context.Context, code string, outputDir string) (*Peer, error) {
-	return l.receive(ctx, code, outputDir)
-}
-
+// ReceiveSession discovers the peer behind code and pulls the file into
+// outputDir, resuming any partial download. See ShareSession for the
+// session contract.
 func (l *Lantern) ReceiveSession(ctx context.Context, code string, outputDir string) (*Session, *Peer, error) {
 	session := l.newSession(ctx, code)
 	peer, err := l.receive(session.ctx, code, outputDir)
@@ -283,8 +309,8 @@ func (l *Lantern) receive(ctx context.Context, code string, outputDir string) (*
 
 	l.emit(Event{TransferID: code, Type: EventPeerConnected, PeerID: pi.ID.String()})
 
-	progress := make(chan p2p.TransferProgress)
-	go l.forwardProgress(progress, code)
+	progress := make(chan p2p.TransferProgress, broadcastBufferSize)
+	go l.forwardProgress(ctx, progress, code)
 
 	l.node.RegisterReceive(ctx, pi, code, outputDir, progress)
 
@@ -294,20 +320,30 @@ func (l *Lantern) receive(ctx context.Context, code string, outputDir string) (*
 	}, nil
 }
 
-func (l *Lantern) forwardProgress(progress <-chan p2p.TransferProgress, transferID string) {
-	for p := range progress {
-		if p.Err != nil {
-			l.emit(Event{TransferID: transferID, Type: EventError, Err: p.Err})
-			continue
-		}
-		if p.Done {
-			l.emit(Event{TransferID: transferID, Type: EventTransferDone, FileName: p.FileName})
-		} else {
-			l.emit(Event{TransferID: transferID, Type: EventTransferProgress, FileName: p.FileName, Bytes: p.Bytes, Total: p.Total})
+func (l *Lantern) forwardProgress(ctx context.Context, progress <-chan p2p.TransferProgress, transferID string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case p, ok := <-progress:
+			if !ok {
+				return
+			}
+			if p.Err != nil {
+				l.emit(Event{TransferID: transferID, Type: EventError, Err: p.Err})
+				continue
+			}
+			if p.Done {
+				l.emit(Event{TransferID: transferID, Type: EventTransferDone, FileName: p.FileName})
+			} else {
+				l.emit(Event{TransferID: transferID, Type: EventTransferProgress, FileName: p.FileName, Bytes: p.Bytes, Total: p.Total})
+			}
 		}
 	}
 }
 
+// Close shuts down the node and all subscriptions. It is idempotent and
+// reports the first shutdown error.
 func (l *Lantern) Close() error {
 	l.closeOnce.Do(func() {
 		l.closeErr = l.node.Close()

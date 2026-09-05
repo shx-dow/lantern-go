@@ -9,10 +9,6 @@ var (
 	highlight = lipgloss.AdaptiveColor{Light: "#874BFD", Dark: "#7B56DB"}
 	special   = lipgloss.AdaptiveColor{Light: "#43BF6D", Dark: "#73F59F"}
 
-	appStyle = lipgloss.NewStyle().
-			Padding(0, 0).
-			Align(lipgloss.Top)
-
 	titleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FFF")).
 			Background(highlight).
@@ -43,9 +39,6 @@ var (
 			Foreground(lipgloss.AdaptiveColor{Light: "#999", Dark: "#666"}).
 			Italic(true)
 
-	progressStyle = lipgloss.NewStyle().
-			Width(0)
-
 	panelStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(subtle).
@@ -53,12 +46,6 @@ var (
 
 	headingStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FFF")).
-			Bold(true)
-
-	badgeStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#000")).
-			Background(special).
-			Padding(0, 1).
 			Bold(true)
 
 	railStyle = lipgloss.NewStyle().

@@ -1,10 +1,15 @@
 package tui
 
 import (
+	"context"
+	"fmt"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/shx-dow/lantern-go/internal/format"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
 
@@ -19,16 +24,69 @@ type transferProgressMsg struct {
 	done     bool
 }
 
-type shareResult struct {
+type sessionResult struct {
 	peer    *lantern.Peer
 	session *lantern.Session
 	err     error
 }
 
-type receiveResult struct {
-	peer    *lantern.Peer
-	session *lantern.Session
-	err     error
+// waitForSessionEvents blocks until the next transfer event arrives and
+// translates it into a Bubble Tea message. Both send and receive views
+// share it so the event mapping stays identical.
+func waitForSessionEvents(events <-chan lantern.Event, ctx context.Context) tea.Cmd {
+	return func() tea.Msg {
+		for {
+			select {
+			case e, ok := <-events:
+				if !ok {
+					return errMsg{fmt.Errorf("event stream closed")}
+				}
+				switch e.Type {
+				case lantern.EventTransferProgress:
+					return transferProgressMsg{fileName: e.FileName, bytes: e.Bytes, total: e.Total}
+				case lantern.EventTransferDone:
+					return transferProgressMsg{fileName: e.FileName, done: true}
+				case lantern.EventError:
+					return errMsg{e.Err}
+				}
+			case <-ctx.Done():
+				return errMsg{ctx.Err()}
+			}
+		}
+	}
+}
+
+// liveElapsed reports time since a transfer started, or zero.
+func liveElapsed(startedAt time.Time) time.Duration {
+	if startedAt.IsZero() {
+		return 0
+	}
+	return time.Since(startedAt).Truncate(time.Second)
+}
+
+// doneElapsed reports a finished transfer's duration, or zero.
+func doneElapsed(startedAt, finishedAt time.Time) time.Duration {
+	if startedAt.IsZero() || finishedAt.IsZero() {
+		return 0
+	}
+	return finishedAt.Sub(startedAt).Truncate(time.Second)
+}
+
+// liveTransferView renders an in-progress transfer; action is "sending" or
+// "receiving".
+func liveTransferView(action, fileName string, bytes, total int64, elapsed time.Duration, bar progress.Model) string {
+	return titleStyle.Render(fmt.Sprintf("%s: %s", action, fileName)) + "\n\n" + bar.ViewAs(format.Ratio(bytes, total)) + "\n" + infoStyle.Render(fmt.Sprintf("%s / %s", format.Bytes(bytes), format.Bytes(total))) + "\n" + infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" + helpStyle.Render("esc: cancel")
+}
+
+// doneTransferView renders a completed transfer; title is "sent!" or
+// "received!".
+func doneTransferView(title, fileName string, total int64, elapsed time.Duration) string {
+	return titleStyle.Render(title) + "\n\n" + infoStyle.Render(fmt.Sprintf("file: %s", fileName)) + "\n" + infoStyle.Render(fmt.Sprintf("size: %s", format.Bytes(total))) + "\n" + infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" + helpStyle.Render("enter: close • esc: quit")
+}
+
+// errorTransferView renders a failed transfer.
+func errorTransferView(err error) string {
+	return titleStyle.Render("error") + "\n\n" + errorStyle.Render(err.Error()) + "\n\n" + helpStyle.Render("enter: close • esc: quit")
 }
 
 func contentWidth(w int) int {
@@ -36,13 +94,6 @@ func contentWidth(w int) int {
 		return 80
 	}
 	return w
-}
-
-func contentHeight(h int) int {
-	if h <= 0 {
-		return 20
-	}
-	return h
 }
 
 func screenCanvas(w, h int, body string) string {

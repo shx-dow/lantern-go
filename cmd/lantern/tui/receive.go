@@ -2,16 +2,13 @@ package tui
 
 import (
 	"context"
-	"fmt"
 	"time"
 
-	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/shx-dow/lantern-go/internal/format"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
 
@@ -31,24 +28,20 @@ type receiveModel struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	input      textinput.Model
-	peer       *lantern.Peer
 	session    *lantern.Session
 	progress   progress.Model
 	spinner    spinner.Model
-	help       help.Model
 	keys       receiveKeyMap
 	bytes      int64
 	total      int64
 	fileName   string
 	err        error
 	outputDir  string
-	receiveCh  chan receiveResult
+	receiveCh  chan sessionResult
 	events     <-chan lantern.Event
 	startedAt  time.Time
 	finishedAt time.Time
 	showHelp   bool
-	width      int
-	height     int
 }
 
 type receiveKeyMap struct {
@@ -58,17 +51,6 @@ type receiveKeyMap struct {
 	Quit    key.Binding
 	Help    key.Binding
 	Refresh key.Binding
-}
-
-func (k receiveKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Submit, k.Cancel, k.Help}
-}
-
-func (k receiveKeyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{
-		{k.Submit, k.Cancel, k.Help, k.Refresh},
-		{k.Dismiss, k.Quit},
-	}
 }
 
 func defaultReceiveKeyMap() receiveKeyMap {
@@ -99,16 +81,13 @@ func newReceiveModel(ln *lantern.Lantern, outputDir string) receiveModel {
 		input:     ti,
 		progress:  progress.New(progress.WithDefaultGradient(), progress.WithWidth(50)),
 		spinner:   spinner.New(spinner.WithSpinner(spinner.Dot)),
-		help:      help.New(),
 		keys:      defaultReceiveKeyMap(),
 		outputDir: outputDir,
-		receiveCh: make(chan receiveResult, 1),
+		receiveCh: make(chan sessionResult, 1),
 	}
 }
 
-func (m *receiveModel) setSize(w, h int) {
-	m.width = w
-	m.height = h
+func (m *receiveModel) setSize(w, _ int) {
 	if w > 0 {
 		m.input.Width = contentWidth(w)
 	}
@@ -154,8 +133,11 @@ func (m receiveModel) updateInputCode(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state = recvDiscovering
 				m.spinner = spinner.New(spinner.WithSpinner(spinner.Dot))
 				go func() {
-					s, peer, err := m.lantern.ReceiveSession(m.ctx, code, m.outputDir)
-					m.receiveCh <- receiveResult{peer: peer, session: s, err: err}
+					s, _, err := m.lantern.ReceiveSession(m.ctx, code, m.outputDir)
+					select {
+					case m.receiveCh <- sessionResult{session: s, err: err}:
+					case <-m.ctx.Done():
+					}
 				}()
 				return m, spinner.Tick
 			}
@@ -175,14 +157,13 @@ func (m receiveModel) updateDiscovering(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = r.err
 			return m, nil
 		}
-		m.peer = r.peer
 		m.session = r.session
 		if m.session != nil {
 			m.events = m.session.Events()
 		}
 		m.state = recvTransferring
 		m.startedAt = time.Now()
-		return m, m.waitForReceiveEvents()
+		return m, waitForSessionEvents(m.events, m.ctx)
 	default:
 	}
 
@@ -205,29 +186,6 @@ func (m receiveModel) updateDiscovering(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
-}
-
-func (m receiveModel) waitForReceiveEvents() tea.Cmd {
-	return func() tea.Msg {
-		for {
-			select {
-			case e, ok := <-m.events:
-				if !ok {
-					return errMsg{fmt.Errorf("event stream closed")}
-				}
-				switch e.Type {
-				case lantern.EventTransferProgress:
-					return transferProgressMsg{fileName: e.FileName, bytes: e.Bytes, total: e.Total}
-				case lantern.EventTransferDone:
-					return transferProgressMsg{fileName: e.FileName, done: true}
-				case lantern.EventError:
-					return errMsg{e.Err}
-				}
-			case <-m.ctx.Done():
-				return errMsg{m.ctx.Err()}
-			}
-		}
-	}
 }
 
 func (m receiveModel) updateTransferring(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -259,7 +217,7 @@ func (m receiveModel) updateTransferring(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.bytes = msg.bytes
 		m.total = msg.total
-		return m, m.waitForReceiveEvents()
+		return m, waitForSessionEvents(m.events, m.ctx)
 	case progress.FrameMsg:
 		pm, cmd := m.progress.Update(msg)
 		m.progress = pm.(progress.Model)
@@ -307,23 +265,11 @@ func (m receiveModel) View() string {
 	case recvDiscovering:
 		return titleStyle.Render("searching for peer...") + "\n\n" + m.spinner.View() + " finding peers to connect...\n\n" + helpStyle.Render("esc: cancel")
 	case recvTransferring:
-		elapsed := time.Duration(0)
-		if !m.startedAt.IsZero() {
-			elapsed = time.Since(m.startedAt).Truncate(time.Second)
-		}
-		pct := 0.0
-		if m.total > 0 {
-			pct = float64(m.bytes) / float64(m.total)
-		}
-		return titleStyle.Render(fmt.Sprintf("receiving: %s", m.fileName)) + "\n\n" + m.progress.ViewAs(pct) + "\n" + infoStyle.Render(fmt.Sprintf("%s / %s", format.Bytes(m.bytes), format.Bytes(m.total))) + "\n" + infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" + helpStyle.Render("esc: cancel")
+		return liveTransferView("receiving", m.fileName, m.bytes, m.total, liveElapsed(m.startedAt), m.progress)
 	case recvDone:
-		elapsed := time.Duration(0)
-		if !m.startedAt.IsZero() && !m.finishedAt.IsZero() {
-			elapsed = m.finishedAt.Sub(m.startedAt).Truncate(time.Second)
-		}
-		return titleStyle.Render("received!") + "\n\n" + infoStyle.Render(fmt.Sprintf("file: %s", m.fileName)) + "\n" + infoStyle.Render(fmt.Sprintf("size: %s", format.Bytes(m.total))) + "\n" + infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" + helpStyle.Render("enter: close • esc: quit")
+		return doneTransferView("received!", m.fileName, m.total, doneElapsed(m.startedAt, m.finishedAt))
 	case recvError:
-		return titleStyle.Render("error") + "\n\n" + errorStyle.Render(m.err.Error()) + "\n\n" + helpStyle.Render("enter: close • esc: quit")
+		return errorTransferView(m.err)
 	}
 	return ""
 }

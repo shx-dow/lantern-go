@@ -11,6 +11,7 @@ import (
 	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multihash"
+	"github.com/shx-dow/lantern-go/internal/storage"
 )
 
 func (n *Node) peerFilePath(code string) (string, error) {
@@ -24,6 +25,8 @@ func (n *Node) peerFilePath(code string) (string, error) {
 	return filepath.Join(dir, "lantern-"+code+".peer"), nil
 }
 
+// AdvertiseLocal publishes this node's addresses for code to the local
+// advertisement dir so same-machine discovery skips the DHT.
 func (n *Node) AdvertiseLocal(code string) error {
 	info := peer.AddrInfo{
 		ID:    n.Host.ID(),
@@ -45,13 +48,13 @@ func (n *Node) AdvertiseLocal(code string) error {
 		return fmt.Errorf("create local advertisement: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if err := tmp.Chmod(0600); err != nil {
-		tmp.Close()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(storage.PrivateFilePerm); err != nil {
+		_ = tmp.Close()
 		return fmt.Errorf("protect local advertisement: %w", err)
 	}
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("write local advertisement: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
@@ -63,6 +66,8 @@ func (n *Node) AdvertiseLocal(code string) error {
 	return nil
 }
 
+// DiscoverLocal reads a local advertisement; corrupt entries are removed
+// and reported as errors so callers fall through to the DHT.
 func (n *Node) DiscoverLocal(ctx context.Context, code string) (*peer.AddrInfo, error) {
 	select {
 	case <-ctx.Done():
@@ -79,28 +84,39 @@ func (n *Node) DiscoverLocal(ctx context.Context, code string) (*peer.AddrInfo, 
 	}
 	var info peer.AddrInfo
 	if err := json.Unmarshal(data, &info); err != nil {
-		os.Remove(path)
+		_ = os.Remove(path)
 		return nil, err
 	}
 	if info.ID == "" {
-		os.Remove(path)
+		_ = os.Remove(path)
 		return nil, fmt.Errorf("local advertisement has no peer ID")
 	}
 	return &info, nil
 }
 
+// ClearLocal removes a local advertisement; invalid codes are ignored.
 func (n *Node) ClearLocal(code string) {
 	path, err := n.peerFilePath(code)
 	if err != nil {
 		return
 	}
-	os.Remove(path)
+	_ = os.Remove(path)
 }
 
+// Discovery timing policy for DHT advertisement and lookup.
+const (
+	advertiseInterval      = time.Hour
+	defaultDiscoverTimeout = 30 * time.Second
+	dhtLookupTimeout       = 3 * time.Second
+	discoverPollInterval   = 500 * time.Millisecond
+)
+
+// Advertise re-provides code on the DHT until ctx ends, refreshing on
+// advertiseInterval.
 func (n *Node) Advertise(ctx context.Context, code string) error {
 	c := codeToCID(code)
 
-	ticker := time.NewTicker(1 * time.Hour)
+	ticker := time.NewTicker(advertiseInterval)
 	defer ticker.Stop()
 
 	for {
@@ -116,24 +132,28 @@ func (n *Node) Advertise(ctx context.Context, code string) error {
 	}
 }
 
+// Discover returns the first provider for code, preferring local
+// advertisements. Without a caller deadline it waits defaultDiscoverTimeout.
 func (n *Node) Discover(ctx context.Context, code string) (peer.AddrInfo, error) {
 	c := codeToCID(code)
 
 	deadline, ok := ctx.Deadline()
 	if !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		ctx, cancel = context.WithTimeout(ctx, defaultDiscoverTimeout)
 		defer cancel()
 		deadline, _ = ctx.Deadline()
 	}
 
+	poll := time.NewTimer(0)
+	defer poll.Stop()
 	for {
 		if pi, err := n.DiscoverLocal(ctx, code); err == nil {
 			n.ClearLocal(code)
 			return *pi, nil
 		}
 
-		dhtCtx, dhtCancel := context.WithTimeout(ctx, 3*time.Second)
+		dhtCtx, dhtCancel := context.WithTimeout(ctx, dhtLookupTimeout)
 		peers, err := n.DHT.FindProviders(dhtCtx, c)
 		dhtCancel()
 		if err == nil {
@@ -146,7 +166,8 @@ func (n *Node) Discover(ctx context.Context, code string) (peer.AddrInfo, error)
 		}
 
 		select {
-		case <-time.After(500 * time.Millisecond):
+		case <-poll.C:
+			poll.Reset(discoverPollInterval)
 		case <-ctx.Done():
 			return peer.AddrInfo{}, fmt.Errorf("no peers found for code: %s (timeout)", code)
 		}
@@ -154,13 +175,6 @@ func (n *Node) Discover(ctx context.Context, code string) (peer.AddrInfo, error)
 		if time.Now().After(deadline) {
 			return peer.AddrInfo{}, fmt.Errorf("no peers found for code: %s (timeout)", code)
 		}
-	}
-}
-
-func (n *Node) AddrInfo() peer.AddrInfo {
-	return peer.AddrInfo{
-		ID:    n.Host.ID(),
-		Addrs: n.Host.Addrs(),
 	}
 }
 

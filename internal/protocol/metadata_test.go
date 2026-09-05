@@ -47,6 +47,38 @@ func TestReadMetadataRejectsOversizedFrame(t *testing.T) {
 	}
 }
 
+func TestReadMetadataRejectsEmptyAndTruncatedHeaders(t *testing.T) {
+	var got metadata
+	if err := ReadMetadata(bytes.NewReader([]byte{0, 0, 0, 0}), &got); err == nil {
+		t.Fatal("empty metadata frame was accepted")
+	}
+	if err := ReadMetadata(bytes.NewReader([]byte{0, 0}), &got); err == nil {
+		t.Fatal("truncated header was accepted")
+	}
+	if err := ReadMetadata(bytes.NewReader(nil), &got); err == nil {
+		t.Fatal("missing header was accepted")
+	}
+}
+
+func TestTransferRequestRoundTrip(t *testing.T) {
+	var wire bytes.Buffer
+	want := TransferRequest{
+		Offset:    12345,
+		Challenge: bytes.Repeat([]byte{9}, 32),
+		Proof:     []byte("proof-bytes"),
+	}
+	if err := WriteMetadata(&wire, want); err != nil {
+		t.Fatal(err)
+	}
+	var got TransferRequest
+	if err := ReadMetadata(&wire, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Offset != want.Offset || !bytes.Equal(got.Challenge, want.Challenge) || !bytes.Equal(got.Proof, want.Proof) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
 func TestReadMetadataRejectsTruncatedFrame(t *testing.T) {
 	var got metadata
 	err := ReadMetadata(bytes.NewReader([]byte{0, 0, 0, 4, '{'}), &got)
@@ -82,5 +114,20 @@ func TestWriteMetadataHandlesShortWrites(t *testing.T) {
 	}
 	if got != (metadata{Name: "x", Size: 1}) {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+type failingWriter struct {
+	err error
+}
+
+func (w failingWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestWriteMetadataPropagatesWriteErrors(t *testing.T) {
+	sentinel := errors.New("boom")
+	if err := WriteMetadata(failingWriter{sentinel}, metadata{Name: "x"}); err == nil {
+		t.Fatal("write error was swallowed")
+	} else if !errors.Is(err, sentinel) {
+		t.Fatalf("got %v, want %v", err, sentinel)
 	}
 }

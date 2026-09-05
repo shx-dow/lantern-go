@@ -11,16 +11,25 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/shx-dow/lantern-go/internal/protocol"
 	"golang.org/x/crypto/hkdf"
 )
 
 const (
+	// ChunkSize bounds one encrypted frame's plaintext.
 	ChunkSize = 64 * 1024
-	KeySize   = 32
+	// KeySize is the HKDF output length for file keys.
+	KeySize = 32
+	// NonceSize is the GCM nonce carried per frame.
 	NonceSize = 12
-	TagSize   = 16
+	// TagSize is the GCM authentication tag per frame.
+	TagSize = 16
+	// ChallengeBytes is the size of the receiver's authentication challenge.
+	ChallengeBytes = 32
 )
 
+// DeriveKey stretches a share code into a file-encryption key; different
+// codes yield unrelated keys.
 func DeriveKey(code string) ([]byte, error) {
 	return deriveKey(code, "file-encryption-key")
 }
@@ -34,8 +43,10 @@ func deriveKey(code, info string) ([]byte, error) {
 	return key, nil
 }
 
+// AuthProof binds challenge and resume offset to the share code with a
+// domain-separated HMAC; the sender re-derives it to authenticate receivers.
 func AuthProof(code string, challenge []byte, offset int64) ([]byte, error) {
-	if len(challenge) != 32 {
+	if len(challenge) != ChallengeBytes {
 		return nil, errors.New("challenge must be 32 bytes")
 	}
 	if offset < 0 {
@@ -54,24 +65,24 @@ func AuthProof(code string, challenge []byte, offset int64) ([]byte, error) {
 	return mac.Sum(nil), nil
 }
 
+// VerifyAuthProof reports whether proof is the valid AuthProof for the
+// given code, challenge, and offset.
 func VerifyAuthProof(code string, challenge []byte, offset int64, proof []byte) bool {
 	want, err := AuthProof(code, challenge, offset)
 	return err == nil && hmac.Equal(want, proof)
 }
 
+// EncryptedWriter frames plaintext into independently decryptable
+// chunks, each with a fresh random nonce. Close flushes the tail chunk.
 type EncryptedWriter struct {
 	w       io.Writer
-	block   cipher.Block
 	gcm     cipher.AEAD
 	buf     []byte
 	scratch [4 + NonceSize + ChunkSize + TagSize]byte
 }
 
+// NewEncryptedWriter encrypts chunked frames onto w with key.
 func NewEncryptedWriter(w io.Writer, key []byte) (*EncryptedWriter, error) {
-	return NewEncryptedWriterAt(w, key, 0)
-}
-
-func NewEncryptedWriterAt(w io.Writer, key []byte, _ int64) (*EncryptedWriter, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("new cipher: %w", err)
@@ -81,10 +92,9 @@ func NewEncryptedWriterAt(w io.Writer, key []byte, _ int64) (*EncryptedWriter, e
 		return nil, fmt.Errorf("new gcm: %w", err)
 	}
 	return &EncryptedWriter{
-		w:     w,
-		block: block,
-		gcm:   gcm,
-		buf:   make([]byte, 0, ChunkSize),
+		w:   w,
+		gcm: gcm,
+		buf: make([]byte, 0, ChunkSize),
 	}, nil
 }
 
@@ -128,25 +138,8 @@ func (ew *EncryptedWriter) flush() error {
 	copy(ew.scratch[4+NonceSize:], ciphertext)
 
 	totalLen := 4 + NonceSize + payloadLen
-	if err := writeFull(ew.w, ew.scratch[:totalLen]); err != nil {
+	if err := protocol.WriteFull(ew.w, ew.scratch[:totalLen]); err != nil {
 		return fmt.Errorf("write encrypted chunk: %w", err)
-	}
-	return nil
-}
-
-func writeFull(w io.Writer, p []byte) error {
-	for len(p) > 0 {
-		n, err := w.Write(p)
-		if n < 0 || n > len(p) {
-			return fmt.Errorf("invalid write count %d", n)
-		}
-		p = p[n:]
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
-		}
 	}
 	return nil
 }
@@ -155,6 +148,7 @@ func (ew *EncryptedWriter) Close() error {
 	return ew.flush()
 }
 
+// EncryptedReader decrypts a stream produced by EncryptedWriter.
 type EncryptedReader struct {
 	r      io.Reader
 	gcm    cipher.AEAD
@@ -163,11 +157,8 @@ type EncryptedReader struct {
 	header [4 + NonceSize]byte
 }
 
+// NewEncryptedReader decrypts chunked frames from r with key.
 func NewEncryptedReader(r io.Reader, key []byte) (*EncryptedReader, error) {
-	return NewEncryptedReaderAt(r, key, 0)
-}
-
-func NewEncryptedReaderAt(r io.Reader, key []byte, _ int64) (*EncryptedReader, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("new cipher: %w", err)

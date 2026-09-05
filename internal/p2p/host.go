@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-kad-dht"
@@ -15,10 +16,15 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	"github.com/multiformats/go-multiaddr"
+	"github.com/shx-dow/lantern-go/internal/storage"
 )
 
+// ProtocolID is the libp2p stream protocol for transfers; bump it for
+// any wire-incompatible handshake or framing change.
 const ProtocolID = "/lantern/transfer/2.0.0"
 
+// DefaultBootstrapPeers are the public libp2p DHT bootstraps used when
+// the caller supplies none.
 var DefaultBootstrapPeers = []string{
 	"/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
 	"/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
@@ -26,6 +32,9 @@ var DefaultBootstrapPeers = []string{
 	"/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
 }
 
+// Node is a libp2p host with DHT discovery and transfer handlers.
+// Construct via NewNode; Host and DHT stay exported for dialing and
+// providing until the transport seam is extracted.
 type Node struct {
 	Host     host.Host
 	DHT      *dht.IpfsDHT
@@ -38,13 +47,16 @@ type Node struct {
 	handlerOnce sync.Once
 }
 
+// NewNode brings up a TCP+QUIC host with relay, hole punching, DHT in
+// server mode, and mDNS. dataDirs optionally overrides the directory for
+// local advertisements; only the first entry is used.
 func NewNode(port int, bootstrapPeers []string, dataDirs ...string) (*Node, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	localDir := os.TempDir()
 	if len(dataDirs) > 0 && dataDirs[0] != "" {
 		localDir = dataDirs[0]
 	}
-	if err := os.MkdirAll(localDir, 0700); err != nil {
+	if err := os.MkdirAll(localDir, storage.PrivateDirPerm); err != nil {
 		cancel()
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
@@ -88,15 +100,13 @@ func NewNode(port int, bootstrapPeers []string, dataDirs ...string) (*Node, erro
 
 	d, err := dht.New(ctx, h, dhtOpts...)
 	if err != nil {
-		h.Close()
 		cancel()
-		return nil, fmt.Errorf("create dht: %w", err)
+		return nil, errors.Join(fmt.Errorf("create dht: %w", err), h.Close())
 	}
 
 	if err := d.Bootstrap(ctx); err != nil {
-		h.Close()
 		cancel()
-		return nil, fmt.Errorf("bootstrap dht: %w", err)
+		return nil, errors.Join(fmt.Errorf("bootstrap dht: %w", err), h.Close())
 	}
 
 	node := &Node{
@@ -127,12 +137,14 @@ func (m *mdnsDiscovery) HandlePeerFound(pi peer.AddrInfo) {
 		return
 	}
 	go func() {
-		if err := m.node.Host.Connect(m.node.ctx, pi); err != nil {
-			return
-		}
+		ctx, cancel := context.WithTimeout(m.node.ctx, 5*time.Second)
+		defer cancel()
+		_ = m.node.Host.Connect(ctx, pi)
 	}()
 }
 
+// Close cancels discovery, then closes the DHT and host, joining errors.
+// A zero-value Node (as built in tests) is safe to close.
 func (n *Node) Close() error {
 	n.cancel()
 	var dhtErr, hostErr error
@@ -145,8 +157,9 @@ func (n *Node) Close() error {
 	return errors.Join(dhtErr, hostErr)
 }
 
+// GenerateCode mints a CodeBytes-entropy hex share code.
 func GenerateCode() (string, error) {
-	b := make([]byte, 16)
+	b := make([]byte, CodeBytes)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("generate code: %w", err)
 	}

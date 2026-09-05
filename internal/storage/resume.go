@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 )
 
+// ResumeState checkpoints a partial download so a retry continues at
+// Offset instead of restarting.
 type ResumeState struct {
 	Code     string `json:"code"`
 	FileName string `json:"file_name"`
@@ -15,8 +17,28 @@ type ResumeState struct {
 	Offset   int64  `json:"offset"`
 }
 
-// LoadResume returns a valid resume state. Invalid or stale state is removed
-// and treated as no resumable transfer.
+// Permissions: resume state and advertisements hold transfer codes, which
+// are the capability to fetch the file, so they are owner-only. Data
+// directories and received files stay world-readable to match umask
+// expectations for shared downloads.
+const (
+	PrivateFilePerm = 0600
+	PublicFilePerm  = 0644
+	PrivateDirPerm  = 0700
+	PublicDirPerm   = 0755
+)
+
+// CheckFileName rejects empty names, dot entries, and anything with a
+// path separator so remote-provided names cannot escape the output dir.
+func CheckFileName(name string) error {
+	if name == "" || name == "." || name == ".." || filepath.Base(name) != name {
+		return fmt.Errorf("invalid file name %q", name)
+	}
+	return nil
+}
+
+// LoadResume returns the checkpoint for code, or ok=false when there is
+// none. Corrupt or stale entries are removed and treated as no resume.
 func LoadResume(outputDir, code string) (ResumeState, bool, error) {
 	path, err := statePath(outputDir, code)
 	if err != nil {
@@ -53,7 +75,8 @@ func LoadResume(outputDir, code string) (ResumeState, bool, error) {
 	return state, true, nil
 }
 
-// SaveResume atomically replaces the resume state with a private file.
+// SaveResume atomically replaces the checkpoint via temp file + rename so
+// crashes never leave a half-written state.
 func SaveResume(outputDir string, state ResumeState) error {
 	if _, err := safeCode(state.Code); err != nil {
 		return err
@@ -73,7 +96,7 @@ func SaveResume(outputDir string, state ResumeState) error {
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
 
-	if err := tmp.Chmod(0600); err != nil {
+	if err := tmp.Chmod(PrivateFilePerm); err != nil {
 		tmp.Close()
 		return fmt.Errorf("protect temporary resume state: %w", err)
 	}
@@ -98,6 +121,7 @@ func SaveResume(outputDir string, state ResumeState) error {
 	return nil
 }
 
+// ClearResume removes the checkpoint; a missing one is not an error.
 func ClearResume(outputDir, code string) error {
 	path, err := statePath(outputDir, code)
 	if err != nil {
@@ -110,6 +134,8 @@ func ClearResume(outputDir, code string) error {
 	return err
 }
 
+// PartialPath is the on-disk location of the in-progress download for
+// code and fileName. It errors on codes that would escape outputDir.
 func PartialPath(outputDir, code, fileName string) (string, error) {
 	safe, err := safeCode(code)
 	if err != nil {
@@ -135,8 +161,7 @@ func safeCode(code string) (string, error) {
 
 func validState(state ResumeState, code string) bool {
 	return state.Code == code &&
-		state.FileName != "" &&
-		state.FileName == filepath.Base(state.FileName) &&
+		CheckFileName(state.FileName) == nil &&
 		state.FileSize >= 0 &&
 		state.Offset >= 0 &&
 		state.Offset <= state.FileSize
