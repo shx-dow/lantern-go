@@ -5,6 +5,7 @@ import (
 	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -59,17 +60,15 @@ func (n *Node) RegisterShareHandler(code string, path string, progress chan Tran
 	if err != nil {
 		return fmt.Errorf("open file: %w", err)
 	}
+	defer file.Close()
 	fi, err := file.Stat()
 	if err != nil {
-		file.Close()
 		return fmt.Errorf("stat file: %w", err)
 	}
 	if fi.IsDir() {
-		file.Close()
 		return fmt.Errorf("path is a directory: %s", path)
 	}
 	fullHash, err := hashFile(file)
-	file.Close()
 	if err != nil {
 		return fmt.Errorf("hash file: %w", err)
 	}
@@ -214,8 +213,18 @@ func (n *Node) serveShare(s network.Stream) {
 
 func (n *Node) matchShare(req protocol.TransferRequest) *shareState {
 	n.mu.Lock()
-	defer n.mu.Unlock()
-	for _, state := range n.shares {
+	codes := make([]string, 0, len(n.shares))
+	for code := range n.shares {
+		codes = append(codes, code)
+	}
+	n.mu.Unlock()
+	for _, code := range codes {
+		n.mu.Lock()
+		state, ok := n.shares[code]
+		n.mu.Unlock()
+		if !ok {
+			continue
+		}
 		if crypto.VerifyAuthProof(state.code, req.Challenge, req.Offset, req.Proof) {
 			return state
 		}
@@ -339,6 +348,11 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 
 	h := sha256.New()
 	received := offset
+	// saveCheckpoint persists resume state; failures are joined with the
+	// error being returned so a lost checkpoint never masks the cause.
+	saveCheckpoint := func() error {
+		return storage.SaveResume(outputDir, storage.ResumeState{Code: code, FileName: meta.Name, FileSize: meta.Size, Offset: received})
+	}
 	if offset > 0 {
 		if _, err := out.Seek(0, io.SeekStart); err != nil {
 			return fmt.Errorf("seek output for hash: %w", err)
@@ -351,25 +365,21 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 		}
 	}
 
-	if err := storage.SaveResume(outputDir, storage.ResumeState{Code: code, FileName: meta.Name, FileSize: meta.Size, Offset: received}); err != nil {
+	if err := saveCheckpoint(); err != nil {
 		return fmt.Errorf("save state: %w", err)
 	}
 
 	buf := make([]byte, 32*1024)
 	for received < meta.Size {
-		select {
-		case <-ctx.Done():
-			storage.SaveResume(outputDir, storage.ResumeState{Code: code, FileName: meta.Name, FileSize: meta.Size, Offset: received})
-			return ctx.Err()
-		default:
+		if err := ctx.Err(); err != nil {
+			return errors.Join(err, saveCheckpoint())
 		}
 
 		n, err := er.Read(buf)
 		if n > 0 {
-			h.Write(buf[:n])
+			_, _ = h.Write(buf[:n])
 			if werr := protocol.WriteFull(out, buf[:n]); werr != nil {
-				storage.SaveResume(outputDir, storage.ResumeState{Code: code, FileName: meta.Name, FileSize: meta.Size, Offset: received})
-				return fmt.Errorf("write file: %w", werr)
+				return errors.Join(fmt.Errorf("write file: %w", werr), saveCheckpoint())
 			}
 			received += int64(n)
 			progress <- TransferProgress{
@@ -382,14 +392,12 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 			break
 		}
 		if err != nil {
-			storage.SaveResume(outputDir, storage.ResumeState{Code: code, FileName: meta.Name, FileSize: meta.Size, Offset: received})
-			return fmt.Errorf("read stream: %w", err)
+			return errors.Join(fmt.Errorf("read stream: %w", err), saveCheckpoint())
 		}
 	}
 
 	if received != meta.Size {
-		storage.SaveResume(outputDir, storage.ResumeState{Code: code, FileName: meta.Name, FileSize: meta.Size, Offset: received})
-		return fmt.Errorf("unexpected end of transfer at %d of %d bytes", received, meta.Size)
+		return errors.Join(fmt.Errorf("unexpected end of transfer at %d of %d bytes", received, meta.Size), saveCheckpoint())
 	}
 
 	if meta.Hash != "" {

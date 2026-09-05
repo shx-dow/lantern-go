@@ -79,7 +79,6 @@ type Session struct {
 	done        chan struct{}
 	state       TransferState
 	finishOnce  sync.Once
-	doneOnce    sync.Once
 }
 
 func (s *Session) ID() string {
@@ -112,7 +111,7 @@ func (s *Session) finish(state TransferState) {
 			s.state = state
 		}
 		s.mu.Unlock()
-		s.doneOnce.Do(func() { close(s.done) })
+		close(s.done)
 		go s.unsubscribe()
 	})
 }
@@ -189,10 +188,7 @@ func (l *Lantern) newSession(ctx context.Context, id string) *Session {
 	s.mu.Lock()
 	s.state = TransferRunning
 	s.mu.Unlock()
-	go func() {
-		<-sessionCtx.Done()
-		s.finish(TransferCanceled)
-	}()
+	context.AfterFunc(sessionCtx, func() { s.finish(TransferCanceled) })
 	return s
 }
 
@@ -222,8 +218,7 @@ func (l *Lantern) shareWithCode(ctx context.Context, path string, code string) (
 		return nil, fmt.Errorf("path is a directory: %s", path)
 	}
 
-	progress := make(chan p2p.TransferProgress)
-	go l.forwardProgress(progress, code)
+	progress := make(chan p2p.TransferProgress, 64)
 
 	advCtx, advCancel := context.WithCancel(ctx)
 	if err := l.node.RegisterShareHandler(code, path, progress, advCancel); err != nil {
@@ -235,6 +230,8 @@ func (l *Lantern) shareWithCode(ctx context.Context, path string, code string) (
 		advCancel()
 		return nil, fmt.Errorf("local advertise: %w", err)
 	}
+
+	go l.forwardProgress(advCtx, progress, code)
 
 	go func() {
 		if err := l.node.Advertise(advCtx, code); err != nil && ctx.Err() == nil {
@@ -271,8 +268,8 @@ func (l *Lantern) receive(ctx context.Context, code string, outputDir string) (*
 
 	l.emit(Event{TransferID: code, Type: EventPeerConnected, PeerID: pi.ID.String()})
 
-	progress := make(chan p2p.TransferProgress)
-	go l.forwardProgress(progress, code)
+	progress := make(chan p2p.TransferProgress, 64)
+	go l.forwardProgress(ctx, progress, code)
 
 	l.node.RegisterReceive(ctx, pi, code, outputDir, progress)
 
@@ -282,16 +279,24 @@ func (l *Lantern) receive(ctx context.Context, code string, outputDir string) (*
 	}, nil
 }
 
-func (l *Lantern) forwardProgress(progress <-chan p2p.TransferProgress, transferID string) {
-	for p := range progress {
-		if p.Err != nil {
-			l.emit(Event{TransferID: transferID, Type: EventError, Err: p.Err})
-			continue
-		}
-		if p.Done {
-			l.emit(Event{TransferID: transferID, Type: EventTransferDone, FileName: p.FileName})
-		} else {
-			l.emit(Event{TransferID: transferID, Type: EventTransferProgress, FileName: p.FileName, Bytes: p.Bytes, Total: p.Total})
+func (l *Lantern) forwardProgress(ctx context.Context, progress <-chan p2p.TransferProgress, transferID string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case p, ok := <-progress:
+			if !ok {
+				return
+			}
+			if p.Err != nil {
+				l.emit(Event{TransferID: transferID, Type: EventError, Err: p.Err})
+				continue
+			}
+			if p.Done {
+				l.emit(Event{TransferID: transferID, Type: EventTransferDone, FileName: p.FileName})
+			} else {
+				l.emit(Event{TransferID: transferID, Type: EventTransferProgress, FileName: p.FileName, Bytes: p.Bytes, Total: p.Total})
+			}
 		}
 	}
 }

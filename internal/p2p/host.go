@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-kad-dht"
@@ -88,15 +89,13 @@ func NewNode(port int, bootstrapPeers []string, dataDirs ...string) (*Node, erro
 
 	d, err := dht.New(ctx, h, dhtOpts...)
 	if err != nil {
-		h.Close()
 		cancel()
-		return nil, fmt.Errorf("create dht: %w", err)
+		return nil, errors.Join(fmt.Errorf("create dht: %w", err), h.Close())
 	}
 
 	if err := d.Bootstrap(ctx); err != nil {
-		h.Close()
 		cancel()
-		return nil, fmt.Errorf("bootstrap dht: %w", err)
+		return nil, errors.Join(fmt.Errorf("bootstrap dht: %w", err), h.Close())
 	}
 
 	node := &Node{
@@ -127,9 +126,9 @@ func (m *mdnsDiscovery) HandlePeerFound(pi peer.AddrInfo) {
 		return
 	}
 	go func() {
-		if err := m.node.Host.Connect(m.node.ctx, pi); err != nil {
-			return
-		}
+		ctx, cancel := context.WithTimeout(m.node.ctx, 5*time.Second)
+		defer cancel()
+		_ = m.node.Host.Connect(ctx, pi)
 	}()
 }
 

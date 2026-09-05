@@ -45,13 +45,13 @@ func (n *Node) AdvertiseLocal(code string) error {
 		return fmt.Errorf("create local advertisement: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 	if err := tmp.Chmod(0600); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("protect local advertisement: %w", err)
 	}
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("write local advertisement: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
@@ -79,11 +79,11 @@ func (n *Node) DiscoverLocal(ctx context.Context, code string) (*peer.AddrInfo, 
 	}
 	var info peer.AddrInfo
 	if err := json.Unmarshal(data, &info); err != nil {
-		os.Remove(path)
+		_ = os.Remove(path)
 		return nil, err
 	}
 	if info.ID == "" {
-		os.Remove(path)
+		_ = os.Remove(path)
 		return nil, fmt.Errorf("local advertisement has no peer ID")
 	}
 	return &info, nil
@@ -94,7 +94,7 @@ func (n *Node) ClearLocal(code string) {
 	if err != nil {
 		return
 	}
-	os.Remove(path)
+	_ = os.Remove(path)
 }
 
 func (n *Node) Advertise(ctx context.Context, code string) error {
@@ -127,6 +127,8 @@ func (n *Node) Discover(ctx context.Context, code string) (peer.AddrInfo, error)
 		deadline, _ = ctx.Deadline()
 	}
 
+	poll := time.NewTimer(0)
+	defer poll.Stop()
 	for {
 		if pi, err := n.DiscoverLocal(ctx, code); err == nil {
 			n.ClearLocal(code)
@@ -146,7 +148,8 @@ func (n *Node) Discover(ctx context.Context, code string) (peer.AddrInfo, error)
 		}
 
 		select {
-		case <-time.After(500 * time.Millisecond):
+		case <-poll.C:
+			poll.Reset(500 * time.Millisecond)
 		case <-ctx.Done():
 			return peer.AddrInfo{}, fmt.Errorf("no peers found for code: %s (timeout)", code)
 		}
