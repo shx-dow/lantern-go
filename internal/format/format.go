@@ -15,3 +15,12 @@ func Bytes(b int64) string {
 	}
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
+
+// Ratio returns the fraction of total completed, in [0,1]. Unknown or
+// non-positive totals report 0 so progress bars never divide by zero.
+func Ratio(b, total int64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return float64(b) / float64(total)
+}

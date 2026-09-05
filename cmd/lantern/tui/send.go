@@ -396,7 +396,10 @@ func (m sendModel) updatePickFile(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.spinner = spinner.New(spinner.WithSpinner(spinner.Dot))
 				go func() {
 					s, p, err := m.lantern.ShareSession(m.ctx, m.selectedPath)
-					m.shareCh <- sessionResult{peer: p, session: s, err: err}
+					select {
+					case m.shareCh <- sessionResult{peer: p, session: s, err: err}:
+					case <-m.ctx.Done():
+					}
 				}()
 				return m, spinner.Tick
 			}
@@ -422,7 +425,7 @@ func (m sendModel) updateGenerating(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.events = m.session.Events()
 		}
 		m.state = sendWaiting
-		return m, m.waitForEvents()
+		return m, waitForSessionEvents(m.events, m.ctx)
 	default:
 	}
 
@@ -457,7 +460,7 @@ func (m sendModel) updateWaiting(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.session != nil {
 			m.events = m.session.Events()
 		}
-		return m, m.waitForEvents()
+		return m, waitForSessionEvents(m.events, m.ctx)
 	default:
 	}
 
@@ -490,33 +493,10 @@ func (m sendModel) updateWaiting(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.bytes > 0 {
 			m.state = sendTransferring
 		}
-		return m, m.waitForEvents()
+		return m, waitForSessionEvents(m.events, m.ctx)
 	}
 
 	return m, nil
-}
-
-func (m sendModel) waitForEvents() tea.Cmd {
-	return func() tea.Msg {
-		for {
-			select {
-			case e, ok := <-m.events:
-				if !ok {
-					return errMsg{fmt.Errorf("event stream closed")}
-				}
-				switch e.Type {
-				case lantern.EventTransferProgress:
-					return transferProgressMsg{fileName: e.FileName, bytes: e.Bytes, total: e.Total}
-				case lantern.EventTransferDone:
-					return transferProgressMsg{fileName: e.FileName, done: true}
-				case lantern.EventError:
-					return errMsg{e.Err}
-				}
-			case <-m.ctx.Done():
-				return errMsg{m.ctx.Err()}
-			}
-		}
-	}
 }
 
 func (m sendModel) updateTransferring(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -549,7 +529,7 @@ func (m sendModel) updateTransferring(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.bytes = msg.bytes
 		m.total = msg.total
-		return m, m.waitForEvents()
+		return m, waitForSessionEvents(m.events, m.ctx)
 	case progress.FrameMsg:
 		pm, cmd := m.progress.Update(msg)
 		m.progress = pm.(progress.Model)
@@ -596,23 +576,11 @@ func (m sendModel) View() string {
 		}
 		return titleStyle.Render("waiting for receiver") + "\n\n" + infoStyle.Render("share code:") + "\n" + codeStyle.Render(fmt.Sprintf("%s", m.peer.Code)) + "\n\n" + infoStyle.Render("waiting for someone to connect with this code...") + "\n\n" + helpStyle.Render("esc: cancel")
 	case sendTransferring:
-		elapsed := time.Duration(0)
-		if !m.startedAt.IsZero() {
-			elapsed = time.Since(m.startedAt).Truncate(time.Second)
-		}
-		pct := 0.0
-		if m.total > 0 {
-			pct = float64(m.bytes) / float64(m.total)
-		}
-		return titleStyle.Render(fmt.Sprintf("sending: %s", m.fileName)) + "\n\n" + m.progress.ViewAs(pct) + "\n" + infoStyle.Render(fmt.Sprintf("%s / %s", format.Bytes(m.bytes), format.Bytes(m.total))) + "\n" + infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" + helpStyle.Render("esc: cancel")
+		return liveTransferView("sending", m.fileName, m.bytes, m.total, liveElapsed(m.startedAt), m.progress)
 	case sendDone:
-		elapsed := time.Duration(0)
-		if !m.startedAt.IsZero() && !m.finishedAt.IsZero() {
-			elapsed = m.finishedAt.Sub(m.startedAt).Truncate(time.Second)
-		}
-		return titleStyle.Render("sent!") + "\n\n" + infoStyle.Render(fmt.Sprintf("file: %s", m.fileName)) + "\n" + infoStyle.Render(fmt.Sprintf("size: %s", format.Bytes(m.total))) + "\n" + infoStyle.Render(fmt.Sprintf("elapsed: %s", elapsed)) + "\n\n" + helpStyle.Render("enter: close • esc: quit")
+		return doneTransferView("sent!", m.fileName, m.total, doneElapsed(m.startedAt, m.finishedAt))
 	case sendError:
-		return titleStyle.Render("error") + "\n\n" + errorStyle.Render(m.err.Error()) + "\n\n" + helpStyle.Render("enter: close • esc: quit")
+		return errorTransferView(m.err)
 	}
 	return ""
 }

@@ -72,28 +72,7 @@ func runSend(ctx context.Context, ln *lantern.Lantern, args []string) {
 	fmt.Printf("share code: %s\n", peer.Code)
 	fmt.Println("waiting for receiver...")
 
-	for {
-		select {
-		case e, ok := <-session.Events():
-			if !ok {
-				return
-			}
-			switch e.Type {
-			case lantern.EventTransferProgress:
-				pct := progressPercent(e.Bytes, e.Total)
-				fmt.Printf("\rprogress: %.1f%% (%s / %s)", pct, format.Bytes(e.Bytes), format.Bytes(e.Total))
-			case lantern.EventTransferDone:
-				fmt.Printf("\nsent %s\n", peer.FileName)
-				return
-			case lantern.EventError:
-				fmt.Fprintf(os.Stderr, "\nerror: %v\n", e.Err)
-				return
-			}
-		case <-ctx.Done():
-			fmt.Println("\ncancelled")
-			return
-		}
-	}
+	runTransfer(ctx, session, "sent", peer.FileName)
 }
 
 func runReceive(ctx context.Context, ln *lantern.Lantern, args []string) {
@@ -113,6 +92,13 @@ func runReceive(ctx context.Context, ln *lantern.Lantern, args []string) {
 
 	fmt.Printf("connecting to %s...\n", peer.ID)
 
+	runTransfer(ctx, session, "received:", "")
+}
+
+// runTransfer renders session events until the transfer completes, fails,
+// or the context is cancelled. doneVerb/doneName describe the success line
+// ("sent <file>" for shares, "received: <file>" for receives).
+func runTransfer(ctx context.Context, session *lantern.Session, doneVerb, doneName string) {
 	for {
 		select {
 		case e, ok := <-session.Events():
@@ -124,7 +110,11 @@ func runReceive(ctx context.Context, ln *lantern.Lantern, args []string) {
 				pct := progressPercent(e.Bytes, e.Total)
 				fmt.Printf("\rprogress: %.1f%% (%s / %s)", pct, format.Bytes(e.Bytes), format.Bytes(e.Total))
 			case lantern.EventTransferDone:
-				fmt.Printf("\nreceived: %s\n", e.FileName)
+				name := doneName
+				if name == "" {
+					name = e.FileName
+				}
+				fmt.Printf("\n%s %s\n", doneVerb, name)
 				return
 			case lantern.EventError:
 				fmt.Fprintf(os.Stderr, "\nerror: %v\n", e.Err)
@@ -150,5 +140,5 @@ func progressPercent(bytes, total int64) float64 {
 	if total <= 0 {
 		return 100
 	}
-	return float64(bytes) / float64(total) * 100
+	return format.Ratio(bytes, total) * 100
 }
