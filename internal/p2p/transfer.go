@@ -25,7 +25,6 @@ type FileMeta struct {
 }
 
 type TransferProgress struct {
-	PeerID   string
 	FileName string
 	Bytes    int64
 	Total    int64

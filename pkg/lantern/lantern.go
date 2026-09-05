@@ -196,14 +196,6 @@ func (l *Lantern) newSession(ctx context.Context, id string) *Session {
 	return s
 }
 
-func (l *Lantern) Share(ctx context.Context, path string) (*Peer, error) {
-	code, err := p2p.GenerateCode()
-	if err != nil {
-		return nil, fmt.Errorf("generate code: %w", err)
-	}
-	return l.shareWithCode(ctx, path, code)
-}
-
 func (l *Lantern) ShareSession(ctx context.Context, path string) (*Session, *Peer, error) {
 	code, err := p2p.GenerateCode()
 	if err != nil {
@@ -259,10 +251,6 @@ func (l *Lantern) shareWithCode(ctx context.Context, path string, code string) (
 		FileName: info.Name(),
 		FileSize: info.Size(),
 	}, nil
-}
-
-func (l *Lantern) Receive(ctx context.Context, code string, outputDir string) (*Peer, error) {
-	return l.receive(ctx, code, outputDir)
 }
 
 func (l *Lantern) ReceiveSession(ctx context.Context, code string, outputDir string) (*Session, *Peer, error) {
