@@ -11,6 +11,7 @@ import (
 	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multihash"
+	"github.com/shx-dow/lantern-go/internal/storage"
 )
 
 func (n *Node) peerFilePath(code string) (string, error) {
@@ -46,7 +47,7 @@ func (n *Node) AdvertiseLocal(code string) error {
 	}
 	tmpPath := tmp.Name()
 	defer func() { _ = os.Remove(tmpPath) }()
-	if err := tmp.Chmod(0600); err != nil {
+	if err := tmp.Chmod(storage.PrivateFilePerm); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("protect local advertisement: %w", err)
 	}

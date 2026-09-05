@@ -20,6 +20,8 @@ const (
 	KeySize   = 32
 	NonceSize = 12
 	TagSize   = 16
+	// ChallengeBytes is the size of the receiver's authentication challenge.
+	ChallengeBytes = 32
 )
 
 func DeriveKey(code string) ([]byte, error) {
@@ -36,7 +38,7 @@ func deriveKey(code, info string) ([]byte, error) {
 }
 
 func AuthProof(code string, challenge []byte, offset int64) ([]byte, error) {
-	if len(challenge) != 32 {
+	if len(challenge) != ChallengeBytes {
 		return nil, errors.New("challenge must be 32 bytes")
 	}
 	if offset < 0 {

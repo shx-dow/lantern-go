@@ -25,6 +25,9 @@ type FileMeta struct {
 	Hash string `json:"hash,omitempty"`
 }
 
+// CodeBytes is the entropy of a generated share code.
+const CodeBytes = 16
+
 type TransferProgress struct {
 	FileName string
 	Bytes    int64
@@ -107,7 +110,7 @@ func (n *Node) serveShare(s network.Stream) {
 	if req.Offset < 0 {
 		return
 	}
-	if len(req.Challenge) != 32 || len(req.Proof) == 0 {
+	if len(req.Challenge) != crypto.ChallengeBytes || len(req.Proof) == 0 {
 		return
 	}
 
@@ -273,7 +276,7 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 		offset = resume.Offset
 	}
 
-	challenge := make([]byte, 32)
+	challenge := make([]byte, crypto.ChallengeBytes)
 	if _, err := crand.Read(challenge); err != nil {
 		return fmt.Errorf("generate authentication challenge: %w", err)
 	}
@@ -301,6 +304,12 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 	if err := protocol.ReadMetadata(er, &meta); err != nil {
 		return fmt.Errorf("read meta: %w", err)
 	}
+	if err := storage.CheckFileName(meta.Name); err != nil {
+		return fmt.Errorf("peer sent invalid file name: %w", err)
+	}
+	if meta.Size < 0 {
+		return fmt.Errorf("peer sent invalid file size %d", meta.Size)
+	}
 
 	if outPath == "" {
 		outPath, err = storage.PartialPath(outputDir, code, meta.Name)
@@ -311,7 +320,7 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 		return fmt.Errorf("resume file name changed from %s to %s", resume.FileName, meta.Name)
 	}
 
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	if err := os.MkdirAll(outputDir, storage.PublicDirPerm); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
 	}
 
@@ -319,7 +328,7 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 	if offset == 0 {
 		flags |= os.O_TRUNC
 	}
-	out, err := os.OpenFile(outPath, flags, 0644)
+	out, err := os.OpenFile(outPath, flags, storage.PublicFilePerm)
 	if err != nil {
 		return fmt.Errorf("open output file: %w", err)
 	}

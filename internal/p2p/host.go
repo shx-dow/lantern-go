@@ -16,6 +16,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	"github.com/multiformats/go-multiaddr"
+	"github.com/shx-dow/lantern-go/internal/storage"
 )
 
 const ProtocolID = "/lantern/transfer/2.0.0"
@@ -45,7 +46,7 @@ func NewNode(port int, bootstrapPeers []string, dataDirs ...string) (*Node, erro
 	if len(dataDirs) > 0 && dataDirs[0] != "" {
 		localDir = dataDirs[0]
 	}
-	if err := os.MkdirAll(localDir, 0700); err != nil {
+	if err := os.MkdirAll(localDir, storage.PrivateDirPerm); err != nil {
 		cancel()
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
@@ -145,7 +146,7 @@ func (n *Node) Close() error {
 }
 
 func GenerateCode() (string, error) {
-	b := make([]byte, 16)
+	b := make([]byte, CodeBytes)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("generate code: %w", err)
 	}
