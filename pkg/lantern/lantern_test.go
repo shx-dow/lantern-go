@@ -2,10 +2,13 @@ package lantern
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 )
+
+var errTest = errors.New("test error")
 
 func TestSubscribeReceivesEventsAndStopsOnCancel(t *testing.T) {
 	l := &Lantern{
@@ -48,6 +51,14 @@ func TestNewSessionHasIDImmediately(t *testing.T) {
 	if s.ID() != "code-1" {
 		t.Fatalf("session ID is %q, want code-1", s.ID())
 	}
+	if s.State() != TransferRunning {
+		t.Fatalf("session state is %v, want running", s.State())
+	}
+	select {
+	case <-s.Done():
+		t.Fatal("fresh session reports done")
+	default:
+	}
 }
 
 func TestSessionTracksOnlyItsTransfer(t *testing.T) {	l := &Lantern{
@@ -61,6 +72,10 @@ func TestSessionTracksOnlyItsTransfer(t *testing.T) {	l := &Lantern{
 	if s.State() != TransferRunning {
 		t.Fatalf("unrelated event changed state to %v", s.State())
 	}
+	l.emit(Event{TransferID: "transfer-1", Type: EventTransferProgress, Bytes: 1, Total: 2})
+	if s.State() != TransferRunning {
+		t.Fatalf("progress event changed state to %v", s.State())
+	}
 	l.emit(Event{TransferID: "transfer-1", Type: EventTransferDone})
 	if s.State() != TransferDone {
 		t.Fatalf("session state is %v, want done", s.State())
@@ -69,6 +84,25 @@ func TestSessionTracksOnlyItsTransfer(t *testing.T) {	l := &Lantern{
 	case <-s.Done():
 	default:
 		t.Fatal("session did not close Done")
+	}
+}
+
+func TestSessionFailsOnTransferError(t *testing.T) {
+	l := &Lantern{
+		events:      make(chan Event, 1),
+		subscribers: make(map[uint64]subscription),
+	}
+	s := l.newSession(context.Background(), "transfer-9")
+	defer s.Close()
+
+	l.emit(Event{TransferID: "transfer-9", Type: EventError, Err: errTest})
+	if s.State() != TransferFailed {
+		t.Fatalf("session state is %v, want failed", s.State())
+	}
+	select {
+	case <-s.Done():
+	default:
+		t.Fatal("failed session did not close Done")
 	}
 }
 

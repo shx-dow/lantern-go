@@ -169,6 +169,22 @@ func TestAuthProofBindsChallengeAndOffset(t *testing.T) {
 	if VerifyAuthProof("wrong", challenge, 12, proof) || VerifyAuthProof("secret", challenge, 13, proof) {
 		t.Fatal("proof accepted with altered credentials")
 	}
+	mutated := bytes.Clone(challenge)
+	mutated[0] ^= 1
+	if VerifyAuthProof("secret", mutated, 12, proof) {
+		t.Fatal("proof accepted with mutated challenge")
+	}
+	if VerifyAuthProof("secret", challenge, 12, proof[:16]) {
+		t.Fatal("truncated proof was accepted")
+	}
+	for _, bad := range [][]byte{nil, challenge[:31], append(bytes.Clone(challenge), 0)} {
+		if _, err := AuthProof("secret", bad, 12); err == nil {
+			t.Fatalf("challenge of length %d was accepted", len(bad))
+		}
+		if VerifyAuthProof("secret", bad, 12, proof) {
+			t.Fatal("proof verified with malformed challenge")
+		}
+	}
 	if _, err := AuthProof("secret", challenge, -1); err == nil {
 		t.Fatal("negative offset was accepted")
 	}
@@ -199,5 +215,46 @@ func TestDecryptRejectsTamperedCiphertext(t *testing.T) {
 	}
 	if _, err := io.ReadAll(r); err == nil {
 		t.Fatal("tampered ciphertext was accepted")
+	}
+}
+
+func TestDecryptRejectsTruncationAndWrongKey(t *testing.T) {
+	key, err := DeriveKey("tamper-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire bytes.Buffer
+	w, err := NewEncryptedWriter(&wire, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Repeat([]byte("0123456789abcdef"), 8192)
+	if _, err := w.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	full := wire.Bytes()
+
+	truncated := full[:len(full)-10]
+	r, err := NewEncryptedReader(bytes.NewReader(truncated), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(r); err == nil {
+		t.Fatal("truncated stream was accepted")
+	}
+
+	other, err := DeriveKey("other-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err = NewEncryptedReader(bytes.NewReader(full), other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(r); err == nil {
+		t.Fatal("wrong-key stream was accepted")
 	}
 }
