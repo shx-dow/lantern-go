@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 )
 
+// ResumeState checkpoints a partial download so a retry continues at
+// Offset instead of restarting.
 type ResumeState struct {
 	Code     string `json:"code"`
 	FileName string `json:"file_name"`
@@ -35,8 +37,8 @@ func CheckFileName(name string) error {
 	return nil
 }
 
-// LoadResume returns a valid resume state. Invalid or stale state is removed
-// and treated as no resumable transfer.
+// LoadResume returns the checkpoint for code, or ok=false when there is
+// none. Corrupt or stale entries are removed and treated as no resume.
 func LoadResume(outputDir, code string) (ResumeState, bool, error) {
 	path, err := statePath(outputDir, code)
 	if err != nil {
@@ -73,7 +75,8 @@ func LoadResume(outputDir, code string) (ResumeState, bool, error) {
 	return state, true, nil
 }
 
-// SaveResume atomically replaces the resume state with a private file.
+// SaveResume atomically replaces the checkpoint via temp file + rename so
+// crashes never leave a half-written state.
 func SaveResume(outputDir string, state ResumeState) error {
 	if _, err := safeCode(state.Code); err != nil {
 		return err
@@ -118,6 +121,7 @@ func SaveResume(outputDir string, state ResumeState) error {
 	return nil
 }
 
+// ClearResume removes the checkpoint; a missing one is not an error.
 func ClearResume(outputDir, code string) error {
 	path, err := statePath(outputDir, code)
 	if err != nil {
@@ -130,6 +134,8 @@ func ClearResume(outputDir, code string) error {
 	return err
 }
 
+// PartialPath is the on-disk location of the in-progress download for
+// code and fileName. It errors on codes that would escape outputDir.
 func PartialPath(outputDir, code, fileName string) (string, error) {
 	safe, err := safeCode(code)
 	if err != nil {

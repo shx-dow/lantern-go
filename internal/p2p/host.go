@@ -19,8 +19,12 @@ import (
 	"github.com/shx-dow/lantern-go/internal/storage"
 )
 
+// ProtocolID is the libp2p stream protocol for transfers; bump it for
+// any wire-incompatible handshake or framing change.
 const ProtocolID = "/lantern/transfer/2.0.0"
 
+// DefaultBootstrapPeers are the public libp2p DHT bootstraps used when
+// the caller supplies none.
 var DefaultBootstrapPeers = []string{
 	"/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
 	"/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
@@ -28,6 +32,9 @@ var DefaultBootstrapPeers = []string{
 	"/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
 }
 
+// Node is a libp2p host with DHT discovery and transfer handlers.
+// Construct via NewNode; Host and DHT stay exported for dialing and
+// providing until the transport seam is extracted.
 type Node struct {
 	Host     host.Host
 	DHT      *dht.IpfsDHT
@@ -40,6 +47,9 @@ type Node struct {
 	handlerOnce sync.Once
 }
 
+// NewNode brings up a TCP+QUIC host with relay, hole punching, DHT in
+// server mode, and mDNS. dataDirs optionally overrides the directory for
+// local advertisements; only the first entry is used.
 func NewNode(port int, bootstrapPeers []string, dataDirs ...string) (*Node, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	localDir := os.TempDir()
@@ -133,6 +143,8 @@ func (m *mdnsDiscovery) HandlePeerFound(pi peer.AddrInfo) {
 	}()
 }
 
+// Close cancels discovery, then closes the DHT and host, joining errors.
+// A zero-value Node (as built in tests) is safe to close.
 func (n *Node) Close() error {
 	n.cancel()
 	var dhtErr, hostErr error
@@ -145,6 +157,7 @@ func (n *Node) Close() error {
 	return errors.Join(dhtErr, hostErr)
 }
 
+// GenerateCode mints a CodeBytes-entropy hex share code.
 func GenerateCode() (string, error) {
 	b := make([]byte, CodeBytes)
 	if _, err := rand.Read(b); err != nil {

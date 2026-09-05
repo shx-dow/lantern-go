@@ -2,7 +2,7 @@ package format
 
 import "fmt"
 
-// Bytes renders a byte count in human units.
+// Bytes renders a byte count in 1024-based human units.
 func Bytes(b int64) string {
 	const unit = 1024
 	if b < unit {

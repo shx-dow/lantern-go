@@ -16,14 +16,20 @@ import (
 )
 
 const (
+	// ChunkSize bounds one encrypted frame's plaintext.
 	ChunkSize = 64 * 1024
-	KeySize   = 32
+	// KeySize is the HKDF output length for file keys.
+	KeySize = 32
+	// NonceSize is the GCM nonce carried per frame.
 	NonceSize = 12
-	TagSize   = 16
+	// TagSize is the GCM authentication tag per frame.
+	TagSize = 16
 	// ChallengeBytes is the size of the receiver's authentication challenge.
 	ChallengeBytes = 32
 )
 
+// DeriveKey stretches a share code into a file-encryption key; different
+// codes yield unrelated keys.
 func DeriveKey(code string) ([]byte, error) {
 	return deriveKey(code, "file-encryption-key")
 }
@@ -37,6 +43,8 @@ func deriveKey(code, info string) ([]byte, error) {
 	return key, nil
 }
 
+// AuthProof binds challenge and resume offset to the share code with a
+// domain-separated HMAC; the sender re-derives it to authenticate receivers.
 func AuthProof(code string, challenge []byte, offset int64) ([]byte, error) {
 	if len(challenge) != ChallengeBytes {
 		return nil, errors.New("challenge must be 32 bytes")
@@ -57,11 +65,15 @@ func AuthProof(code string, challenge []byte, offset int64) ([]byte, error) {
 	return mac.Sum(nil), nil
 }
 
+// VerifyAuthProof reports whether proof is the valid AuthProof for the
+// given code, challenge, and offset.
 func VerifyAuthProof(code string, challenge []byte, offset int64, proof []byte) bool {
 	want, err := AuthProof(code, challenge, offset)
 	return err == nil && hmac.Equal(want, proof)
 }
 
+// EncryptedWriter frames plaintext into independently decryptable
+// chunks, each with a fresh random nonce. Close flushes the tail chunk.
 type EncryptedWriter struct {
 	w       io.Writer
 	gcm     cipher.AEAD
@@ -69,6 +81,7 @@ type EncryptedWriter struct {
 	scratch [4 + NonceSize + ChunkSize + TagSize]byte
 }
 
+// NewEncryptedWriter encrypts chunked frames onto w with key.
 func NewEncryptedWriter(w io.Writer, key []byte) (*EncryptedWriter, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -135,6 +148,7 @@ func (ew *EncryptedWriter) Close() error {
 	return ew.flush()
 }
 
+// EncryptedReader decrypts a stream produced by EncryptedWriter.
 type EncryptedReader struct {
 	r      io.Reader
 	gcm    cipher.AEAD
@@ -143,6 +157,7 @@ type EncryptedReader struct {
 	header [4 + NonceSize]byte
 }
 
+// NewEncryptedReader decrypts chunked frames from r with key.
 func NewEncryptedReader(r io.Reader, key []byte) (*EncryptedReader, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {

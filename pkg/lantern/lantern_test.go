@@ -61,7 +61,8 @@ func TestNewSessionHasIDImmediately(t *testing.T) {
 	}
 }
 
-func TestSessionTracksOnlyItsTransfer(t *testing.T) {	l := &Lantern{
+func TestSessionTracksOnlyItsTransfer(t *testing.T) {
+	l := &Lantern{
 		events:      make(chan Event, 1),
 		subscribers: make(map[uint64]subscription),
 	}
