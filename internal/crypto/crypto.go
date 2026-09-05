@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/shx-dow/lantern-go/internal/protocol"
 	"golang.org/x/crypto/hkdf"
 )
 
@@ -61,17 +62,12 @@ func VerifyAuthProof(code string, challenge []byte, offset int64, proof []byte) 
 
 type EncryptedWriter struct {
 	w       io.Writer
-	block   cipher.Block
 	gcm     cipher.AEAD
 	buf     []byte
 	scratch [4 + NonceSize + ChunkSize + TagSize]byte
 }
 
 func NewEncryptedWriter(w io.Writer, key []byte) (*EncryptedWriter, error) {
-	return NewEncryptedWriterAt(w, key, 0)
-}
-
-func NewEncryptedWriterAt(w io.Writer, key []byte, _ int64) (*EncryptedWriter, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("new cipher: %w", err)
@@ -81,10 +77,9 @@ func NewEncryptedWriterAt(w io.Writer, key []byte, _ int64) (*EncryptedWriter, e
 		return nil, fmt.Errorf("new gcm: %w", err)
 	}
 	return &EncryptedWriter{
-		w:     w,
-		block: block,
-		gcm:   gcm,
-		buf:   make([]byte, 0, ChunkSize),
+		w:   w,
+		gcm: gcm,
+		buf: make([]byte, 0, ChunkSize),
 	}, nil
 }
 
@@ -128,25 +123,8 @@ func (ew *EncryptedWriter) flush() error {
 	copy(ew.scratch[4+NonceSize:], ciphertext)
 
 	totalLen := 4 + NonceSize + payloadLen
-	if err := writeFull(ew.w, ew.scratch[:totalLen]); err != nil {
+	if err := protocol.WriteFull(ew.w, ew.scratch[:totalLen]); err != nil {
 		return fmt.Errorf("write encrypted chunk: %w", err)
-	}
-	return nil
-}
-
-func writeFull(w io.Writer, p []byte) error {
-	for len(p) > 0 {
-		n, err := w.Write(p)
-		if n < 0 || n > len(p) {
-			return fmt.Errorf("invalid write count %d", n)
-		}
-		p = p[n:]
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
-		}
 	}
 	return nil
 }
@@ -164,10 +142,6 @@ type EncryptedReader struct {
 }
 
 func NewEncryptedReader(r io.Reader, key []byte) (*EncryptedReader, error) {
-	return NewEncryptedReaderAt(r, key, 0)
-}
-
-func NewEncryptedReaderAt(r io.Reader, key []byte, _ int64) (*EncryptedReader, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("new cipher: %w", err)

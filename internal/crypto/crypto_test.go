@@ -79,7 +79,9 @@ func TestEncryptDecryptLarge(t *testing.T) {
 	}
 }
 
-func TestEncryptResume(t *testing.T) {
+// Each encrypted chunk carries a fresh random nonce, so independently
+// encrypted streams concatenate and still decrypt as one stream.
+func TestEncryptConcatenatedStreamsDecrypt(t *testing.T) {
 	key, err := DeriveKey("resume1")
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +93,7 @@ func TestEncryptResume(t *testing.T) {
 	}
 
 	var first bytes.Buffer
-	w, err := NewEncryptedWriterAt(&first, key, 0)
+	w, err := NewEncryptedWriter(&first, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,9 +104,8 @@ func TestEncryptResume(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	startChunk := int64(100 * 1024 / ChunkSize)
 	var second bytes.Buffer
-	w2, err := NewEncryptedWriterAt(&second, key, startChunk)
+	w2, err := NewEncryptedWriter(&second, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +117,7 @@ func TestEncryptResume(t *testing.T) {
 	}
 
 	combined := io.MultiReader(&first, &second)
-	r, err := NewEncryptedReaderAt(combined, key, 0)
+	r, err := NewEncryptedReader(combined, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +127,7 @@ func TestEncryptResume(t *testing.T) {
 	}
 
 	if !bytes.Equal(plaintext, result) {
-		t.Fatal("resume round-trip failed")
+		t.Fatal("concatenated streams round-trip failed")
 	}
 }
 

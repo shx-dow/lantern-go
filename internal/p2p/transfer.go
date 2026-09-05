@@ -158,7 +158,7 @@ func (n *Node) serveShare(s network.Stream) {
 		return
 	}
 
-	ew, err := crypto.NewEncryptedWriterAt(s, key, 0)
+	ew, err := crypto.NewEncryptedWriter(s, key)
 	if err != nil {
 		progress <- TransferProgress{Err: fmt.Errorf("create encrypt: %w", err)}
 		return
@@ -284,7 +284,7 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 		return fmt.Errorf("derive key: %w", err)
 	}
 
-	er, err := crypto.NewEncryptedReaderAt(s, key, 0)
+	er, err := crypto.NewEncryptedReader(s, key)
 	if err != nil {
 		return fmt.Errorf("create decrypt: %w", err)
 	}
