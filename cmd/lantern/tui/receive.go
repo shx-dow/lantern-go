@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -31,24 +30,20 @@ type receiveModel struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	input      textinput.Model
-	peer       *lantern.Peer
 	session    *lantern.Session
 	progress   progress.Model
 	spinner    spinner.Model
-	help       help.Model
 	keys       receiveKeyMap
 	bytes      int64
 	total      int64
 	fileName   string
 	err        error
 	outputDir  string
-	receiveCh  chan receiveResult
+	receiveCh  chan sessionResult
 	events     <-chan lantern.Event
 	startedAt  time.Time
 	finishedAt time.Time
 	showHelp   bool
-	width      int
-	height     int
 }
 
 type receiveKeyMap struct {
@@ -58,17 +53,6 @@ type receiveKeyMap struct {
 	Quit    key.Binding
 	Help    key.Binding
 	Refresh key.Binding
-}
-
-func (k receiveKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Submit, k.Cancel, k.Help}
-}
-
-func (k receiveKeyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{
-		{k.Submit, k.Cancel, k.Help, k.Refresh},
-		{k.Dismiss, k.Quit},
-	}
 }
 
 func defaultReceiveKeyMap() receiveKeyMap {
@@ -99,16 +83,13 @@ func newReceiveModel(ln *lantern.Lantern, outputDir string) receiveModel {
 		input:     ti,
 		progress:  progress.New(progress.WithDefaultGradient(), progress.WithWidth(50)),
 		spinner:   spinner.New(spinner.WithSpinner(spinner.Dot)),
-		help:      help.New(),
 		keys:      defaultReceiveKeyMap(),
 		outputDir: outputDir,
-		receiveCh: make(chan receiveResult, 1),
+		receiveCh: make(chan sessionResult, 1),
 	}
 }
 
-func (m *receiveModel) setSize(w, h int) {
-	m.width = w
-	m.height = h
+func (m *receiveModel) setSize(w, _ int) {
 	if w > 0 {
 		m.input.Width = contentWidth(w)
 	}
@@ -154,8 +135,8 @@ func (m receiveModel) updateInputCode(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state = recvDiscovering
 				m.spinner = spinner.New(spinner.WithSpinner(spinner.Dot))
 				go func() {
-					s, peer, err := m.lantern.ReceiveSession(m.ctx, code, m.outputDir)
-					m.receiveCh <- receiveResult{peer: peer, session: s, err: err}
+					s, _, err := m.lantern.ReceiveSession(m.ctx, code, m.outputDir)
+					m.receiveCh <- sessionResult{session: s, err: err}
 				}()
 				return m, spinner.Tick
 			}
@@ -175,7 +156,6 @@ func (m receiveModel) updateDiscovering(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = r.err
 			return m, nil
 		}
-		m.peer = r.peer
 		m.session = r.session
 		if m.session != nil {
 			m.events = m.session.Events()

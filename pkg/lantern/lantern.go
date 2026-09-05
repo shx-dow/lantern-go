@@ -173,7 +173,7 @@ func (l *Lantern) newSession(ctx context.Context, id string) *Session {
 		id:     id,
 		ctx:    sessionCtx,
 		cancel: cancel,
-		state:  TransferPending,
+		state:  TransferRunning,
 		done:   make(chan struct{}),
 	}
 	s.events, s.unsubscribe = l.subscribe(128, func(e Event) {

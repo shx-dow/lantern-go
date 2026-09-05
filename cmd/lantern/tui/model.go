@@ -19,13 +19,7 @@ type transferProgressMsg struct {
 	done     bool
 }
 
-type shareResult struct {
-	peer    *lantern.Peer
-	session *lantern.Session
-	err     error
-}
-
-type receiveResult struct {
+type sessionResult struct {
 	peer    *lantern.Peer
 	session *lantern.Session
 	err     error
@@ -36,13 +30,6 @@ func contentWidth(w int) int {
 		return 80
 	}
 	return w
-}
-
-func contentHeight(h int) int {
-	if h <= 0 {
-		return 20
-	}
-	return h
 }
 
 func screenCanvas(w, h int, body string) string {

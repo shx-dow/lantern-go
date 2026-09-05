@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/progress"
@@ -49,13 +48,6 @@ func (i dirItem) Title() string {
 	return "📄 " + i.name
 }
 
-func (i dirItem) Description() string {
-	if i.isDir {
-		return "directory"
-	}
-	return "file"
-}
-
 func (i dirItem) detailLines() []string {
 	if i.isDir {
 		return []string{
@@ -82,11 +74,10 @@ type sendModel struct {
 	list     list.Model
 	progress progress.Model
 	spinner  spinner.Model
-	help     help.Model
 	keys     sendKeyMap
 	peer     *lantern.Peer
 	session  *lantern.Session
-	shareCh  chan shareResult
+	shareCh  chan sessionResult
 	events   <-chan lantern.Event
 	viewport viewport.Model
 
@@ -97,7 +88,6 @@ type sendModel struct {
 	startedAt    time.Time
 	finishedAt   time.Time
 	err          error
-	showHelp     bool
 	width        int
 	height       int
 }
@@ -110,19 +100,7 @@ type sendKeyMap struct {
 	Cancel  key.Binding
 	Dismiss key.Binding
 	Quit    key.Binding
-	Help    key.Binding
 	Refresh key.Binding
-}
-
-func (k sendKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Open, k.Back, k.Cancel, k.Help}
-}
-
-func (k sendKeyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{
-		{k.Up, k.Down, k.Open, k.Back},
-		{k.Cancel, k.Dismiss, k.Help, k.Quit, k.Refresh},
-	}
 }
 
 func defaultSendKeyMap() sendKeyMap {
@@ -134,7 +112,6 @@ func defaultSendKeyMap() sendKeyMap {
 		Cancel:  key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
 		Dismiss: key.NewBinding(key.WithKeys("enter", "esc"), key.WithHelp("enter/esc", "close")),
 		Quit:    key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
-		Help:    key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "toggle help")),
 		Refresh: key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
 	}
 }
@@ -153,9 +130,8 @@ func newSendModel(ln *lantern.Lantern) sendModel {
 		list:     li,
 		progress: progress.New(progress.WithDefaultGradient(), progress.WithWidth(50)),
 		spinner:  spinner.New(spinner.WithSpinner(spinner.Dot)),
-		help:     help.New(),
 		keys:     defaultSendKeyMap(),
-		shareCh:  make(chan shareResult, 1),
+		shareCh:  make(chan sessionResult, 1),
 		viewport: viewport.New(0, 0),
 	}
 }
@@ -250,16 +226,16 @@ func (m sendModel) renderPicker() string {
 
 	left := m.list.View()
 	if len(items) == 0 {
-		left = emptyPickerArt(leftWidth, leftHeight)
+		left = emptyPickerArt()
 	}
 	selectedLine := ""
-	selectedPath := m.dir
+	previewPath := m.dir
 	selectedName := filepath.Base(m.dir)
 	selectedMeta := "dir"
 
 	if len(items) > 0 && selected >= 0 {
 		if it, ok := items[selected].(dirItem); ok {
-			selectedPath = it.path
+			previewPath = it.path
 			selectedName = it.name
 			if it.isDir {
 				selectedMeta = "directory"
@@ -284,7 +260,7 @@ func (m sendModel) renderPicker() string {
 	detail.WriteString(" ")
 	detail.WriteString(headingStyle.Render(selectedName))
 	detail.WriteString("\n")
-	detail.WriteString(infoStyle.Render(wrapLine(selectedPath, rightWidth-4)))
+	detail.WriteString(infoStyle.Render(wrapLine(previewPath, rightWidth-4)))
 	detail.WriteString("\n\n")
 	if selected >= 0 {
 		if it, ok := items[selected].(dirItem); ok {
@@ -319,7 +295,7 @@ func (m sendModel) renderPicker() string {
 		header += "  " + infoStyle.Render(breadcrumb)
 	}
 
-	helpLine := helpStyle.Render("↑/↓ move  enter open/select  esc back  r refresh  ? help  q quit")
+	helpLine := helpStyle.Render("↑/↓ move  enter open/select  esc back  r refresh  q quit")
 	return lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", status, helpLine)
 }
 
@@ -341,7 +317,7 @@ func breadcrumbPath(dir string, width int) string {
 	return "path: " + path
 }
 
-func emptyPickerArt(width, height int) string {
+func emptyPickerArt() string {
 	lines := []string{
 		"┌───────────────┐",
 		"│   empty dir   │",
@@ -405,8 +381,6 @@ func (m sendModel) updatePickFile(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.dir = parent
 				m.list = newSendList(loadSendItems(m.dir), m.list.Width(), m.list.Height())
 			}
-		case key.Matches(msg, m.keys.Help):
-			m.showHelp = !m.showHelp
 		case key.Matches(msg, m.keys.Refresh):
 			m.list = newSendList(loadSendItems(m.dir), m.list.Width(), m.list.Height())
 		case key.Matches(msg, m.keys.Open):
@@ -422,7 +396,7 @@ func (m sendModel) updatePickFile(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.spinner = spinner.New(spinner.WithSpinner(spinner.Dot))
 				go func() {
 					s, p, err := m.lantern.ShareSession(m.ctx, m.selectedPath)
-					m.shareCh <- shareResult{peer: p, session: s, err: err}
+					m.shareCh <- sessionResult{peer: p, session: s, err: err}
 				}()
 				return m, spinner.Tick
 			}

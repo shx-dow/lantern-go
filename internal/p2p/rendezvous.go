@@ -157,13 +157,6 @@ func (n *Node) Discover(ctx context.Context, code string) (peer.AddrInfo, error)
 	}
 }
 
-func (n *Node) AddrInfo() peer.AddrInfo {
-	return peer.AddrInfo{
-		ID:    n.Host.ID(),
-		Addrs: n.Host.Addrs(),
-	}
-}
-
 func codeToCID(code string) cid.Cid {
 	h, err := multihash.Sum([]byte(code), multihash.SHA2_256, -1)
 	if err != nil {

@@ -63,10 +63,6 @@ func ReadMetadata(r io.Reader, dst any) error {
 	return nil
 }
 
-func writeFull(w io.Writer, p []byte) error {
-	return WriteFull(w, p)
-}
-
 // WriteFull writes all of p to w, guarding against short writes.
 func WriteFull(w io.Writer, p []byte) error {
 	for len(p) > 0 {
