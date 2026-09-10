@@ -342,6 +342,13 @@ func (l *Lantern) forwardProgress(ctx context.Context, progress <-chan p2p.Trans
 	}
 }
 
+// Node exposes the underlying p2p node for daemon status (peer ID,
+// listen addresses). It stays exported until the transport seam is
+// extracted; callers must not close or mutate it.
+func (l *Lantern) Node() *p2p.Node {
+	return l.node
+}
+
 // Close shuts down the node and all subscriptions. It is idempotent and
 // reports the first shutdown error.
 func (l *Lantern) Close() error {

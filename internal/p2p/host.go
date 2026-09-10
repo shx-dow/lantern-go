@@ -82,7 +82,13 @@ func NewNode(port int, bootstrapPeers []string, dataDirs ...string) (*Node, erro
 	var dhtOpts []dht.Option
 	dhtOpts = append(dhtOpts, dht.Mode(dht.ModeServer))
 
-	if len(bootstrapPeers) == 0 {
+	// The sentinel BootstrapPeers{"none"} selects LAN-only mode: no public
+	// bootstraps, mDNS plus local advertisements only. An empty slice
+	// keeps the historical default of the public bootstraps.
+	lanOnly := len(bootstrapPeers) == 1 && bootstrapPeers[0] == "none"
+	if lanOnly {
+		bootstrapPeers = nil
+	} else if len(bootstrapPeers) == 0 {
 		bootstrapPeers = DefaultBootstrapPeers
 	}
 
