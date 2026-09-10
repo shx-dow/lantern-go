@@ -132,8 +132,13 @@ func (n *Node) serveShare(s network.Stream) {
 		return
 	}
 	progress := state.progress
-	defer close(progress)
+	// Teardown order matters (defers run LIFO): the progress channel must
+	// close before state.done() cancels the advertisement context.
+	// forwardProgress selects on both, so cancelling first lets it observe
+	// the cancelled context and drop the buffered final message, leaving
+	// the sender stuck in running with the receiver already done.
 	defer state.done()
+	defer close(progress)
 	defer n.ClearLocal(state.code)
 	defer n.forgetShare(state.code)
 

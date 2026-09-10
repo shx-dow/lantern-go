@@ -272,7 +272,10 @@ func (l *Lantern) shareWithCode(ctx context.Context, path string, code string) (
 	go l.forwardProgress(advCtx, progress, code)
 
 	go func() {
-		if err := l.node.Advertise(advCtx, code); err != nil && ctx.Err() == nil {
+		// advCancel fires on normal completion (serveShare's deferred
+		// state.done), so ignore cancellation of advCtx itself: it only
+		// means the share finished, not that advertising failed.
+		if err := l.node.Advertise(advCtx, code); err != nil && ctx.Err() == nil && advCtx.Err() == nil {
 			l.emit(Event{TransferID: code, Type: EventError, Err: fmt.Errorf("advertise: %w", err)})
 		}
 		advCancel()
@@ -334,7 +337,7 @@ func (l *Lantern) forwardProgress(ctx context.Context, progress <-chan p2p.Trans
 				continue
 			}
 			if p.Done {
-				l.emit(Event{TransferID: transferID, Type: EventTransferDone, FileName: p.FileName})
+				l.emit(Event{TransferID: transferID, Type: EventTransferDone, FileName: p.FileName, Bytes: p.Bytes, Total: p.Total})
 			} else {
 				l.emit(Event{TransferID: transferID, Type: EventTransferProgress, FileName: p.FileName, Bytes: p.Bytes, Total: p.Total})
 			}

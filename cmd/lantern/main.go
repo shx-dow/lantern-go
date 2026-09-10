@@ -1,15 +1,19 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/shx-dow/lantern-go/internal/format"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
@@ -28,11 +32,15 @@ func init() {
 	log.SetOutput(mdnsFilter{})
 }
 
+const defaultDaemonURL = "http://127.0.0.1:43782"
+
 type cliOptions struct {
 	jsonOut    bool
 	port       int
 	dataDir    string
 	outDir     string
+	daemon     bool
+	daemonURL  string
 	command    string
 	positional []string
 }
@@ -50,16 +58,21 @@ func main() {
 		return
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go handleSignal(cancel, opts.jsonOut)
+
+	if opts.daemon {
+		runDaemonCommand(ctx, opts)
+		return
+	}
+
 	ln, err := lantern.New(lantern.Config{Port: opts.port, DataDir: opts.dataDir})
 	if err != nil {
 		fatal(opts.jsonOut, err)
 	}
 	defer ln.Close()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go handleSignal(cancel, opts.jsonOut)
 
 	switch opts.command {
 	case "send":
@@ -76,11 +89,35 @@ func main() {
 func parseArgs(args []string) (cliOptions, error) {
 	var opts cliOptions
 	opts.outDir = "."
+	opts.daemonURL = os.Getenv("LANTERND_URL")
+	if opts.daemonURL == "" {
+		opts.daemonURL = defaultDaemonURL
+	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case a == "--json":
 			opts.jsonOut = true
+		case a == "--daemon":
+			opts.daemon = true
+		case strings.HasPrefix(a, "--daemon="):
+			opts.daemon = true
+			if v := strings.TrimPrefix(a, "--daemon="); v != "" {
+				opts.daemonURL = normalizeBaseURL(v)
+			}
+		case a == "--daemon-url" || a == "--daemon-addr":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("flag %s needs a value", a)
+			}
+			i++
+			opts.daemon = true
+			opts.daemonURL = normalizeBaseURL(args[i])
+		case strings.HasPrefix(a, "--daemon-url="):
+			opts.daemon = true
+			opts.daemonURL = normalizeBaseURL(strings.TrimPrefix(a, "--daemon-url="))
+		case strings.HasPrefix(a, "--daemon-addr="):
+			opts.daemon = true
+			opts.daemonURL = normalizeBaseURL(strings.TrimPrefix(a, "--daemon-addr="))
 		case a == "--out":
 			if i+1 >= len(args) {
 				return opts, fmt.Errorf("flag --out needs a value")
@@ -132,24 +169,434 @@ func parseArgs(args []string) (cliOptions, error) {
 	return opts, nil
 }
 
+func normalizeBaseURL(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return defaultDaemonURL
+	}
+	if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
+		return strings.TrimSuffix(v, "/")
+	}
+	if strings.HasPrefix(v, ":") {
+		return "http://127.0.0.1" + v
+	}
+	return "http://" + strings.TrimSuffix(v, "/")
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, `usage: lantern [--json] [--port N] [--data-dir DIR] <command> [args]
+	fmt.Fprintln(os.Stderr, `usage: lantern [--json] [--port N] [--data-dir DIR] [--daemon[=URL]] <command> [args]
 
 commands:
-  send <path>                share a file (prints a share code)
+  send <path>                  share a file (prints a share code)
   receive <code> [output-dir]  fetch a file (or use --out DIR)
+  status                       daemon status (needs --daemon)
+  list [transfers|history]     daemon transfers (needs --daemon)
 
 flags:
-  --json        machine-readable JSONL on stdout (agents/MCP/GUI)
-  --out DIR     receive output directory (default ".")
-  --port N      listen port (default 0 = random)
-  --data-dir DIR  local advertisement directory
+  --json            machine-readable JSONL on stdout (agents/MCP/GUI)
+  --out DIR         receive output directory (default ".")
+  --port N          in-process listen port (default 0 = random)
+  --data-dir DIR    in-process local advertisement directory
+  --daemon[=URL]    talk to lanternd instead of in-process node
+                    (default URL http://127.0.0.1:43782 or $LANTERND_URL)
+  --daemon-url URL  same as --daemon=URL
 
 examples:
   lantern send ./photo.jpg
   lantern send --json ./photo.jpg
-  lantern receive <code>
-  lantern receive --json <code> --out ./inbox`)
+  lantern --daemon send ./photo.jpg
+  lantern --daemon receive <code> --out ./inbox
+  lantern --daemon status`)
+}
+
+// daemonRecord mirrors internal/daemon Record JSON.
+type daemonRecord struct {
+	ID       string `json:"id"`
+	Kind     string `json:"kind"`
+	Code     string `json:"code"`
+	FileName string `json:"file_name"`
+	FileSize int64  `json:"file_size"`
+	Bytes    int64  `json:"bytes"`
+	Total    int64  `json:"total"`
+	State    string `json:"state"`
+	Error    string `json:"error"`
+	PeerID   string `json:"peer_id"`
+}
+
+type daemonClient struct {
+	base   string
+	api    *http.Client
+	stream *http.Client
+}
+
+func newDaemonClient(base string) *daemonClient {
+	return &daemonClient{
+		base:   strings.TrimSuffix(base, "/"),
+		api:    &http.Client{Timeout: 15 * time.Second},
+		stream: &http.Client{Timeout: 0},
+	}
+}
+
+func (c *daemonClient) post(path string, body any, out any, expected int) error {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(body); err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, c.base+path, &buf)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.api.Do(req)
+	if err != nil {
+		return fmt.Errorf("daemon %s: %w (is lanternd running at %s?)", path, err, c.base)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != expected {
+		return apiError(resp)
+	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
+func (c *daemonClient) get(path string, out any) error {
+	resp, err := c.api.Get(c.base + path)
+	if err != nil {
+		return fmt.Errorf("daemon %s: %w (is lanternd running at %s?)", path, err, c.base)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return apiError(resp)
+	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
+func apiError(resp *http.Response) error {
+	var m map[string]string
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+	if err := json.Unmarshal(body, &m); err == nil && m["error"] != "" {
+		return fmt.Errorf("daemon: %s (status %d)", m["error"], resp.StatusCode)
+	}
+	msg := strings.TrimSpace(string(body))
+	if msg == "" {
+		msg = resp.Status
+	}
+	return fmt.Errorf("daemon: %s (status %d)", msg, resp.StatusCode)
+}
+
+func runDaemonCommand(ctx context.Context, opts cliOptions) {
+	c := newDaemonClient(opts.daemonURL)
+	enc := json.NewEncoder(os.Stdout)
+	switch opts.command {
+	case "send":
+		if len(opts.positional) < 1 {
+			fatal(opts.jsonOut, fmt.Errorf("usage: lantern send <path>"))
+		}
+		var rec daemonRecord
+		if err := c.post("/v1/shares", map[string]string{"path": opts.positional[0]}, &rec, http.StatusCreated); err != nil {
+			fatal(opts.jsonOut, err)
+		}
+		if opts.jsonOut {
+			enc.Encode(map[string]any{"type": "share", "id": rec.ID, "code": rec.Code, "file_name": rec.FileName, "file_size": rec.FileSize})
+		} else {
+			fmt.Printf("share code: %s\n", rec.Code)
+			fmt.Fprintln(os.Stderr, "waiting for receiver...")
+		}
+		if runDaemonTransfer(ctx, c, enc, opts.jsonOut, rec.ID, "sent", rec.FileName) {
+			os.Exit(1)
+		}
+	case "receive":
+		if len(opts.positional) < 1 {
+			fatal(opts.jsonOut, fmt.Errorf("usage: lantern receive <code> [output-dir]"))
+		}
+		code := strings.TrimSpace(opts.positional[0])
+		outputDir := opts.outDir
+		if len(opts.positional) > 1 && opts.positional[1] != "" {
+			outputDir = opts.positional[1]
+		}
+		var rec daemonRecord
+		if err := c.post("/v1/fetches", map[string]string{"code": code, "out_dir": outputDir}, &rec, http.StatusCreated); err != nil {
+			fatal(opts.jsonOut, err)
+		}
+		if opts.jsonOut {
+			enc.Encode(map[string]any{"type": "peer", "id": rec.ID, "peer_id": rec.PeerID, "code": rec.Code})
+		} else {
+			fmt.Fprintf(os.Stderr, "fetching %s...\n", rec.ID)
+		}
+		if runDaemonTransfer(ctx, c, enc, opts.jsonOut, rec.ID, "received:", "") {
+			os.Exit(1)
+		}
+	case "status":
+		var st map[string]any
+		if err := c.get("/v1/status", &st); err != nil {
+			fatal(opts.jsonOut, err)
+		}
+		if opts.jsonOut {
+			enc.Encode(st)
+		} else {
+			fmt.Printf("peer: %v\nlan_only: %v\naddrs:\n", st["peer_id"], st["lan_only"])
+			if addrs, ok := st["addrs"].([]any); ok {
+				for _, a := range addrs {
+					fmt.Printf("  %v\n", a)
+				}
+			}
+		}
+	case "list":
+		what := "transfers"
+		if len(opts.positional) > 0 {
+			what = opts.positional[0]
+		}
+		switch what {
+		case "transfers", "shares":
+			kind := ""
+			if what == "shares" {
+				kind = "?kind=share"
+			}
+			var out map[string][]daemonRecord
+			path := "/v1/transfers" + kind
+			// /v1/shares returns {"shares":[...]}; normalize to transfers shape.
+			if what == "shares" {
+				var s struct {
+					Shares []daemonRecord `json:"shares"`
+				}
+				if err := c.get("/v1/shares", &s); err != nil {
+					fatal(opts.jsonOut, err)
+				}
+				out = map[string][]daemonRecord{"transfers": s.Shares}
+			} else if err := c.get(path, &out); err != nil {
+				fatal(opts.jsonOut, err)
+			}
+			if opts.jsonOut {
+				enc.Encode(out)
+			} else if len(out["transfers"]) == 0 {
+				fmt.Println("no transfers")
+			} else {
+				for _, r := range out["transfers"] {
+					fmt.Printf("%s %s %s %d/%d %s\n", r.ID, r.Kind, r.FileName, r.Bytes, r.Total, r.State)
+				}
+			}
+		case "history":
+			var out map[string][]daemonRecord
+			if err := c.get("/v1/history", &out); err != nil {
+				fatal(opts.jsonOut, err)
+			}
+			if opts.jsonOut {
+				enc.Encode(out)
+			} else if len(out["history"]) == 0 {
+				fmt.Println("no history")
+			} else {
+				for _, r := range out["history"] {
+					fmt.Printf("%s %s %s %s\n", r.ID, r.Kind, r.FileName, r.State)
+				}
+			}
+		default:
+			fatal(opts.jsonOut, fmt.Errorf("usage: lantern list [transfers|history]"))
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command %q\n", opts.command)
+		usage()
+		os.Exit(2)
+	}
+}
+
+type sseEvent struct {
+	Type     string `json:"type"`
+	ID       string `json:"id"`
+	FileName string `json:"file_name"`
+	Bytes    int64  `json:"bytes"`
+	Total    int64  `json:"total"`
+	Error    string `json:"error"`
+}
+
+// runDaemonTransfer streams SSE events for id until terminal, falling back
+// to polling when the stream drops. It mirrors runTransfer output and
+// reports whether the transfer failed.
+func runDaemonTransfer(ctx context.Context, c *daemonClient, enc *json.Encoder, jsonOut bool, id, doneVerb, doneName string) bool {
+	// Fast path: already terminal before SSE connects.
+	if rec, err := daemonGet(c, id); err == nil && isTerminal(rec.State) {
+		return emitDaemonRecord(enc, jsonOut, rec, doneVerb, doneName)
+	}
+	if err := streamDaemonEvents(ctx, c, enc, jsonOut, id, doneVerb, doneName); err == nil {
+		return false // stream saw terminal (or ctx cancelled, handled inside)
+	}
+	// Stream dropped without terminal: poll until terminal or ctx done.
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			if jsonOut {
+				enc.Encode(map[string]any{"type": "cancelled", "id": id})
+			} else {
+				fmt.Fprintln(os.Stderr, "\ncancelled")
+			}
+			return true
+		case <-ticker.C:
+			rec, err := daemonGet(c, id)
+			if err != nil {
+				continue
+			}
+			emitDaemonProgress(enc, jsonOut, rec)
+			if isTerminal(rec.State) {
+				return emitDaemonRecord(enc, jsonOut, rec, doneVerb, doneName)
+			}
+		}
+	}
+}
+
+func daemonGet(c *daemonClient, id string) (daemonRecord, error) {
+	var rec daemonRecord
+	err := c.get("/v1/transfers/"+id, &rec)
+	return rec, err
+}
+
+func isTerminal(state string) bool {
+	return state == "done" || state == "failed" || state == "canceled"
+}
+
+func streamDaemonEvents(ctx context.Context, c *daemonClient, enc *json.Encoder, jsonOut bool, id, doneVerb, doneName string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/v1/events", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := c.stream.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return apiError(resp)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	var eventName, data string
+	flush := func() (bool, error) {
+		defer func() { eventName, data = "", "" }()
+		if data == "" {
+			return false, nil
+		}
+		var e sseEvent
+		if err := json.Unmarshal([]byte(data), &e); err != nil {
+			return false, nil
+		}
+		if e.ID != "" && e.ID != id {
+			return false, nil
+		}
+		switch e.Type {
+		case "progress":
+			if jsonOut {
+				enc.Encode(map[string]any{"type": "progress", "id": e.ID, "file_name": e.FileName, "bytes": e.Bytes, "total": e.Total})
+			} else {
+				pct := progressPercent(e.Bytes, e.Total)
+				fmt.Fprintf(os.Stderr, "\rprogress: %.1f%% (%s / %s)", pct, format.Bytes(e.Bytes), format.Bytes(e.Total))
+			}
+			return false, nil
+		case "done":
+			name := doneName
+			if name == "" {
+				name = e.FileName
+			}
+			if jsonOut {
+				enc.Encode(map[string]any{"type": "done", "id": e.ID, "file_name": name, "bytes": e.Bytes, "total": e.Total})
+			} else {
+				fmt.Fprintf(os.Stderr, "\n%s %s\n", doneVerb, name)
+			}
+			return true, nil
+		case "error":
+			if jsonOut {
+				enc.Encode(map[string]any{"type": "error", "id": e.ID, "error": e.Error})
+			} else {
+				fmt.Fprintf(os.Stderr, "\nerror: %s\n", e.Error)
+			}
+			return true, fmt.Errorf("transfer failed")
+		case "cancelled":
+			if jsonOut {
+				enc.Encode(map[string]any{"type": "cancelled", "id": e.ID})
+			} else {
+				fmt.Fprintln(os.Stderr, "\ncancelled")
+			}
+			return true, fmt.Errorf("transfer cancelled")
+		default:
+			_ = eventName
+			return false, nil
+		}
+	}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			if done, err := flush(); err != nil || done {
+				return err
+			}
+			continue
+		}
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+		if v, ok := strings.CutPrefix(line, "event:"); ok {
+			eventName = strings.TrimSpace(v)
+			continue
+		}
+		if v, ok := strings.CutPrefix(line, "data:"); ok {
+			v = strings.TrimSpace(v)
+			if data != "" {
+				data += "\n"
+			}
+			data += v
+			continue
+		}
+	}
+	if err := scanner.Err(); err != nil && ctx.Err() == nil {
+		return err
+	}
+	return fmt.Errorf("stream closed")
+}
+
+func emitDaemonProgress(enc *json.Encoder, jsonOut bool, rec daemonRecord) {
+	if jsonOut {
+		return // polling path stays quiet; SSE already emitted progress
+	}
+	if rec.State == "running" && rec.Total > 0 {
+		pct := progressPercent(rec.Bytes, rec.Total)
+		fmt.Fprintf(os.Stderr, "\rprogress: %.1f%% (%s / %s)", pct, format.Bytes(rec.Bytes), format.Bytes(rec.Total))
+	}
+}
+
+func emitDaemonRecord(enc *json.Encoder, jsonOut bool, rec daemonRecord, doneVerb, doneName string) bool {
+	switch rec.State {
+	case "done":
+		name := doneName
+		if name == "" {
+			name = rec.FileName
+		}
+		if jsonOut {
+			enc.Encode(map[string]any{"type": "done", "id": rec.ID, "file_name": name, "bytes": rec.Bytes, "total": rec.Total})
+		} else {
+			fmt.Fprintf(os.Stderr, "\n%s %s\n", doneVerb, name)
+		}
+		return false
+	case "failed":
+		if jsonOut {
+			enc.Encode(map[string]any{"type": "error", "id": rec.ID, "error": rec.Error})
+		} else {
+			fmt.Fprintf(os.Stderr, "\nerror: %s\n", rec.Error)
+		}
+		return true
+	default:
+		if jsonOut {
+			enc.Encode(map[string]any{"type": "cancelled", "id": rec.ID})
+		} else {
+			fmt.Fprintln(os.Stderr, "\ncancelled")
+		}
+		return true
+	}
 }
 
 func runSend(ctx context.Context, ln *lantern.Lantern, opts cliOptions) {
