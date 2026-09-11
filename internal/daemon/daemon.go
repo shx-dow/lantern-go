@@ -280,6 +280,7 @@ func (d *Daemon) broadcast(e EventDTO) {
 }
 
 func (d *Daemon) watch(session *lantern.Session, id string) {
+	recorded := false
 	for e := range session.Events() {
 		d.mu.Lock()
 		rec, ok := d.records[id]
@@ -312,6 +313,7 @@ func (d *Daemon) watch(session *lantern.Session, id string) {
 			}
 			done := rec.snapshot()
 			d.pushHistoryLocked(done)
+			recorded = true
 			d.mu.Unlock()
 			d.broadcast(EventDTO{Type: "done", ID: id, FileName: done.FileName, Bytes: done.Bytes, Total: done.Total})
 			return
@@ -328,6 +330,7 @@ func (d *Daemon) watch(session *lantern.Session, id string) {
 			}
 			failed := rec.snapshot()
 			d.pushHistoryLocked(failed)
+			recorded = true
 			d.mu.Unlock()
 			d.broadcast(EventDTO{Type: "error", ID: id, Error: failed.Error})
 			return
@@ -335,12 +338,16 @@ func (d *Daemon) watch(session *lantern.Session, id string) {
 			d.mu.Unlock()
 		}
 	}
-	// Channel closed without a terminal event (e.g. Cancel): ensure history.
+	// Channel closed without a terminal event (e.g. Cancel, which marks
+	// the record before the channel drains): record history unless a
+	// terminal branch above already did.
 	d.mu.Lock()
 	rec, ok := d.records[id]
-	if ok && rec.State == StateRunning {
-		rec.State = StateCanceled
-		rec.UpdatedAt = time.Now()
+	if ok && !recorded {
+		if rec.State == StateRunning {
+			rec.State = StateCanceled
+			rec.UpdatedAt = time.Now()
+		}
 		d.pushHistoryLocked(rec.snapshot())
 	}
 	d.mu.Unlock()
