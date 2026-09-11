@@ -1,0 +1,397 @@
+openapi: 3.0.3
+info:
+  title: lanternd API
+  version: 1.0.0
+  description: |-
+    Localhost HTTP API for lanternd, the Lantern transfer daemon.
+    Single source of truth shared by the CLI (`lantern --daemon`),
+    the desktop GUI, SDKs, and any future MCP shim.
+
+    Design rules:
+    - File bytes NEVER flow through this API. Clients exchange share
+      codes and fetch content out-of-band over the p2p data plane.
+    - Transfer IDs ARE share codes (`Session.ID()`), so one identifier
+      addresses a share, its fetch, and its history entry.
+    - Progress is streamed over SSE (`GET /v1/events`); unary polling
+      (`GET /v1/transfers/{id}`) is the fallback and reconciliation path.
+    - All timestamps are RFC 3339.
+servers:
+  - url: http://127.0.0.1:43782
+    description: Default lanternd listen address (localhost only in v1).
+security:
+  - bearerAuth: []
+paths:
+  /v1/shares:
+    post:
+      summary: Share a file
+      description: |-
+        Advertise a local file under a fresh 128-bit share code.
+        The share lives until it is fetched, cancelled, revoked,
+        or `ttl_seconds` elapses. Supports `default_ttl_seconds`
+        from daemon config when `ttl_seconds` is omitted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShareRequest'
+            examples:
+              basic:
+                value: { path: /home/ava/photo.jpg }
+              expiring:
+                value: { path: /home/ava/photo.jpg, ttl_seconds: 600 }
+      responses:
+        '201':
+          description: Share created; ID equals the share code.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Record'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    get:
+      summary: List live shares
+      responses:
+        '200':
+          description: Live shares (running only; terminal ones move to history).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [shares]
+                properties:
+                  shares:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Record'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/shares/{id}:
+    delete:
+      summary: Revoke a share
+      description: Cancel the share and clear its local advertisement.
+      parameters:
+        - $ref: '#/components/parameters/TransferId'
+      responses:
+        '204':
+          description: Revoked.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/fetches:
+    post:
+      summary: Fetch a file by share code
+      description: |-
+        Discover the peer behind `code` (local advert, mDNS, then DHT
+        unless LAN-only) and pull the file into `out_dir`, resuming
+        any partial download. Codes are normalized (trimmed,
+        de-dashed, lowercased) before use.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FetchRequest'
+            example: { code: 6c41ebc5ced9c01d4a42e7a8674779e0, out_dir: /home/ben/inbox }
+      responses:
+        '201':
+          description: Fetch started; ID equals the share code.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Record'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/transfers:
+    get:
+      summary: List live transfers
+      parameters:
+        - name: kind
+          in: query
+          schema:
+            type: string
+            enum: [share, fetch]
+          description: Filter by kind; omit for everything.
+      responses:
+        '200':
+          description: Live transfers.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [transfers]
+                properties:
+                  transfers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Record'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/transfers/{id}:
+    get:
+      summary: Get one transfer
+      parameters:
+        - $ref: '#/components/parameters/TransferId'
+      responses:
+        '200':
+          description: Transfer snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Record'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      summary: Cancel a transfer
+      parameters:
+        - $ref: '#/components/parameters/TransferId'
+      responses:
+        '204':
+          description: Cancelled (no-op if already terminal).
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/history:
+    get:
+      summary: Recent terminal transfers
+      description: Last 50 finished/failed/cancelled transfers, oldest first.
+      responses:
+        '200':
+          description: History ring.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [history]
+                properties:
+                  history:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Record'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/status:
+    get:
+      summary: Daemon and node status
+      responses:
+        '200':
+          description: Peer identity, listen addresses, LAN mode.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/peers:
+    get:
+      summary: Connected peers
+      description: Currently connected libp2p peers (excluding self) with known addresses. Reflects live connections, not DHT history.
+      responses:
+        '200':
+          description: Peer list (empty array when alone).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [peers]
+                properties:
+                  peers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PeerInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/events:
+    get:
+      summary: Stream transfer events (SSE)
+      description: |-
+        `text/event-stream` of transfer events for ALL transfers; clients
+        filter by the `id` field. Reconnect strategy for v1: on drop,
+        `GET /v1/transfers` to reconcile, then resubscribe. The server
+        sends `: ping` comments every 15s to keep idle connections alive.
+
+        Event names and `data` payloads (all JSON, shape EventDTO):
+        - `progress`: `{type,id,file_name,bytes,total}`
+        - `done`: `{type,id,file_name,bytes,total}`
+        - `error`: `{type,id,error}`
+        - `cancelled`: `{type,id}` (cancel or TTL expiry)
+      responses:
+        '200':
+          description: Infinite event stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                example: "event: progress\ndata: {\"type\":\"progress\",\"id\":\"6c41…\",\"file_name\":\"big.bin\",\"bytes\":32768,\"total\":100000}\n\n"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          description: Streaming unsupported by the server stack (never in production).
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |-
+        Daemon bearer token: `--token`, `$LANTERND_TOKEN`, or the
+        auto-generated owner-only file `<data-dir>/.lanternd-token`.
+        CLI: `--daemon-token` / `$LANTERN_DAEMON_TOKEN`.
+  parameters:
+    TransferId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Transfer ID, which equals the share code.
+  responses:
+    BadRequest:
+      description: Invalid input.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing or invalid token.
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+          example: Bearer realm="lanternd"
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Unknown transfer ID.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Record:
+      type: object
+      required: [id, kind, code, state, started_at, updated_at]
+      properties:
+        id:
+          type: string
+          description: Transfer ID; always equals `code`.
+          example: 6c41ebc5ced9c01d4a42e7a8674779e0
+        kind:
+          type: string
+          enum: [share, fetch]
+        code:
+          type: string
+          description: 128-bit share code (32 lowercase hex chars).
+        file_name:
+          type: string
+          description: Base name; empty on fetches until metadata arrives.
+        file_size:
+          type: integer
+          format: int64
+          description: Source size; set on shares at creation.
+        bytes:
+          type: integer
+          format: int64
+        total:
+          type: integer
+          format: int64
+        state:
+          type: string
+          enum: [running, done, failed, canceled]
+        error:
+          type: string
+        peer_id:
+          type: string
+          description: Counterparty peer ID once known.
+        started_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: Set when created with a TTL.
+    ShareRequest:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+          description: Absolute or daemon-relative path of the file to share.
+        ttl_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Auto-cancel after N seconds; 0 (default) inherits daemon default-ttl, which itself defaults to no expiry.
+    FetchRequest:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          description: Share code (case/dash/space tolerant).
+        out_dir:
+          type: string
+          description: Destination directory; defaults to ".".
+    Status:
+      type: object
+      properties:
+        peer_id:
+          type: string
+        addrs:
+          type: array
+          items:
+            type: string
+        lan_only:
+          type: boolean
+    PeerInfo:
+      type: object
+      required: [id, addrs, connected]
+      properties:
+        id:
+          type: string
+        addrs:
+          type: array
+          items:
+            type: string
+        connected:
+          type: boolean
+    EventDTO:
+      type: object
+      required: [type, id]
+      properties:
+        type:
+          type: string
+          enum: [progress, done, error, cancelled]
+        id:
+          type: string
+        file_name:
+          type: string
+        bytes:
+          type: integer
+          format: int64
+        total:
+          type: integer
+          format: int64
+        error:
+          type: string
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: missing or invalid daemon token (use --daemon-token or $LANTERN_DAEMON_TOKEN)
