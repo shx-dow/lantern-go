@@ -105,24 +105,43 @@ func (n *Node) ClearLocal(code string) {
 
 // Discovery timing policy for DHT advertisement and lookup.
 const (
-	advertiseInterval      = time.Hour
-	defaultDiscoverTimeout = 30 * time.Second
-	dhtLookupTimeout       = 3 * time.Second
-	discoverPollInterval   = 500 * time.Millisecond
+	advertiseInterval         = time.Hour
+	advertiseRetryInterval    = 30 * time.Second
+	maxAdvertiseRetryInterval = 10 * time.Minute
+	defaultDiscoverTimeout    = 30 * time.Second
+	dhtLookupTimeout          = 3 * time.Second
+	discoverPollInterval      = 500 * time.Millisecond
 )
 
 // Advertise re-provides code on the DHT until ctx ends, refreshing on
-// advertiseInterval.
+// advertiseInterval. Provide failures are best-effort: the share stays up
+// for mDNS and local discovery (late joiners), retrying with backoff
+// instead of failing the transfer. Only ctx cancellation ends the loop.
 func (n *Node) Advertise(ctx context.Context, code string) error {
 	c := codeToCID(code)
 
 	ticker := time.NewTicker(advertiseInterval)
 	defer ticker.Stop()
 
+	backoff := advertiseRetryInterval
 	for {
 		if err := n.DHT.Provide(ctx, c, true); err != nil {
-			return fmt.Errorf("advertise: %w", err)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			fmt.Fprintf(os.Stderr, "lantern: DHT provide failed (retrying): %v\n", err)
+			select {
+			case <-time.After(backoff):
+				backoff *= 2
+				if backoff > maxAdvertiseRetryInterval {
+					backoff = maxAdvertiseRetryInterval
+				}
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			continue
 		}
+		backoff = advertiseRetryInterval
 
 		select {
 		case <-ticker.C:

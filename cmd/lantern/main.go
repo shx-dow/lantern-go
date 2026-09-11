@@ -35,14 +35,15 @@ func init() {
 const defaultDaemonURL = "http://127.0.0.1:43782"
 
 type cliOptions struct {
-	jsonOut    bool
-	port       int
-	dataDir    string
-	outDir     string
-	daemon     bool
-	daemonURL  string
-	command    string
-	positional []string
+	jsonOut     bool
+	port        int
+	dataDir     string
+	outDir      string
+	daemon      bool
+	daemonURL   string
+	daemonToken string
+	command     string
+	positional  []string
 }
 
 func main() {
@@ -93,6 +94,7 @@ func parseArgs(args []string) (cliOptions, error) {
 	if opts.daemonURL == "" {
 		opts.daemonURL = defaultDaemonURL
 	}
+	opts.daemonToken = os.Getenv("LANTERN_DAEMON_TOKEN")
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -118,6 +120,14 @@ func parseArgs(args []string) (cliOptions, error) {
 		case strings.HasPrefix(a, "--daemon-addr="):
 			opts.daemon = true
 			opts.daemonURL = normalizeBaseURL(strings.TrimPrefix(a, "--daemon-addr="))
+		case a == "--daemon-token":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("flag --daemon-token needs a value")
+			}
+			i++
+			opts.daemonToken = args[i]
+		case strings.HasPrefix(a, "--daemon-token="):
+			opts.daemonToken = strings.TrimPrefix(a, "--daemon-token=")
 		case a == "--out":
 			if i+1 >= len(args) {
 				return opts, fmt.Errorf("flag --out needs a value")
@@ -191,6 +201,7 @@ commands:
   receive <code> [output-dir]  fetch a file (or use --out DIR)
   status                       daemon status (needs --daemon)
   list [transfers|history]     daemon transfers (needs --daemon)
+  peers                        connected peers (needs --daemon)
 
 flags:
   --json            machine-readable JSONL on stdout (agents/MCP/GUI)
@@ -200,6 +211,7 @@ flags:
   --daemon[=URL]    talk to lanternd instead of in-process node
                     (default URL http://127.0.0.1:43782 or $LANTERND_URL)
   --daemon-url URL  same as --daemon=URL
+  --daemon-token T  daemon bearer token (or $LANTERN_DAEMON_TOKEN)
 
 examples:
   lantern send ./photo.jpg
@@ -225,15 +237,23 @@ type daemonRecord struct {
 
 type daemonClient struct {
 	base   string
+	token  string
 	api    *http.Client
 	stream *http.Client
 }
 
-func newDaemonClient(base string) *daemonClient {
+func newDaemonClient(base, token string) *daemonClient {
 	return &daemonClient{
 		base:   strings.TrimSuffix(base, "/"),
+		token:  token,
 		api:    &http.Client{Timeout: 15 * time.Second},
 		stream: &http.Client{Timeout: 0},
+	}
+}
+
+func (c *daemonClient) setAuth(req *http.Request) {
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 }
 
@@ -247,6 +267,7 @@ func (c *daemonClient) post(path string, body any, out any, expected int) error 
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.setAuth(req)
 	resp, err := c.api.Do(req)
 	if err != nil {
 		return fmt.Errorf("daemon %s: %w (is lanternd running at %s?)", path, err, c.base)
@@ -262,7 +283,12 @@ func (c *daemonClient) post(path string, body any, out any, expected int) error 
 }
 
 func (c *daemonClient) get(path string, out any) error {
-	resp, err := c.api.Get(c.base + path)
+	req, err := http.NewRequest(http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return err
+	}
+	c.setAuth(req)
+	resp, err := c.api.Do(req)
 	if err != nil {
 		return fmt.Errorf("daemon %s: %w (is lanternd running at %s?)", path, err, c.base)
 	}
@@ -290,7 +316,7 @@ func apiError(resp *http.Response) error {
 }
 
 func runDaemonCommand(ctx context.Context, opts cliOptions) {
-	c := newDaemonClient(opts.daemonURL)
+	c := newDaemonClient(opts.daemonURL, opts.daemonToken)
 	enc := json.NewEncoder(os.Stdout)
 	switch opts.command {
 	case "send":
@@ -343,6 +369,25 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 			if addrs, ok := st["addrs"].([]any); ok {
 				for _, a := range addrs {
 					fmt.Printf("  %v\n", a)
+				}
+			}
+		}
+	case "peers":
+		var out map[string][]map[string]any
+		if err := c.get("/v1/peers", &out); err != nil {
+			fatal(opts.jsonOut, err)
+		}
+		if opts.jsonOut {
+			enc.Encode(out)
+		} else if len(out["peers"]) == 0 {
+			fmt.Println("no connected peers")
+		} else {
+			for _, p := range out["peers"] {
+				fmt.Printf("%v\n", p["id"])
+				if addrs, ok := p["addrs"].([]any); ok {
+					for _, a := range addrs {
+						fmt.Printf("  %v\n", a)
+					}
 				}
 			}
 		}
@@ -465,6 +510,7 @@ func streamDaemonEvents(ctx context.Context, c *daemonClient, enc *json.Encoder,
 		return err
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	c.setAuth(req)
 	resp, err := c.stream.Do(req)
 	if err != nil {
 		return err

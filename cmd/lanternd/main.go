@@ -31,23 +31,69 @@ func init() {
 
 func main() {
 	var (
-		addr    = flag.String("addr", "127.0.0.1:43782", "localhost HTTP listen address (never expose publicly in v1)")
-		p2pPort = flag.Int("p2p-port", 0, "libp2p listen port (0 = random)")
-		dataDir = flag.String("data-dir", "", "local advertisement directory (default OS temp)")
-		lan     = flag.Bool("lan", true, "LAN-only mode: no public DHT bootstraps, mDNS plus local adverts")
+		addr       = flag.String("addr", "", "localhost HTTP listen address (default from config file or 127.0.0.1:43782)")
+		p2pPort    = flag.Int("p2p-port", -1, "libp2p listen port (0 = random, -1 = config default)")
+		dataDir    = flag.String("data-dir", "", "local advertisement directory (default OS temp)")
+		lan        = flag.Bool("lan", true, "LAN-only mode: no public DHT bootstraps, mDNS plus local adverts")
+		lanNeg     = flag.Bool("no-lan", false, "disable LAN-only mode (global DHT)")
+		configPath = flag.String("config", "", "config file path (default $XDG_CONFIG_HOME/lantern/lanternd.json)")
+		tokenFlag  = flag.String("token", "", "bearer token (default $LANTERND_TOKEN, else persisted in data dir)")
+		defaultTTL = flag.Int64("default-ttl", -1, "default share lifetime in seconds (0 = no expiry, -1 = config default)")
 	)
 	flag.Parse()
 
+	cfgPath := *configPath
+	if cfgPath == "" {
+		cfgPath = daemon.DefaultConfigPath()
+	}
+	cfg, err := daemon.LoadConfigFile(cfgPath)
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+
+	listenAddr := *addr
+	if listenAddr == "" {
+		listenAddr = cfg.Addr
+	}
+	if listenAddr == "" {
+		listenAddr = "127.0.0.1:43782"
+	}
+	port := *p2pPort
+	if port < 0 {
+		port = cfg.P2PPort
+	}
+	dir := *dataDir
+	if dir == "" {
+		dir = cfg.DataDir
+	}
+	lanOnly := *lan && !*lanNeg
+	if cfg.LANOnly != nil && !flagNSet("lan") && !*lanNeg {
+		lanOnly = *cfg.LANOnly
+	}
+	ttlSecs := *defaultTTL
+	if ttlSecs < 0 {
+		ttlSecs = cfg.DefaultTTLSeconds
+	}
+	var ttl time.Duration
+	if ttlSecs > 0 {
+		ttl = time.Duration(ttlSecs) * time.Second
+	}
+
 	bootstrap := []string{"none"}
-	if !*lan {
+	if !lanOnly {
 		bootstrap = nil // nil keeps the default public bootstraps
 	}
 
-	ln, err := lantern.New(lantern.Config{Port: *p2pPort, DataDir: *dataDir, Bootstrap: bootstrap})
+	ln, err := lantern.New(lantern.Config{Port: port, DataDir: dir, Bootstrap: bootstrap})
 	if err != nil {
 		log.Fatalf("init p2p: %v", err)
 	}
 	defer ln.Close()
+
+	token, err := daemon.LoadOrCreateToken(dir, firstNonEmpty(*tokenFlag, os.Getenv("LANTERND_TOKEN")))
+	if err != nil {
+		log.Fatalf("token: %v", err)
+	}
 
 	d := daemon.New(ln)
 
@@ -62,12 +108,12 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	daemon.NewHandler(d, peerID, addrs, *lan).Routes(mux)
+	daemon.NewHandler(d, peerID, addrs, lanOnly, ttl).Routes(mux)
 
-	srv := &http.Server{Addr: *addr, Handler: mux}
+	srv := &http.Server{Addr: listenAddr, Handler: daemon.RequireAuth(mux, token)}
 
 	go func() {
-		fmt.Printf("lanternd listening on http://%s (lan_only=%v)\n", *addr, *lan)
+		fmt.Printf("lanternd listening on http://%s (lan_only=%v)\n", listenAddr, lanOnly)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("serve: %v", err)
 		}
@@ -83,4 +129,23 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
+}
+
+func flagNSet(name string) bool {
+	set := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

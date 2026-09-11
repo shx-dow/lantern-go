@@ -11,16 +11,17 @@ import (
 // Handler exposes the daemon over localhost HTTP for the CLI, GUI, and
 // future MCP shim. All responses are JSON; bytes never flow through here.
 type Handler struct {
-	daemon  *Daemon
-	peerID  string
-	addrs   []string
-	lanOnly bool
+	daemon     *Daemon
+	peerID     string
+	addrs      []string
+	lanOnly    bool
+	defaultTTL time.Duration
 }
 
 // NewHandler builds HTTP routes around d. peerID/addrs describe this node
-// for GET /v1/status.
-func NewHandler(d *Daemon, peerID string, addrs []string, lanOnly bool) *Handler {
-	return &Handler{daemon: d, peerID: peerID, addrs: addrs, lanOnly: lanOnly}
+// for GET /v1/status. defaultTTL applies to shares without ttl_seconds.
+func NewHandler(d *Daemon, peerID string, addrs []string, lanOnly bool, defaultTTL time.Duration) *Handler {
+	return &Handler{daemon: d, peerID: peerID, addrs: addrs, lanOnly: lanOnly, defaultTTL: defaultTTL}
 }
 
 // Routes registers v1 endpoints on mux.
@@ -34,6 +35,7 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /v1/transfers/{id}", h.deleteTransfer)
 	mux.HandleFunc("GET /v1/history", h.getHistory)
 	mux.HandleFunc("GET /v1/status", h.getStatus)
+	mux.HandleFunc("GET /v1/peers", h.getPeers)
 	mux.HandleFunc("GET /v1/events", h.getEvents)
 }
 
@@ -48,7 +50,8 @@ func writeError(w http.ResponseWriter, status int, err error) {
 }
 
 type shareRequest struct {
-	Path string `json:"path"`
+	Path       string `json:"path"`
+	TTLSeconds int64  `json:"ttl_seconds,omitempty"`
 }
 
 func (h *Handler) postShares(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +60,15 @@ func (h *Handler) postShares(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
 		return
 	}
-	rec, err := h.daemon.Share(req.Path)
+	if req.TTLSeconds < 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("ttl_seconds must not be negative"))
+		return
+	}
+	ttl := time.Duration(req.TTLSeconds) * time.Second
+	if ttl == 0 {
+		ttl = h.defaultTTL
+	}
+	rec, err := h.daemon.Share(req.Path, ttl)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -126,6 +137,14 @@ func (h *Handler) getStatus(w http.ResponseWriter, _ *http.Request) {
 		"addrs":    h.addrs,
 		"lan_only": h.lanOnly,
 	})
+}
+
+func (h *Handler) getPeers(w http.ResponseWriter, _ *http.Request) {
+	peers := h.daemon.Peers()
+	if peers == nil {
+		peers = []PeerInfo{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"peers": peers})
 }
 
 // getEvents streams transfer events as SSE. Clients reconnect with

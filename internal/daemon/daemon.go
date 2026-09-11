@@ -31,21 +31,23 @@ const (
 // Record is the daemon's view of one transfer. ID is the share code,
 // matching Session.ID().
 type Record struct {
-	ID        string    `json:"id"`
-	Kind      Kind      `json:"kind"`
-	Code      string    `json:"code"`
-	FileName  string    `json:"file_name"`
-	FileSize  int64     `json:"file_size"`
-	Bytes     int64     `json:"bytes"`
-	Total     int64     `json:"total"`
-	State     State     `json:"state"`
-	Error     string    `json:"error,omitempty"`
-	PeerID    string    `json:"peer_id,omitempty"`
-	StartedAt time.Time `json:"started_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        string     `json:"id"`
+	Kind      Kind       `json:"kind"`
+	Code      string     `json:"code"`
+	FileName  string     `json:"file_name"`
+	FileSize  int64      `json:"file_size"`
+	Bytes     int64      `json:"bytes"`
+	Total     int64      `json:"total"`
+	State     State      `json:"state"`
+	Error     string     `json:"error,omitempty"`
+	PeerID    string     `json:"peer_id,omitempty"`
+	StartedAt time.Time  `json:"started_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 
-	session *lantern.Session
-	cancel  context.CancelFunc
+	session  *lantern.Session
+	cancel   context.CancelFunc
+	ttlTimer *time.Timer
 }
 
 // snapshot returns a copy without internal handles.
@@ -102,8 +104,9 @@ func NormalizeCode(code string) string {
 }
 
 // Share advertises path and tracks the transfer. The share lives until
-// Cancel is called or the daemon closes, independent of the HTTP request.
-func (d *Daemon) Share(path string) (*Record, error) {
+// Cancel is called, ttl elapses, or the daemon closes, independent of the
+// HTTP request. A ttl of zero means no expiry.
+func (d *Daemon) Share(path string, ttl time.Duration) (*Record, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, fmt.Errorf("path must not be empty")
 	}
@@ -130,6 +133,11 @@ func (d *Daemon) Share(path string) (*Record, error) {
 	}
 	d.mu.Lock()
 	d.records[rec.ID] = rec
+	if ttl > 0 {
+		exp := now.Add(ttl)
+		rec.ExpiresAt = &exp
+		rec.ttlTimer = time.AfterFunc(ttl, func() { d.Cancel(rec.ID) })
+	}
 	d.mu.Unlock()
 	go d.watch(session, rec.ID)
 	return rec, nil
@@ -205,12 +213,21 @@ func (d *Daemon) History() []Record {
 }
 
 // Cancel stops a transfer and marks it canceled unless already terminal.
+// Revoking a share also clears its local advertisement via the session.
 func (d *Daemon) Cancel(id string) bool {
 	d.mu.Lock()
 	rec, ok := d.records[id]
-	d.mu.Unlock()
 	if !ok {
+		d.mu.Unlock()
 		return false
+	}
+	terminal := rec.State != StateRunning
+	if rec.ttlTimer != nil {
+		rec.ttlTimer.Stop()
+	}
+	d.mu.Unlock()
+	if terminal {
+		return true
 	}
 	rec.session.Close()
 	rec.cancel()
@@ -290,6 +307,9 @@ func (d *Daemon) watch(session *lantern.Session, id string) {
 			}
 			rec.State = StateDone
 			rec.UpdatedAt = time.Now()
+			if rec.ttlTimer != nil {
+				rec.ttlTimer.Stop()
+			}
 			done := rec.snapshot()
 			d.pushHistoryLocked(done)
 			d.mu.Unlock()
@@ -303,6 +323,9 @@ func (d *Daemon) watch(session *lantern.Session, id string) {
 				rec.Error = "transfer failed"
 			}
 			rec.UpdatedAt = time.Now()
+			if rec.ttlTimer != nil {
+				rec.ttlTimer.Stop()
+			}
 			failed := rec.snapshot()
 			d.pushHistoryLocked(failed)
 			d.mu.Unlock()
@@ -328,4 +351,30 @@ func (d *Daemon) pushHistoryLocked(rec Record) {
 	if len(d.history) > maxHistory {
 		d.history = d.history[len(d.history)-maxHistory:]
 	}
+}
+
+// PeerInfo describes one currently connected libp2p peer.
+type PeerInfo struct {
+	ID        string   `json:"id"`
+	Addrs     []string `json:"addrs"`
+	Connected bool     `json:"connected"`
+}
+
+// Peers lists currently connected peers (excluding self) with their known
+// addresses. It reflects live connections, not DHT history.
+func (d *Daemon) Peers() []PeerInfo {
+	node := d.ln.Node()
+	if node == nil || node.Host == nil {
+		return nil
+	}
+	host := node.Host
+	var out []PeerInfo
+	for _, id := range host.Network().Peers() {
+		addrs := make([]string, 0)
+		for _, a := range host.Peerstore().Addrs(id) {
+			addrs = append(addrs, a.String())
+		}
+		out = append(out, PeerInfo{ID: id.String(), Addrs: addrs, Connected: true})
+	}
+	return out
 }
