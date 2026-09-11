@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lantern</title>
+<style>
+:root { color-scheme: light dark; --accent: #7b56db; --ok: #2f9e44; --err: #e03131; --muted: #888; }
+* { box-sizing: border-box; }
+body { font-family: system-ui, -apple-system, sans-serif; max-width: 720px; margin: 0 auto; padding: 16px; line-height: 1.4; }
+h1 { font-size: 1.4em; margin: 0 0 4px; }
+h2 { font-size: 1.05em; margin: 20px 0 8px; border-bottom: 1px solid #ccc3; padding-bottom: 4px; }
+.muted { color: var(--muted); font-size: .85em; }
+.card { border: 1px solid #ccc5; border-radius: 8px; padding: 12px; margin: 8px 0; }
+#drop { border: 2px dashed var(--accent); border-radius: 8px; padding: 28px; text-align: center; cursor: pointer; }
+#drop.over { background: #7b56db22; }
+code.big { display: block; font-size: 1.15em; font-weight: bold; word-break: break-all; background: #8882; padding: 8px; border-radius: 6px; margin: 8px 0; user-select: all; }
+button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-size: .95em; }
+button:disabled { opacity: .5; cursor: wait; }
+button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+input[type=text] { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid #ccc8; font-size: .95em; }
+.row { display: flex; gap: 8px; margin-top: 8px; }
+.row input { flex: 1; }
+.bar { height: 8px; background: #8883; border-radius: 4px; overflow: hidden; margin-top: 6px; }
+.bar > div { height: 100%; background: var(--accent); width: 0%; transition: width .2s; }
+.done { color: var(--ok); } .err { color: var(--err); }
+#toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: #222; color: #fff; padding: 10px 16px; border-radius: 8px; display: none; max-width: 90vw; }
+</style>
+</head>
+<body>
+<h1>Lantern</h1>
+<div class="muted" id="status">connecting…</div>
+<div class="card">
+  <label class="muted" for="token">Daemon token (stored only in this browser)</label>
+  <div class="row"><input type="text" id="token" placeholder="from <data-dir>/.lanternd-token" autocomplete="off"><button class="ghost" id="saveToken">Save</button></div>
+</div>
+
+<h2>Send</h2>
+<div id="drop">Drop a file here or click to choose<input type="file" id="file" hidden></div>
+<div id="shareOut"></div>
+
+<h2>Receive</h2>
+<div class="card">
+  <input type="text" id="code" placeholder="share code" autocomplete="off" spellcheck="false">
+  <div class="row"><button id="recvBtn">Fetch</button></div>
+  <div id="recvOut"></div>
+</div>
+
+<h2>Live</h2>
+<div id="live" class="muted">nothing running</div>
+
+<h2>History</h2>
+<div id="history" class="muted">—</div>
+
+<h2>Peers</h2>
+<div id="peers" class="muted">—</div>
+
+<div id="toast"></div>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const token = () => localStorage.getItem("lantern.token") || "";
+function toast(msg, isErr) {
+  const t = $("toast"); t.textContent = msg; t.style.display = "block";
+  t.style.background = isErr ? "var(--err)" : "#222";
+  clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", 4000);
+}
+async function api(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers, { "Authorization": "Bearer " + token() });
+  const r = await fetch(path, opts);
+  if (r.status === 204) return null;
+  let body = null;
+  try { body = await r.json(); } catch (e) { /* empty */ }
+  if (!r.ok) throw new Error((body && body.error) || ("HTTP " + r.status));
+  return body;
+}
+function fmtBytes(n) {
+  if (n < 1024) return n + " B";
+  const u = ["KB", "MB", "GB", "TB"]; let i = -1, v = n;
+  do { v /= 1024; i++; } while (v >= 1024 && i < u.length - 1);
+  return v.toFixed(1) + " " + u[i];
+}
+function barHTML(r) {
+  const pct = r.total > 0 ? (100 * r.bytes / r.total) : 0;
+  const state = r.state === "done" ? '<span class="done">done</span>'
+    : r.state === "failed" ? '<span class="err">failed: ' + esc(r.error) + "</span>"
+    : r.state;
+  return `<div><b>${esc(r.file_name || r.id.slice(0, 8))}</b> <span class="muted">${r.kind} · ${fmtBytes(r.bytes)} / ${fmtBytes(r.total)} · ${state}</span>` +
+    `<div class="bar"><div style="width:${pct}%"></div></div></div>`;
+}
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+async function refreshStatus() {
+  try {
+    const s = await api("/v1/status");
+    $("status").textContent = "peer " + s.peer_id.slice(0, 12) + "… · " + (s.lan_only ? "LAN only" : "global");
+  } catch (e) { $("status").textContent = "offline: " + e.message; }
+}
+async function refreshLists() {
+  try {
+    const t = await api("/v1/transfers");
+    $("live").innerHTML = t.transfers.length ? t.transfers.map(barHTML).join("") : "nothing running";
+    const h = await api("/v1/history");
+    const items = h.history.slice(-10).reverse();
+    $("history").innerHTML = items.length ? items.map(r =>
+      `<div>${esc(r.file_name)} <span class="muted">${r.kind} · ${r.state}</span></div>`).join("") : "—";
+    const p = await api("/v1/peers");
+    $("peers").innerHTML = p.peers.length ? p.peers.map(x => `<div>${esc(x.id.slice(0, 20))}…</div>`).join("") : "alone";
+  } catch (e) { /* status line already shows it */ }
+}
+// Live progress via streaming fetch (EventSource can't send headers).
+async function streamEvents() {
+  while (true) {
+    try {
+      const r = await fetch("/v1/events", { headers: { "Authorization": "Bearer " + token(), "Accept": "text/event-stream" } });
+      if (!r.ok || !r.body) { await new Promise(res => setTimeout(res, 2000)); continue; }
+      const reader = r.body.getReader();
+      const dec = new TextDecoder(); let buf = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const chunk = buf.slice(0, idx); buf = buf.slice(idx + 2);
+          const m = chunk.match(/data:\s*(\{.*\})/s);
+          if (m) {
+            try {
+              const e = JSON.parse(m[1]);
+              if (e.type === "done" || e.type === "error" || e.type === "cancelled") refreshLists();
+              else refreshLiveBar(e);
+            } catch (err) { /* partial */ }
+          }
+        }
+      }
+    } catch (e) { /* reconnect */ }
+    refreshLists();
+    await new Promise(res => setTimeout(res, 2000));
+  }
+}
+async function refreshLiveBar(e) {
+  // Cheap path: full refresh is fine at transfer-event rates.
+  try {
+    const t = await api("/v1/transfers");
+    const items = t.transfers.filter(r => r.id === e.id);
+    if (items.length) refreshLists();
+  } catch (err) { /* ignore */ }
+}
+$("saveToken").onclick = () => { localStorage.setItem("lantern.token", $("token").value.trim()); toast("token saved"); refreshAll(); };
+$("token").value = token();
+const drop = $("drop"), fileInput = $("file");
+drop.onclick = () => fileInput.click();
+["dragover", "dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", e => { if (e.dataTransfer.files.length) uploadAndShare(e.dataTransfer.files[0]); });
+fileInput.onchange = () => { if (fileInput.files.length) uploadAndShare(fileInput.files[0]); };
+async function uploadAndShare(file) {
+  const out = $("shareOut"); out.innerHTML = '<div class="muted">uploading ' + esc(file.name) + "…</div>";
+  try {
+    const fd = new FormData(); fd.append("file", file);
+    const up = await api("/v1/uploads", { method: "POST", body: fd });
+    const rec = await api("/v1/shares", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: up.path }) });
+    out.innerHTML = `<div class="muted">share this code:</div><code class="big">${esc(rec.code)}</code>` +
+      `<div class="row"><button id="copyBtn">Copy code</button><button class="ghost" id="revokeBtn">Revoke</button></div>`;
+    $("copyBtn").onclick = async () => {
+      try { await navigator.clipboard.writeText(rec.code); toast("copied"); }
+      catch (e) { toast("copy failed — select the code manually", true); }
+    };
+    $("revokeBtn").onclick = async () => { await api("/v1/transfers/" + rec.id, { method: "DELETE" }); out.innerHTML = ""; refreshLists(); };
+    refreshLists();
+  } catch (e) { out.innerHTML = ""; toast(e.message, true); }
+}
+$("recvBtn").onclick = async () => {
+  const code = $("code").value.trim();
+  if (!code) { toast("enter a share code first", true); return; }
+  const out = $("recvOut"); out.innerHTML = '<div class="muted">fetching…</div>';
+  $("recvBtn").disabled = true;
+  try {
+    const rec = await api("/v1/fetches", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: code, out_dir: "." }) });
+    out.innerHTML = `<div id="recvBar"></div>`;
+    const id = rec.id;
+    const poll = setInterval(async () => {
+      try {
+        const cur = await api("/v1/transfers/" + id);
+        $("recvBar").innerHTML = barHTML(cur);
+        if (cur.state !== "running") { clearInterval(poll); refreshLists(); }
+      } catch (e) { clearInterval(poll); toast(e.message, true); }
+    }, 500);
+    refreshLists();
+  } catch (e) { out.innerHTML = ""; toast(e.message, true); }
+  finally { $("recvBtn").disabled = false; }
+};
+async function refreshAll() { await refreshStatus(); await refreshLists(); }
+refreshAll();
+setInterval(refreshLists, 5000);
+streamEvents();
+</script>
+</body>
+</html>

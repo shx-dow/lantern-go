@@ -16,12 +16,14 @@ type Handler struct {
 	addrs      []string
 	lanOnly    bool
 	defaultTTL time.Duration
+	uploadDir  string
 }
 
 // NewHandler builds HTTP routes around d. peerID/addrs describe this node
 // for GET /v1/status. defaultTTL applies to shares without ttl_seconds.
-func NewHandler(d *Daemon, peerID string, addrs []string, lanOnly bool, defaultTTL time.Duration) *Handler {
-	return &Handler{daemon: d, peerID: peerID, addrs: addrs, lanOnly: lanOnly, defaultTTL: defaultTTL}
+// uploadDir roots browser uploads (defaults to the OS temp dir).
+func NewHandler(d *Daemon, peerID string, addrs []string, lanOnly bool, defaultTTL time.Duration, uploadDir string) *Handler {
+	return &Handler{daemon: d, peerID: peerID, addrs: addrs, lanOnly: lanOnly, defaultTTL: defaultTTL, uploadDir: uploadDir}
 }
 
 // Routes registers v1 endpoints on mux.
@@ -36,6 +38,7 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/history", h.getHistory)
 	mux.HandleFunc("GET /v1/status", h.getStatus)
 	mux.HandleFunc("GET /v1/peers", h.getPeers)
+	mux.HandleFunc("POST /v1/uploads", h.postUploads)
 	mux.HandleFunc("GET /v1/events", h.getEvents)
 }
 

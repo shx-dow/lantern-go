@@ -10,6 +10,8 @@ info:
     Design rules:
     - File bytes NEVER flow through this API. Clients exchange share
       codes and fetch content out-of-band over the p2p data plane.
+      (Exception: POST /v1/uploads accepts browser drop-zone bytes
+      and stores them daemon-side for subsequent sharing.)
     - Transfer IDs ARE share codes (`Session.ID()`), so one identifier
       addresses a share, its fetch, and its history entry.
     - Progress is streamed over SSE (`GET /v1/events`); unary polling
@@ -211,6 +213,36 @@ paths:
                       $ref: '#/components/schemas/PeerInfo'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /v1/uploads:
+    post:
+      summary: Store a browser upload for sharing
+      description: |-
+        Accepts one multipart `file` (max 1 GiB), stores it under
+        `<data-dir>/uploads/` with a random prefix, and returns the
+        daemon-side path to pass to POST /v1/shares. Powers the /ui
+        drop zone, which cannot see local paths directly.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '201':
+          description: Upload stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Upload'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /v1/events:
     get:
       summary: Stream transfer events (SSE)
@@ -346,6 +378,18 @@ components:
         out_dir:
           type: string
           description: Destination directory; defaults to ".".
+    Upload:
+      type: object
+      required: [path, file_name, size]
+      properties:
+        path:
+          type: string
+          description: Daemon-side path; pass to POST /v1/shares.
+        file_name:
+          type: string
+        size:
+          type: integer
+          format: int64
     Status:
       type: object
       properties:

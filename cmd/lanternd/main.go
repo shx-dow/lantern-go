@@ -108,9 +108,27 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	daemon.NewHandler(d, peerID, addrs, lanOnly, ttl).Routes(mux)
+	daemon.NewHandler(d, peerID, addrs, lanOnly, ttl, dir).Routes(mux)
 
-	srv := &http.Server{Addr: listenAddr, Handler: daemon.RequireAuth(mux, token)}
+	// The UI page is public (it holds no secrets; API calls carry the
+	// token from browser storage). Everything under /v1/ stays authed.
+	top := http.NewServeMux()
+	page, contentType := daemon.UI()
+	top.HandleFunc("GET /ui", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", contentType)
+		_, _ = w.Write(page)
+	})
+	// Unqualified so it never conflicts with the authed /v1/ subtree.
+	top.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		http.Redirect(w, r, "/ui", http.StatusFound)
+	})
+	top.Handle("/v1/", daemon.RequireAuth(mux, token))
+
+	srv := &http.Server{Addr: listenAddr, Handler: top}
 
 	go func() {
 		fmt.Printf("lanternd listening on http://%s (lan_only=%v)\n", listenAddr, lanOnly)
