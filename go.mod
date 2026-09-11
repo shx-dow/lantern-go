@@ -3,6 +3,7 @@ module github.com/shx-dow/lantern-go
 go 1.25.7
 
 require (
+	github.com/godbus/dbus/v5 v5.2.2
 	github.com/ipfs/go-cid v0.6.1
 	github.com/libp2p/go-libp2p v0.48.0
 	github.com/libp2p/go-libp2p-kad-dht v0.40.0

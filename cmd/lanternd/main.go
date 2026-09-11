@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/shx-dow/lantern-go/internal/daemon"
+	"github.com/shx-dow/lantern-go/internal/tray"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
 
@@ -39,6 +40,8 @@ func main() {
 		configPath = flag.String("config", "", "config file path (default $XDG_CONFIG_HOME/lantern/lanternd.json)")
 		tokenFlag  = flag.String("token", "", "bearer token (default $LANTERND_TOKEN, else persisted in data dir)")
 		defaultTTL = flag.Int64("default-ttl", -1, "default share lifetime in seconds (0 = no expiry, -1 = config default)")
+		trayFlag   = flag.Bool("tray", true, "show a tray icon that opens the web UI (falls back to console when unsupported)")
+		noTrayFlag = flag.Bool("no-tray", false, "disable the tray icon")
 	)
 	flag.Parse()
 
@@ -139,8 +142,26 @@ func main() {
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	<-sig
-	fmt.Println("\nshutting down")
+
+	uiURL := "http://" + listenAddr + "/ui"
+	if *trayFlag && !*noTrayFlag && tray.Available() {
+		// Tray owns the main thread (required on macOS/Windows); a
+		// signal unblocks it so shutdown below still runs.
+		go func() {
+			<-sig
+			fmt.Println("\nshutting down")
+			tray.Quit()
+		}()
+		fmt.Printf("lantern tray running (%s)\n", uiURL)
+		if err := tray.Run(tray.Config{Title: "Lantern", UIURL: uiURL}); err != nil {
+			log.Printf("tray: %v (continuing in console mode)", err)
+			<-sig
+			fmt.Println("\nshutting down")
+		}
+	} else {
+		<-sig
+		fmt.Println("\nshutting down")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
