@@ -1,5 +1,6 @@
-Mirror of <repo>/frontend/dist — do not edit.
-Before `wails3 dev`, `wails3 build`, or `go build -tags wails .`, run from
-cmd/lantern-gui:
+Build output mirror of <repo>/frontend/dist — do not edit.
+`wails3 dev` copies the canonical page here automatically before each run.
+For a manual window build, copy it yourself from cmd/lantern-gui:
 
-    cp ../../frontend/dist/index.html frontend/dist/index.html
+    wails3 tool cp ../../frontend/dist/index.html frontend/dist/index.html
+    go run -tags wails .

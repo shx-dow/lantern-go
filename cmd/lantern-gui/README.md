@@ -31,17 +31,16 @@ Requires a desktop host — headless CI cannot build `-tags wails`:
 - macOS: Xcode command-line tools.
 - Windows: WebView2 runtime.
 
-Then:
+Then, from `cmd/lantern-gui`:
 
 ```sh
-go install github.com/wailsapp/wails/v3/cmd/wails3@latest
-wails3 setup
-cd cmd/lantern-gui
-cp ../../frontend/dist/index.html frontend/dist/index.html
-go get github.com/wailsapp/wails/v3@latest   # pin the beta
-wails3 dev     # hot reload + generated bindings in frontend/bindings/
-wails3 build   # packaged app
+wails3 dev     # copies the page in, opens the window, rebuilds on Go changes
 ```
+
+No Node/npm needed: the page is a single static file, so there is no
+frontend build step. `wails3 build` / `wails3 package` are not wired yet;
+that needs the full Taskfile scaffold from `wails3 init` (a later step,
+along with generated bindings, tray menu, and file dialogs).
 
 `main_wails.go` follows the beta API
 (`application.New` + `Services` + `AssetFileServerFS`, see
