@@ -35,6 +35,12 @@ bin/
 dist/
 build/
 
+# Except the canonical web UI (served by Wails, embedded by lanternd).
+!frontend/dist/
+# Except the Wails asset placeholder (the copied index.html stays ignored).
+!cmd/lantern-gui/frontend/dist/
+cmd/lantern-gui/frontend/dist/index.html
+
 # Temp
 tmp/
 *.tmp

@@ -1,0 +1,5 @@
+Mirror of <repo>/frontend/dist — do not edit.
+Before `wails3 dev`, `wails3 build`, or `go build -tags wails .`, run from
+cmd/lantern-gui:
+
+    cp ../../frontend/dist/index.html frontend/dist/index.html
