@@ -1,0 +1,9 @@
+# Wails v3 project metadata for lantern-gui.
+# Run `wails3 generate build-assets` (or `wails3 update build-assets`)
+# from cmd/lantern-gui to (re)generate the rest of build/ from this file.
+info:
+  productName: "Lantern"
+  productIdentifier: "com.lantern.app"
+  productVersion: "0.1.0-spike"
+  companyName: "Lantern"
+  productDescription: "Peer-to-peer file transfer"
