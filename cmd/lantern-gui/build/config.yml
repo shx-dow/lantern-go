@@ -41,5 +41,7 @@ dev_mode:
   executes:
     - cmd: wails3 tool cp ../../frontend/dist/index.html frontend/dist/index.html
       type: blocking
-    - cmd: go run -tags wails .
+    # production tag: serve the embedded page instead of waiting for a
+    # Vite dev server (our page is static, so there isn't one).
+    - cmd: go run -tags wails,production .
       type: primary
