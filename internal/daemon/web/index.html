@@ -317,20 +317,19 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
 <script type="module">
 "use strict";
 const $ = id => document.getElementById(id);
-// A desktop shell (lantern-gui on Wails) injects {baseURL, token} before
+// A desktop shell may inject {baseURL, token} before
 // load; plain browsers fall back to same-origin + localStorage.
 const injected = window.__LANTERN__ || {};
 const apiBase = injected.baseURL || "";
 // The app already knows the token, so the paste box is desktop-only clutter.
 if (!injected.token) $("tokenCard").hidden = false;
 const token = () => injected.token || localStorage.getItem("lantern.token") || "";
-// Direct Go bindings, generated from cmd/lantern-gui via:
-//   wails3 generate bindings -d ./frontend/dist/bindings -f "-tags wails" -b
-// Absent in browsers and manual builds; every op below falls back to HTTP.
+// Optional JS bindings hook: if a shell provides a bindings module next
+// to this page, prefer it; otherwise every op below falls back to HTTP.
 async function loadBindings() {
   try {
     const m = await import("./bindings/github.com/shx-dow/lantern-go/cmd/lantern-gui/guiservice.js");
-    if (m && typeof m.GetStatus === "function") { console.info("lantern: using Wails bindings"); return m; }
+    if (m && typeof m.GetStatus === "function") { console.info("lantern: using JS bindings"); return m; }
   } catch (e) { /* HTTP fallback */ }
   console.info("lantern: using HTTP API");
   return null;

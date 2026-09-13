@@ -1,4 +1,4 @@
-//go:build !wails
+//go:build !fyne
 
 package main
 
@@ -17,7 +17,7 @@ import (
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
 
-// Console fallback for lantern-gui: without -tags wails there is no desktop
+// Console fallback for lantern-gui: without -tags fyne there is no desktop
 // window, so this attaches to a running lanternd or starts an embedded one
 // and waits like lanternd console mode.
 func main() {

@@ -1,18 +1,18 @@
-// Command lantern-gui is the Wails v3 desktop shell spike for Lantern.
+// Command lantern-gui is the desktop shell for Lantern.
 //
 // The GUI is a thin client over lanternd's localhost v1 API
 // (api/openapi.yaml): all transfer state lives in the daemon, and every
-// bound method below proxies to it. There are no GUI-only transfer paths.
+// method below proxies to it. There are no GUI-only transfer paths.
 //
 // Default build (pure Go, no desktop window): attaches to a running lanternd
 // or starts an embedded daemon, then waits like lanternd console mode:
 //
 //	go run ./cmd/lantern-gui
 //
-// Desktop window build (needs the Wails v3 toolchain + OS webview deps,
-// see README.md in this directory):
+// Desktop window build (Fyne, needs OS graphics deps, see README.md in
+// this directory):
 //
-//	go run -tags wails ./cmd/lantern-gui
+//	go run -tags fyne ./cmd/lantern-gui
 package main
 
 import (

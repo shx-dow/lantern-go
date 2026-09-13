@@ -11,14 +11,14 @@ func TestCORSReflectsOriginAndPassesThrough(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
-	req.Header.Set("Origin", "https://wails.localhost")
+	req.Header.Set("Origin", "https://lantern.localhost")
 	rec := httptest.NewRecorder()
 	CORS(next).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected passthrough 200, got %d", rec.Code)
 	}
-	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://wails.localhost" {
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://lantern.localhost" {
 		t.Fatalf("bad allow-origin: %q", got)
 	}
 	if got := rec.Header().Get("Access-Control-Allow-Headers"); got == "" {
@@ -35,7 +35,7 @@ func TestCORSAnswersPreflightWithoutAuth(t *testing.T) {
 	// Wrap like production: CORS outside RequireAuth.
 	h := CORS(RequireAuth(next, "secret"))
 	req := httptest.NewRequest(http.MethodOptions, "/v1/status", nil)
-	req.Header.Set("Origin", "https://wails.localhost")
+	req.Header.Set("Origin", "https://lantern.localhost")
 	req.Header.Set("Access-Control-Request-Method", "GET")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

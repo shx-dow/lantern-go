@@ -1,9 +1,9 @@
-// GuiService is the Wails v3 service boundary for lantern-gui.
+// GuiService is the service boundary for lantern-gui.
 //
 // Every method is a thin proxy over lanternd's v1 API via Client; no
 // transfer logic lives here, so the GUI can never drift from the CLI,
-// the SDKs, or api/openapi.yaml. Wails exposes the exported methods to
-// the frontend with generated TypeScript bindings.
+// the SDKs, or api/openapi.yaml. The Fyne window calls these methods from
+// button handlers; the console fallback uses Client directly.
 package main
 
 import "encoding/base64"
@@ -11,7 +11,7 @@ import "encoding/base64"
 // guiVersion marks the spike; real releases inject this via ldflags.
 const guiVersion = "0.1.0-spike"
 
-// GuiService wraps the daemon client for Wails binding.
+// GuiService wraps the daemon client for the desktop shell.
 type GuiService struct {
 	client *Client
 }
@@ -74,7 +74,7 @@ func (s *GuiService) ListPeers() ([]Peer, error) {
 
 // UploadData stores base64-encoded file bytes daemon-side and returns the
 // daemon path to pass to ShareFile. The argument stays a string (not []byte)
-// so the Wails bridge passes it through untouched; decoding happens here.
+// for easy handoff from UI callbacks; decoding happens here.
 func (s *GuiService) UploadData(fileName, base64Data string) (Upload, error) {
 	raw, err := base64.StdEncoding.DecodeString(base64Data)
 	if err != nil {

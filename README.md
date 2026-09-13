@@ -29,13 +29,13 @@ To run a relay locally:
 go run ./cmd/lantern-relay 4001
 ```
 
-Desktop shell (spike, console fallback without Wails deps):
+Desktop shell (Fyne experiment, console fallback without graphics deps):
 
 ```sh
 go run ./cmd/lantern-gui
 ```
 
-See `cmd/lantern-gui/README.md` for the Wails v3 window build.
+See `cmd/lantern-gui/README.md` for the `fyne` window build.
 
 ## Development
 
