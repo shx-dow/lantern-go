@@ -17,6 +17,10 @@ import (
 // runFyne opens the Lantern window. All daemon work goes through svc; slow
 // calls run in goroutines so the UI never freezes, and the Transfers tab
 // refreshes on demand (Refresh button + after every action).
+//
+// Threading rule: every widget mutation goes through onUI (fyne.Do onto the
+// main thread). Fyne's text shaper is shared and not goroutine-safe —
+// concurrent Label.SetText from workers panics inside HarfbuzzShaper.Shape.
 func runFyne(svc *GuiService) {
 	a := app.NewWithID("com.lantern.app")
 	w := a.NewWindow("Lantern")
@@ -41,6 +45,12 @@ func runFyne(svc *GuiService) {
 	w.SetContent(tabs)
 	refreshAll()
 	w.ShowAndRun()
+}
+
+// onUI runs f on Fyne's main thread. Use it for every widget mutation made
+// from a worker goroutine.
+func onUI(f func()) {
+	fyne.Do(f)
 }
 
 // newSendTab picks a local file and advertises it via POST /v1/shares.
@@ -72,14 +82,16 @@ func newSendTab(svc *GuiService, w fyne.Window, refreshed func()) fyne.CanvasObj
 		status.SetText("Sharing…")
 		go func() {
 			rec, err := svc.ShareFileWithTTL(path, ttl)
-			if err != nil {
-				status.SetText("Share failed")
-				dialog.ShowError(err, w)
-				return
-			}
-			result.SetText("Share code:\n" + rec.Code)
-			status.SetText(fmt.Sprintf("Shared %s", displayName(rec.FileName, rec.ID)))
-			refreshed()
+			onUI(func() {
+				if err != nil {
+					status.SetText("Share failed")
+					dialog.ShowError(err, w)
+					return
+				}
+				result.SetText("Share code:\n" + rec.Code)
+				status.SetText(fmt.Sprintf("Shared %s", displayName(rec.FileName, rec.ID)))
+				refreshed()
+			})
 		}()
 	}
 
@@ -143,13 +155,15 @@ func newReceiveTab(svc *GuiService, w fyne.Window, refreshed func()) fyne.Canvas
 		status.SetText("Fetching…")
 		go func() {
 			rec, err := svc.FetchCode(code, strings.TrimSpace(outEntry.Text))
-			if err != nil {
-				status.SetText("Fetch failed")
-				dialog.ShowError(err, w)
-				return
-			}
-			status.SetText(fmt.Sprintf("Fetching %s (%s)", displayName(rec.FileName, rec.ID), rec.State))
-			refreshed()
+			onUI(func() {
+				if err != nil {
+					status.SetText("Fetch failed")
+					dialog.ShowError(err, w)
+					return
+				}
+				status.SetText(fmt.Sprintf("Fetching %s (%s)", displayName(rec.FileName, rec.ID), rec.State))
+				refreshed()
+			})
 		}()
 	}
 
@@ -188,18 +202,20 @@ func newTransfersTab(svc *GuiService, w fyne.Window) (func(), fyne.CanvasObject)
 
 	refresh := func() {
 		go func() {
-			live, err := svc.ListTransfers("")
-			if err != nil {
-				rows.Objects = []fyne.CanvasObject{widget.NewLabel("Failed to load transfers: " + err.Error())}
+			live, liveErr := svc.ListTransfers("")
+			hist, histErr := svc.ListHistory()
+			onUI(func() {
+				if liveErr != nil {
+					rows.Objects = []fyne.CanvasObject{widget.NewLabel("Failed to load transfers: " + liveErr.Error())}
+					rows.Refresh()
+					return
+				}
+				if histErr != nil {
+					hist = nil
+				}
+				rows.Objects = buildTransferRows(svc, w, live, hist)
 				rows.Refresh()
-				return
-			}
-			hist, err := svc.ListHistory()
-			if err != nil {
-				hist = nil
-			}
-			rows.Objects = buildTransferRows(svc, w, live, hist)
-			rows.Refresh()
+			})
 		}()
 	}
 
@@ -228,7 +244,8 @@ func buildTransferRows(svc *GuiService, w fyne.Window, live, hist []Transfer) []
 		cancel := widget.NewButton("Cancel", func() {
 			go func() {
 				if err := svc.CancelTransfer(t.ID); err != nil {
-					dialog.ShowError(err, w)
+					err := err
+					onUI(func() { dialog.ShowError(err, w) })
 					return
 				}
 			}()
@@ -255,30 +272,32 @@ func newStatusTab(svc *GuiService) (func(), fyne.CanvasObject) {
 
 	refresh := func() {
 		go func() {
-			st, err := svc.GetStatus()
-			if err != nil {
-				peerLabel.SetText("Daemon unreachable: " + err.Error())
-				return
-			}
-			peerLabel.SetText("Peer: " + st.PeerID)
-			if len(st.Addrs) == 0 {
-				addrsLabel.SetText("No listen addresses")
-			} else {
-				addrsLabel.SetText("Addrs: " + strings.Join(st.Addrs, ", "))
-			}
-			peers, err := svc.ListPeers()
-			if err != nil {
-				peersBox.Objects = []fyne.CanvasObject{widget.NewLabel("Peers unavailable: " + err.Error())}
-			} else if len(peers) == 0 {
-				peersBox.Objects = []fyne.CanvasObject{widget.NewLabel("No connected peers.")}
-			} else {
-				rows := make([]fyne.CanvasObject, 0, len(peers))
-				for _, p := range peers {
-					rows = append(rows, widget.NewLabel(p.ID+" ("+strings.Join(p.Addrs, ", ")+")"))
+			st, stErr := svc.GetStatus()
+			peers, peersErr := svc.ListPeers()
+			onUI(func() {
+				if stErr != nil {
+					peerLabel.SetText("Daemon unreachable: " + stErr.Error())
+					return
 				}
-				peersBox.Objects = rows
-			}
-			peersBox.Refresh()
+				peerLabel.SetText("Peer: " + st.PeerID)
+				if len(st.Addrs) == 0 {
+					addrsLabel.SetText("No listen addresses")
+				} else {
+					addrsLabel.SetText("Addrs: " + strings.Join(st.Addrs, ", "))
+				}
+				if peersErr != nil {
+					peersBox.Objects = []fyne.CanvasObject{widget.NewLabel("Peers unavailable: " + peersErr.Error())}
+				} else if len(peers) == 0 {
+					peersBox.Objects = []fyne.CanvasObject{widget.NewLabel("No connected peers.")}
+				} else {
+					rows := make([]fyne.CanvasObject, 0, len(peers))
+					for _, p := range peers {
+						rows = append(rows, widget.NewLabel(p.ID+" ("+strings.Join(p.Addrs, ", ")+")"))
+					}
+					peersBox.Objects = rows
+				}
+				peersBox.Refresh()
+			})
 		}()
 	}
 
