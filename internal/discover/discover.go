@@ -163,17 +163,11 @@ func ListenLoop(ctx context.Context, conn *net.UDPConn, selfFingerprint string, 
 		if m.App != "lantern" || m.Fingerprint == "" || m.Fingerprint == selfFingerprint {
 			continue
 		}
-		typ := m.Type
-		switch typ {
-		case TypeMobile, TypeDesktop, TypeHeadless, TypeServer:
-		default:
-			typ = TypeDesktop
-		}
 		onDevice(Device{
 			Alias:       m.Alias,
 			Version:     m.Version,
 			Model:       m.Model,
-			Type:        typ,
+			Type:        normType(m.Type),
 			Fingerprint: m.Fingerprint,
 			Port:        m.Port,
 			Addr:        addr.String(),

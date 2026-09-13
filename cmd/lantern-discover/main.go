@@ -11,11 +11,17 @@
 // server), --port (default 43781), --interval (re-announce period),
 // --unicast ip:port (also announce straight at one peer, bypassing
 // multicast — the diagnostic that separates "multicast blocked" from
-// "UDP blocked").
+// "UDP blocked"), --scan (probe the local subnets once at startup via
+// the HTTP fallback), --scan-every (repeat the scan periodically).
+//
+// The instance always serves the HTTP presence endpoint on --port (TCP,
+// same port as UDP discovery — different protocol, like LocalSend), so
+// scanned peers can find it back. A second copy on the same machine
+// can't rebind that TCP port; it warns and carries on with multicast.
 //
 // Windows note: if two instances on the same port never see each other,
-// allow inbound UDP on the discovery port (or the test binary) in
-// Windows Defender Firewall; multicast is dropped silently otherwise.
+// allow inbound UDP *and* TCP on the discovery port (or the test binary)
+// in Windows Defender Firewall; both are dropped silently otherwise.
 package main
 
 import (
@@ -39,7 +45,13 @@ func main() {
 	port := flag.Int("port", discover.DefaultPort, "discovery UDP port")
 	interval := flag.Duration("interval", discover.DefaultInterval, "re-announce period")
 	unicast := flag.String("unicast", "", "also announce directly to ip:port (bypasses multicast)")
+	scan := flag.Bool("scan", false, "probe local subnets once at startup via the HTTP fallback")
+	scanEvery := flag.Duration("scan-every", 0, "repeat the subnet scan periodically (implies scan)")
+	scanPort := flag.Int("scan-port", 0, "subnet-scan target TCP port (default: --port)")
 	flag.Parse()
+	if *scanPort == 0 {
+		*scanPort = *port
+	}
 
 	fp, err := discover.NewFingerprint()
 	if err != nil {
@@ -58,6 +70,23 @@ func main() {
 	defer stop()
 
 	reg := discover.NewRegistry()
+	note := func(source string, d discover.Device) {
+		if reg.Seen(d) {
+			fmt.Printf("+ nearby: %-20q type=%-8s fp=%.8s from %s (%s)\n",
+				d.Alias, d.Type, d.Fingerprint, d.Addr, source)
+		}
+	}
+
+	// Always serve presence so scanners can find us back. A second copy
+	// on the same machine loses the TCP bind; multicast still works.
+	go func() {
+		if err := discover.ServeRegister(ctx,
+			fmt.Sprintf(":%d", *port), me,
+			func(d discover.Device) { note("scan", d) }); err != nil {
+			fmt.Printf("presence HTTP unavailable (another copy running?): %v\n", err)
+		}
+	}()
+
 	dst, err := discover.GroupAddr(*port)
 	if err != nil {
 		log.Fatalf("group: %v", err)
@@ -74,14 +103,31 @@ func main() {
 
 	conn, err := discover.ListenPacketConn(*port, nil)
 	if err != nil {
-		log.Fatalf("listen (multicast blocked here?): %v", err)
+		// Never fatal: the HTTP scan path still works without multicast,
+		// which is exactly the Windows story. Multicast just stays deaf.
+		fmt.Printf("multicast unavailable, continuing deaf (scan/unicast only): %v\n", err)
+	} else {
+		defer conn.Close()
+		go discover.ListenLoop(ctx, conn, me.Fingerprint, func(d discover.Device) {
+			note("multicast", d)
+		})
 	}
-	defer conn.Close()
-	go discover.ListenLoop(ctx, conn, me.Fingerprint, func(d discover.Device) {
-		if reg.Seen(d) {
-			fmt.Printf("+ nearby: %-20q type=%-8s fp=%.8s from %s\n", d.Alias, d.Type, d.Fingerprint, d.Addr)
+
+	runScan := func() {
+		ips := discover.LocalSubnetIPs()
+		fmt.Printf("scanning %d subnet addresses on port %d…\n", len(ips), *scanPort)
+		for _, d := range discover.Scan(ctx, me, *scanPort, ips, 400*time.Millisecond, 64) {
+			note("scan", d)
 		}
-	})
+	}
+	if *scan || *scanEvery > 0 {
+		go runScan()
+	}
+	var scanTicker *time.Ticker
+	if *scanEvery > 0 {
+		scanTicker = time.NewTicker(*scanEvery)
+		defer scanTicker.Stop()
+	}
 
 	t := time.NewTicker(discover.DefaultTTL / 2)
 	defer t.Stop()
@@ -94,8 +140,18 @@ func main() {
 			for _, d := range reg.Prune(discover.DefaultTTL) {
 				fmt.Printf("- gone:   %-20q fp=%.8s\n", d.Alias, d.Fingerprint)
 			}
+		case <-scanTick(scanTicker):
+			go runScan()
 		}
 	}
+}
+
+// scanTick returns a nil channel when disabled, which never fires.
+func scanTick(t *time.Ticker) <-chan time.Time {
+	if t == nil {
+		return nil
+	}
+	return t.C
 }
 
 func defaultAlias() string {
