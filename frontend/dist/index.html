@@ -69,15 +69,13 @@ const apiBase = injected.baseURL || "";
 if (injected.token && $("tokenCard")) $("tokenCard").style.display = "none";
 const token = () => injected.token || localStorage.getItem("lantern.token") || "";
 // Direct Go bindings, generated from cmd/lantern-gui via:
-//   wails3 generate bindings -d ./frontend/dist/bindings
+//   wails3 generate bindings -d ./frontend/dist/bindings -f "-tags wails" -b
 // Absent in browsers and manual builds; every op below falls back to HTTP.
 async function loadBindings() {
-  for (const p of ["./bindings/lantern/guiservice.js", "./bindings/main/guiservice.js"]) {
-    try {
-      const m = await import(p);
-      if (m && typeof m.GetStatus === "function") { console.info("lantern: using Wails bindings"); return m; }
-    } catch (e) { /* HTTP fallback */ }
-  }
+  try {
+    const m = await import("./bindings/github.com/shx-dow/lantern-go/cmd/lantern-gui/guiservice.js");
+    if (m && typeof m.GetStatus === "function") { console.info("lantern: using Wails bindings"); return m; }
+  } catch (e) { /* HTTP fallback */ }
   console.info("lantern: using HTTP API");
   return null;
 }

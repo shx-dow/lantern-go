@@ -37,8 +37,13 @@ generated module first and falls back to HTTP, so a missing/renamed binding
 never breaks the window. To light up the direct path, from this directory:
 
 ```sh
-wails3 generate bindings -d ./frontend/dist/bindings
+wails3 generate bindings -d ./frontend/dist/bindings -f "-tags wails" -b
 ```
+
+Flags matter: `-f "-tags wails"` makes the scanner see `main_wails.go`
+(hidden behind the `wails` build tag, otherwise it reports 0 services),
+and `-b` uses the bundled `/wails/runtime.js` instead of the npm package
+(our page is a single static file with no `node_modules`).
 
 Re-run after changing `service.go` (the page reads the `-d` copy under the
 asset root; `wails3 dev` also regenerates into the default bindings dir on
