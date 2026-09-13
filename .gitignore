@@ -40,6 +40,8 @@ build/
 # Except the Wails asset placeholder (the copied index.html stays ignored).
 !cmd/lantern-gui/frontend/dist/
 cmd/lantern-gui/frontend/dist/index.html
+# Generated Wails bindings (`wails3 generate bindings -d ./frontend/dist/bindings`
+# from cmd/lantern-gui); `wails3 dev` regenerates them, HTTP fallback covers the rest.
 # Except Wails project scaffolding (Taskfiles, packaging) for lantern-gui.
 !cmd/lantern-gui/build/
 

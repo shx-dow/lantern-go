@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <!-- Shared web UI: keep frontend/dist/index.html and internal/daemon/web/index.html byte-identical (see internal/daemon/web_sync_test.go). -->
+<!--LANTERN_INJECT-->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -31,7 +32,7 @@ input[type=text] { width: 100%; padding: 8px; border-radius: 6px; border: 1px so
 <body>
 <h1>Lantern</h1>
 <div class="muted" id="status">connecting…</div>
-<div class="card">
+<div class="card" id="tokenCard">
   <label class="muted" for="token">Daemon token (stored only in this browser)</label>
   <div class="row"><input type="text" id="token" placeholder="from <data-dir>/.lanternd-token" autocomplete="off"><button class="ghost" id="saveToken">Save</button></div>
 </div>
@@ -57,14 +58,30 @@ input[type=text] { width: 100%; padding: 8px; border-radius: 6px; border: 1px so
 <div id="peers" class="muted">—</div>
 
 <div id="toast"></div>
-<script>
+<script type="module">
 "use strict";
 const $ = id => document.getElementById(id);
-// A desktop shell (e.g. lantern-gui on Wails) may inject {baseURL, token}
-// before load; plain browsers fall back to same-origin + localStorage.
+// A desktop shell (lantern-gui on Wails) injects {baseURL, token} before
+// load; plain browsers fall back to same-origin + localStorage.
 const injected = window.__LANTERN__ || {};
 const apiBase = injected.baseURL || "";
+// The app already knows the token, so the paste box is desktop-only clutter.
+if (injected.token && $("tokenCard")) $("tokenCard").style.display = "none";
 const token = () => injected.token || localStorage.getItem("lantern.token") || "";
+// Direct Go bindings, generated from cmd/lantern-gui via:
+//   wails3 generate bindings -d ./frontend/dist/bindings
+// Absent in browsers and manual builds; every op below falls back to HTTP.
+async function loadBindings() {
+  for (const p of ["./bindings/lantern/guiservice.js", "./bindings/main/guiservice.js"]) {
+    try {
+      const m = await import(p);
+      if (m && typeof m.GetStatus === "function") { console.info("lantern: using Wails bindings"); return m; }
+    } catch (e) { /* HTTP fallback */ }
+  }
+  console.info("lantern: using HTTP API");
+  return null;
+}
+const bindings = await loadBindings();
 function toast(msg, isErr) {
   const t = $("toast"); t.textContent = msg; t.style.display = "block";
   t.style.background = isErr ? "var(--err)" : "#222";
@@ -79,6 +96,25 @@ async function api(path, opts) {
   try { body = await r.json(); } catch (e) { /* empty */ }
   if (!r.ok) throw new Error((body && body.error) || ("HTTP " + r.status));
   return body;
+}
+// Backend ops: bindings first, HTTP fallback. Shapes match on both paths.
+const getStatus = () => bindings ? bindings.GetStatus() : api("/v1/status");
+const getTransfers = () => bindings ? bindings.ListTransfers("").then(t => ({ transfers: t })) : api("/v1/transfers");
+const getTransfer = id => bindings ? bindings.GetTransfer(id) : api("/v1/transfers/" + id);
+const cancelTransfer = id => bindings ? bindings.CancelTransfer(id) : api("/v1/transfers/" + id, { method: "DELETE" });
+const getHistory = () => bindings ? bindings.ListHistory().then(h => ({ history: h })) : api("/v1/history");
+const getPeers = () => bindings ? bindings.ListPeers().then(p => ({ peers: p })) : api("/v1/peers");
+const sharePath = path => bindings ? bindings.ShareFile(path)
+  : api("/v1/shares", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: path }) });
+const fetchCode = code => bindings ? bindings.FetchCode(code, ".")
+  : api("/v1/fetches", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: code, out_dir: "." }) });
+function readFileBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",", 2)[1] || "");
+    r.onerror = () => reject(r.error || new Error("read failed"));
+    r.readAsDataURL(file);
+  });
 }
 function fmtBytes(n) {
   if (n < 1024) return n + " B";
@@ -97,23 +133,24 @@ function barHTML(r) {
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 async function refreshStatus() {
   try {
-    const s = await api("/v1/status");
+    const s = await getStatus();
     $("status").textContent = "peer " + s.peer_id.slice(0, 12) + "… · " + (s.lan_only ? "LAN only" : "global");
   } catch (e) { $("status").textContent = "offline: " + e.message; }
 }
 async function refreshLists() {
   try {
-    const t = await api("/v1/transfers");
+    const t = await getTransfers();
     $("live").innerHTML = t.transfers.length ? t.transfers.map(barHTML).join("") : "nothing running";
-    const h = await api("/v1/history");
+    const h = await getHistory();
     const items = h.history.slice(-10).reverse();
     $("history").innerHTML = items.length ? items.map(r =>
       `<div>${esc(r.file_name)} <span class="muted">${r.kind} · ${r.state}</span></div>`).join("") : "—";
-    const p = await api("/v1/peers");
+    const p = await getPeers();
     $("peers").innerHTML = p.peers.length ? p.peers.map(x => `<div>${esc(x.id.slice(0, 20))}…</div>`).join("") : "alone";
   } catch (e) { /* status line already shows it */ }
 }
 // Live progress via streaming fetch (EventSource can't send headers).
+// Bindings mode skips the stream; the 5s poll below covers it.
 async function streamEvents() {
   while (true) {
     try {
@@ -146,7 +183,7 @@ async function streamEvents() {
 async function refreshLiveBar(e) {
   // Cheap path: full refresh is fine at transfer-event rates.
   try {
-    const t = await api("/v1/transfers");
+    const t = await getTransfers();
     const items = t.transfers.filter(r => r.id === e.id);
     if (items.length) refreshLists();
   } catch (err) { /* ignore */ }
@@ -162,17 +199,23 @@ fileInput.onchange = () => { if (fileInput.files.length) uploadAndShare(fileInpu
 async function uploadAndShare(file) {
   const out = $("shareOut"); out.innerHTML = '<div class="muted">uploading ' + esc(file.name) + "…</div>";
   try {
-    const fd = new FormData(); fd.append("file", file);
-    const up = await api("/v1/uploads", { method: "POST", body: fd });
-    const rec = await api("/v1/shares", { method: "POST",
-      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: up.path }) });
+    let daemonPath;
+    if (bindings) {
+      const up = await bindings.UploadData(file.name, await readFileBase64(file));
+      daemonPath = up.path;
+    } else {
+      const fd = new FormData(); fd.append("file", file);
+      const up = await api("/v1/uploads", { method: "POST", body: fd });
+      daemonPath = up.path;
+    }
+    const rec = await sharePath(daemonPath);
     out.innerHTML = `<div class="muted">share this code:</div><code class="big">${esc(rec.code)}</code>` +
       `<div class="row"><button id="copyBtn">Copy code</button><button class="ghost" id="revokeBtn">Revoke</button></div>`;
     $("copyBtn").onclick = async () => {
       try { await navigator.clipboard.writeText(rec.code); toast("copied"); }
       catch (e) { toast("copy failed — select the code manually", true); }
     };
-    $("revokeBtn").onclick = async () => { await api("/v1/transfers/" + rec.id, { method: "DELETE" }); out.innerHTML = ""; refreshLists(); };
+    $("revokeBtn").onclick = async () => { await cancelTransfer(rec.id); out.innerHTML = ""; refreshLists(); };
     refreshLists();
   } catch (e) { out.innerHTML = ""; toast(e.message, true); }
 }
@@ -182,13 +225,12 @@ $("recvBtn").onclick = async () => {
   const out = $("recvOut"); out.innerHTML = '<div class="muted">fetching…</div>';
   $("recvBtn").disabled = true;
   try {
-    const rec = await api("/v1/fetches", { method: "POST",
-      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: code, out_dir: "." }) });
+    const rec = await fetchCode(code);
     out.innerHTML = `<div id="recvBar"></div>`;
     const id = rec.id;
     const poll = setInterval(async () => {
       try {
-        const cur = await api("/v1/transfers/" + id);
+        const cur = await getTransfer(id);
         $("recvBar").innerHTML = barHTML(cur);
         if (cur.state !== "running") { clearInterval(poll); refreshLists(); }
       } catch (e) { clearInterval(poll); toast(e.message, true); }
@@ -200,7 +242,7 @@ $("recvBtn").onclick = async () => {
 async function refreshAll() { await refreshStatus(); await refreshLists(); }
 refreshAll();
 setInterval(refreshLists, 5000);
-streamEvents();
+if (!bindings) streamEvents();
 </script>
 </body>
 </html>

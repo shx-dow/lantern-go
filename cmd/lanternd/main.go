@@ -131,7 +131,7 @@ func main() {
 	})
 	top.Handle("/v1/", daemon.RequireAuth(mux, token))
 
-	srv := &http.Server{Addr: listenAddr, Handler: top}
+	srv := &http.Server{Addr: listenAddr, Handler: daemon.CORS(top)}
 
 	go func() {
 		fmt.Printf("lanternd listening on http://%s (lan_only=%v)\n", listenAddr, lanOnly)

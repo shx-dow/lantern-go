@@ -35,6 +35,17 @@ func TestGuiServiceProxiesDaemon(t *testing.T) {
 	if err != nil || st.PeerID != "peer123" {
 		t.Fatalf("GetStatus: %+v %v", st, err)
 	}
+	peers, err := svc.ListPeers()
+	if err != nil || len(peers) != 1 {
+		t.Fatalf("ListPeers: %+v %v", peers, err)
+	}
+	up, err := svc.UploadData("photo.jpg", "MDEyMzQ1Njc4OQ==")
+	if err != nil || up.Path == "" {
+		t.Fatalf("UploadData: %+v %v", up, err)
+	}
+	if _, err := svc.UploadData("photo.jpg", "!!!not-base64!!!"); err == nil {
+		t.Fatal("expected base64 error, got nil")
+	}
 }
 
 func TestGuiServicePropagatesErrors(t *testing.T) {

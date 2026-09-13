@@ -76,7 +76,7 @@ func main() {
 	})
 	top.Handle("/v1/", daemon.RequireAuth(mux, token))
 
-	srv := &http.Server{Addr: *embeddedAddr, Handler: top}
+	srv := &http.Server{Addr: *embeddedAddr, Handler: daemon.CORS(top)}
 	go func() {
 		fmt.Printf("lantern-gui embedded daemon on http://%s (open /ui in a browser)\n", *embeddedAddr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
