@@ -6,6 +6,8 @@
 // the frontend with generated TypeScript bindings.
 package main
 
+import "encoding/base64"
+
 // guiVersion marks the spike; real releases inject this via ldflags.
 const guiVersion = "0.1.0-spike"
 
@@ -57,4 +59,20 @@ func (s *GuiService) ListHistory() ([]Transfer, error) {
 // GetStatus returns daemon and node status.
 func (s *GuiService) GetStatus() (Status, error) {
 	return s.client.GetStatus()
+}
+
+// ListPeers returns currently connected peers.
+func (s *GuiService) ListPeers() ([]Peer, error) {
+	return s.client.ListPeers()
+}
+
+// UploadData stores base64-encoded file bytes daemon-side and returns the
+// daemon path to pass to ShareFile. The argument stays a string (not []byte)
+// so the Wails bridge passes it through untouched; decoding happens here.
+func (s *GuiService) UploadData(fileName, base64Data string) (Upload, error) {
+	raw, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return Upload{}, err
+	}
+	return s.client.UploadFile(fileName, raw)
 }

@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strings"
@@ -55,6 +56,21 @@ type Status struct {
 type AppInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
+}
+
+// Upload mirrors the daemon upload JSON
+// (api/openapi.yaml #/components/schemas/Upload).
+type Upload struct {
+	Path     string `json:"path"`
+	FileName string `json:"file_name"`
+	Size     int64  `json:"size"`
+}
+
+// Peer mirrors #/components/schemas/PeerInfo.
+type Peer struct {
+	ID        string   `json:"id"`
+	Addrs     []string `json:"addrs"`
+	Connected bool     `json:"connected"`
 }
 
 // Client talks to a running or embedded lanternd over HTTP.
@@ -186,6 +202,52 @@ func (c *Client) CancelTransfer(id string) error {
 	return c.doJSON(http.MethodDelete, "/v1/transfers/"+url.PathEscape(id), nil, nil, http.StatusNoContent)
 }
 
+// UploadFile stores data daemon-side via POST /v1/uploads and returns the
+// daemon path to pass to ShareFile. It powers the desktop drop zone, which
+// holds file bytes but no daemon-local path.
+func (c *Client) UploadFile(fileName string, data []byte) (Upload, error) {
+	var up Upload
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	fw, err := w.CreateFormFile("file", fileName)
+	if err != nil {
+		return up, err
+	}
+	if _, err := fw.Write(data); err != nil {
+		return up, err
+	}
+	if err := w.Close(); err != nil {
+		return up, err
+	}
+	req, err := http.NewRequest(http.MethodPost, c.base+"/v1/uploads", &buf)
+	if err != nil {
+		return up, err
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	c.authed(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return up, fmt.Errorf("daemon POST /v1/uploads: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+	if resp.StatusCode != http.StatusCreated {
+		msg := strings.TrimSpace(string(raw))
+		var m map[string]string
+		if json.Unmarshal(raw, &m) == nil && m["error"] != "" {
+			msg = m["error"]
+		}
+		if msg == "" {
+			msg = resp.Status
+		}
+		return up, &APIError{Method: http.MethodPost, Path: "/v1/uploads", Status: resp.StatusCode, Body: msg}
+	}
+	if err := json.Unmarshal(raw, &up); err != nil {
+		return up, fmt.Errorf("decode POST /v1/uploads: %w", err)
+	}
+	return up, nil
+}
+
 // ListHistory returns recent terminal transfers; never nil.
 func (c *Client) ListHistory() ([]Transfer, error) {
 	var out struct {
@@ -205,4 +267,18 @@ func (c *Client) GetStatus() (Status, error) {
 	var st Status
 	err := c.doJSON(http.MethodGet, "/v1/status", nil, &st, http.StatusOK)
 	return st, err
+}
+
+// ListPeers returns currently connected peers; never nil.
+func (c *Client) ListPeers() ([]Peer, error) {
+	var out struct {
+		Peers []Peer `json:"peers"`
+	}
+	if err := c.doJSON(http.MethodGet, "/v1/peers", nil, &out, http.StatusOK); err != nil {
+		return nil, err
+	}
+	if out.Peers == nil {
+		out.Peers = []Peer{}
+	}
+	return out.Peers, nil
 }

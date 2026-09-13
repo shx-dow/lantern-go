@@ -40,6 +40,10 @@ func fakeDaemon(t *testing.T, token string) *httptest.Server {
 			w.WriteHeader(http.StatusNoContent)
 		case "GET /v1/history":
 			write(http.StatusOK, map[string]any{"history": []Transfer{}})
+		case "POST /v1/uploads":
+			write(http.StatusCreated, Upload{Path: "/tmp/uploads/photo.jpg", FileName: "photo.jpg", Size: 10})
+		case "GET /v1/peers":
+			write(http.StatusOK, map[string]any{"peers": []Peer{{ID: "peer999", Connected: true}}})
 		default:
 			write(http.StatusNotFound, map[string]string{"error": "transfer not found"})
 		}
@@ -75,6 +79,14 @@ func TestClientAttachesAndShares(t *testing.T) {
 	hist, err := c.ListHistory()
 	if err != nil || hist == nil || len(hist) != 0 {
 		t.Fatalf("ListHistory: %v %+v", hist, err)
+	}
+	up, err := c.UploadFile("photo.jpg", []byte("0123456789"))
+	if err != nil || up.FileName != "photo.jpg" || up.Size != 10 {
+		t.Fatalf("UploadFile: %+v %v", up, err)
+	}
+	peers, err := c.ListPeers()
+	if err != nil || len(peers) != 1 || peers[0].ID != "peer999" {
+		t.Fatalf("ListPeers: %+v %v", peers, err)
 	}
 }
 
