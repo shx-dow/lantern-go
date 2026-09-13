@@ -124,7 +124,7 @@ func newSendTab(svc *GuiService, w fyne.Window, refreshed func()) fyne.CanvasObj
 	return container.NewVBox(
 		widget.NewLabelWithStyle("Share a file", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		pathEntry,
-		container.NewHBox(browse, ttlEntry),
+		container.NewBorder(nil, nil, browse, nil, ttlEntry),
 		shareBtn,
 		widget.NewSeparator(),
 		result,
