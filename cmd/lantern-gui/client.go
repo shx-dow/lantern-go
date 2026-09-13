@@ -33,16 +33,19 @@ const defaultDaemonURL = "http://127.0.0.1:43782"
 // Transfer mirrors the daemon Record JSON
 // (api/openapi.yaml #/components/schemas/Record).
 type Transfer struct {
-	ID       string `json:"id"`
-	Kind     string `json:"kind"`
-	Code     string `json:"code"`
-	FileName string `json:"file_name"`
-	FileSize int64  `json:"file_size"`
-	Bytes    int64  `json:"bytes"`
-	Total    int64  `json:"total"`
-	State    string `json:"state"`
-	Error    string `json:"error,omitempty"`
-	PeerID   string `json:"peer_id,omitempty"`
+	ID        string     `json:"id"`
+	Kind      string     `json:"kind"`
+	Code      string     `json:"code"`
+	FileName  string     `json:"file_name"`
+	FileSize  int64      `json:"file_size"`
+	Bytes     int64      `json:"bytes"`
+	Total     int64      `json:"total"`
+	State     string     `json:"state"`
+	Error     string     `json:"error,omitempty"`
+	PeerID    string     `json:"peer_id,omitempty"`
+	StartedAt time.Time  `json:"started_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 // Status mirrors #/components/schemas/Status.
@@ -158,8 +161,14 @@ func (c *Client) doJSON(method, path string, body any, out any, want int) error 
 
 // ShareFile advertises path via POST /v1/shares.
 func (c *Client) ShareFile(path string) (Transfer, error) {
+	return c.ShareFileWithTTL(path, 0)
+}
+
+// ShareFileWithTTL advertises path with an expiry in seconds (0 = daemon default).
+func (c *Client) ShareFileWithTTL(path string, ttlSeconds int64) (Transfer, error) {
 	var t Transfer
-	err := c.doJSON(http.MethodPost, "/v1/shares", map[string]string{"path": path}, &t, http.StatusCreated)
+	err := c.doJSON(http.MethodPost, "/v1/shares",
+		map[string]any{"path": path, "ttl_seconds": ttlSeconds}, &t, http.StatusCreated)
 	return t, err
 }
 

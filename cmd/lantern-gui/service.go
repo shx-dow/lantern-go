@@ -31,6 +31,12 @@ func (s *GuiService) ShareFile(path string) (Transfer, error) {
 	return s.client.ShareFile(path)
 }
 
+// ShareFileWithTTL advertises a local file with an expiry in seconds
+// (0 = daemon default) and returns its share record.
+func (s *GuiService) ShareFileWithTTL(path string, ttlSeconds int64) (Transfer, error) {
+	return s.client.ShareFileWithTTL(path, ttlSeconds)
+}
+
 // FetchCode pulls a share code into outDir.
 func (s *GuiService) FetchCode(code, outDir string) (Transfer, error) {
 	return s.client.FetchCode(code, outDir)
