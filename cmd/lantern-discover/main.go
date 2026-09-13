@@ -8,7 +8,14 @@
 //	go run ./cmd/lantern-discover --alias "second box"
 //
 // Flags: --alias (default hostname), --type (desktop|mobile|headless|
-// server), --port (default 43781), --interval (re-announce period).
+// server), --port (default 43781), --interval (re-announce period),
+// --unicast ip:port (also announce straight at one peer, bypassing
+// multicast — the diagnostic that separates "multicast blocked" from
+// "UDP blocked").
+//
+// Windows note: if two instances on the same port never see each other,
+// allow inbound UDP on the discovery port (or the test binary) in
+// Windows Defender Firewall; multicast is dropped silently otherwise.
 package main
 
 import (
@@ -16,6 +23,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -30,6 +38,7 @@ func main() {
 	devType := flag.String("type", "headless", "device type: desktop, mobile, headless, server")
 	port := flag.Int("port", discover.DefaultPort, "discovery UDP port")
 	interval := flag.Duration("interval", discover.DefaultInterval, "re-announce period")
+	unicast := flag.String("unicast", "", "also announce directly to ip:port (bypasses multicast)")
 	flag.Parse()
 
 	fp, err := discover.NewFingerprint()
@@ -54,6 +63,14 @@ func main() {
 		log.Fatalf("group: %v", err)
 	}
 	go discover.AnnounceLoop(ctx, dst, me, *interval)
+	if u := strings.TrimSpace(*unicast); u != "" {
+		udst, err := net.ResolveUDPAddr("udp", u)
+		if err != nil {
+			log.Fatalf("unicast: %v", err)
+		}
+		fmt.Printf("also announcing directly to %s\n", udst)
+		go discover.AnnounceLoop(ctx, udst, me, *interval)
+	}
 
 	conn, err := discover.ListenPacketConn(*port, nil)
 	if err != nil {
