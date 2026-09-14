@@ -10,12 +10,13 @@ import (
 // ConfigFile holds lanternd file configuration. Flags always override
 // file values; zero values mean "flag decides".
 type ConfigFile struct {
-	Addr              string `json:"addr"`
-	P2PPort           int    `json:"p2p_port"`
-	DataDir           string `json:"data_dir"`
-	DeviceName        string `json:"device_name,omitempty"`
-	LANOnly           *bool  `json:"lan_only,omitempty"`
-	DefaultTTLSeconds int64  `json:"default_ttl_seconds,omitempty"`
+	Addr              string   `json:"addr"`
+	P2PPort           int      `json:"p2p_port"`
+	DataDir           string   `json:"data_dir"`
+	DeviceName        string   `json:"device_name,omitempty"`
+	SharedDirs        []string `json:"shared_dirs,omitempty"`
+	LANOnly           *bool    `json:"lan_only,omitempty"`
+	DefaultTTLSeconds int64    `json:"default_ttl_seconds,omitempty"`
 }
 
 // DefaultConfigPath returns $XDG_CONFIG_HOME/lantern/lanternd.json,

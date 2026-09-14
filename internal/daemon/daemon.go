@@ -80,6 +80,11 @@ type Daemon struct {
 	records map[string]*Record
 	history []Record
 
+	// Trust holds paired device peer IDs; nil means pairing disabled.
+	Trust *TrustStore
+	// SharedDirs roots local file discovery (GET /v1/files).
+	SharedDirs []string
+
 	subsMu  sync.Mutex
 	subs    map[uint64]chan EventDTO
 	nextSub uint64

@@ -68,6 +68,10 @@ func tools() []toolDef {
 		{"transfer", "Get one transfer snapshot", obj(map[string]any{"id": str("Transfer ID (= share code)")}, "id")},
 		{"history", "Recent terminal transfers", obj(map[string]any{})},
 		{"cancel", "Cancel/revoke a transfer", obj(map[string]any{"id": str("Transfer ID (= share code)")}, "id")},
+		{"trust_list", "List paired devices", obj(map[string]any{})},
+		{"trust_add", "Pair a device", obj(map[string]any{"peer_id": str("Peer ID to pair"), "alias": str("Human alias")}, "peer_id")},
+		{"trust_remove", "Unpair a device", obj(map[string]any{"peer_id": str("Peer ID to unpair")}, "peer_id")},
+		{"files", "List local shared-dir files", obj(map[string]any{"dir": str("Subdirectory (omit for roots)")})},
 	}
 }
 
@@ -208,6 +212,31 @@ func (c *daemonClient) callTool(name string, args map[string]any) (any, error) {
 			return nil, err
 		}
 		return map[string]any{"cancelled": str("id")}, nil
+	case "trust_list":
+		return c.doJSON(http.MethodGet, "/v1/trust", nil)
+	case "trust_add":
+		if str("peer_id") == "" {
+			return nil, fmt.Errorf("peer_id is required")
+		}
+		return c.doJSON(http.MethodPost, "/v1/trust", map[string]any{"peer_id": str("peer_id"), "alias": str("alias")})
+	case "trust_remove":
+		if str("peer_id") == "" {
+			return nil, fmt.Errorf("peer_id is required")
+		}
+		_, err := c.doJSON(http.MethodDelete, "/v1/trust/"+str("peer_id"), nil)
+		if err != nil {
+			if strings.Contains(err.Error(), "EOF") || strings.Contains(err.Error(), "decode") {
+				return map[string]any{"removed": str("peer_id")}, nil
+			}
+			return nil, err
+		}
+		return map[string]any{"removed": str("peer_id")}, nil
+	case "files":
+		path := "/v1/files"
+		if d := str("dir"); d != "" {
+			path += "?dir=" + d
+		}
+		return c.doJSON(http.MethodGet, path, nil)
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}

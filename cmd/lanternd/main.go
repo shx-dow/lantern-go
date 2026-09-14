@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -41,6 +42,7 @@ func main() {
 		tokenFlag  = flag.String("token", "", "bearer token (default $LANTERND_TOKEN, else persisted in data dir)")
 		defaultTTL = flag.Int64("default-ttl", -1, "default share lifetime in seconds (0 = no expiry, -1 = config default)")
 		deviceName = flag.String("device-name", "", "human alias for this device (default config device_name or OS hostname)")
+		sharedDirs = flag.String("shared-dirs", "", "comma-separated dirs exposed via GET /v1/files (default config shared_dirs)")
 		trayFlag   = flag.Bool("tray", false, "opt-in tray icon (GUI is frozen; headless is the default)")
 		noTrayFlag = flag.Bool("no-tray", false, "disable the tray icon (redundant now, kept for compat)")
 	)
@@ -107,6 +109,21 @@ func main() {
 	}
 
 	d := daemon.New(ln)
+	d.SharedDirs = cfg.SharedDirs
+	if strings.TrimSpace(*sharedDirs) != "" {
+		var dirs []string
+		for _, p := range strings.Split(*sharedDirs, ",") {
+			if s := strings.TrimSpace(p); s != "" {
+				dirs = append(dirs, s)
+			}
+		}
+		d.SharedDirs = dirs
+	}
+	if trust, err := daemon.NewTrustStore(dir); err != nil {
+		log.Fatalf("trust store: %v", err)
+	} else {
+		d.Trust = trust
+	}
 
 	addrs := make([]string, 0)
 	peerID := ""

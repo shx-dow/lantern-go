@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -196,13 +197,17 @@ func normalizeBaseURL(v string) string {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: lantern [--json] [--port N] [--data-dir DIR] [--daemon[=URL]] <command> [args]
 
- commands:
-   send <path>                  share a file (prints a share code)
-   receive <code> [output-dir]  fetch a file (or use --out DIR)
-   status                       daemon status (needs --daemon)
-   list [transfers|history]     daemon transfers (needs --daemon)
-   peers                        connected peers (needs --daemon)
-   discover                     self + connected peers (needs --daemon)
+  commands:
+    send <path>                  share a file (prints a share code)
+    receive <code> [output-dir]  fetch a file (or use --out DIR)
+    status                       daemon status (needs --daemon)
+    list [transfers|history]     daemon transfers (needs --daemon)
+    peers                        connected peers (needs --daemon)
+    discover                     self + connected peers (needs --daemon)
+    trust list                   paired devices (needs --daemon)
+    trust add <peer-id> [alias]  pair a device (needs --daemon)
+    trust remove <peer-id>       unpair a device (needs --daemon)
+    files [dir]                  list shared-dir files (needs --daemon)
 
 flags:
   --json            machine-readable JSONL on stdout (agents/MCP/GUI)
@@ -299,6 +304,23 @@ func (c *daemonClient) get(path string, out any) error {
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
+func (c *daemonClient) delete(path string) error {
+	req, err := http.NewRequest(http.MethodDelete, c.base+path, nil)
+	if err != nil {
+		return err
+	}
+	c.setAuth(req)
+	resp, err := c.api.Do(req)
+	if err != nil {
+		return fmt.Errorf("daemon %s: %w (is lanternd running at %s?)", path, err, c.base)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		return apiError(resp)
 	}
 	return nil
 }
@@ -469,6 +491,81 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 			}
 		default:
 			fatal(opts.jsonOut, fmt.Errorf("usage: lantern list [transfers|history]"))
+		}
+	case "trust":
+		sub := ""
+		if len(opts.positional) > 0 {
+			sub = opts.positional[0]
+		}
+		switch sub {
+		case "list", "":
+			var out map[string][]map[string]any
+			if err := c.get("/v1/trust", &out); err != nil {
+				fatal(opts.jsonOut, err)
+			}
+			if opts.jsonOut {
+				enc.Encode(out)
+			} else if len(out["trusted"]) == 0 {
+				fmt.Println("no paired devices")
+			} else {
+				for _, p := range out["trusted"] {
+					fmt.Printf("%v %v\n", p["peer_id"], p["alias"])
+				}
+			}
+		case "add":
+			if len(opts.positional) < 2 {
+				fatal(opts.jsonOut, fmt.Errorf("usage: lantern trust add <peer-id> [alias]"))
+			}
+			alias := ""
+			if len(opts.positional) > 2 {
+				alias = opts.positional[2]
+			}
+			var entry map[string]any
+			if err := c.post("/v1/trust", map[string]string{"peer_id": opts.positional[1], "alias": alias}, &entry, http.StatusCreated); err != nil {
+				fatal(opts.jsonOut, err)
+			}
+			if opts.jsonOut {
+				enc.Encode(entry)
+			} else {
+				fmt.Printf("paired %v\n", entry["peer_id"])
+			}
+		case "remove", "rm":
+			if len(opts.positional) < 2 {
+				fatal(opts.jsonOut, fmt.Errorf("usage: lantern trust remove <peer-id>"))
+			}
+			if err := c.delete("/v1/trust/" + opts.positional[1]); err != nil {
+				fatal(opts.jsonOut, err)
+			}
+			if opts.jsonOut {
+				enc.Encode(map[string]any{"removed": opts.positional[1]})
+			} else {
+				fmt.Printf("removed %s\n", opts.positional[1])
+			}
+		default:
+			fatal(opts.jsonOut, fmt.Errorf("usage: lantern trust [list|add|remove]"))
+		}
+	case "files":
+		dir := ""
+		if len(opts.positional) > 0 {
+			dir = opts.positional[0]
+		}
+		path := "/v1/files"
+		if dir != "" {
+			path += "?dir=" + url.QueryEscape(dir)
+		}
+		var out map[string][]map[string]any
+		// GET helper with query: reuse c.get directly.
+		if err := c.get(path, &out); err != nil {
+			fatal(opts.jsonOut, err)
+		}
+		if opts.jsonOut {
+			enc.Encode(out)
+		} else if len(out["files"]) == 0 {
+			fmt.Println("no files (configure --shared-dirs on lanternd)")
+		} else {
+			for _, f := range out["files"] {
+				fmt.Printf("%v %v %v\n", f["name"], f["size"], f["mod_time"])
+			}
 		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", opts.command)
