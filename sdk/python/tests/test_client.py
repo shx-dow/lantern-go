@@ -79,6 +79,12 @@ class FakeDaemon(BaseHTTPRequestHandler):
             return self._send(200, {"peers": [{"id": "p9", "addrs": [], "connected": True}]})
         if self.path == "/v1/history":
             return self._send(200, {"history": [REC]})
+        if self.path == "/v1/trust":
+            return self._send(200, {"trusted": [{"peer_id": "p9", "alias": "laptop", "added_at": "2026-01-01T00:00:00Z"}]})
+        if self.path == "/v1/files" or self.path.startswith("/v1/files?"):
+            return self._send(200, {"files": [{"name": "a.txt", "size": 3, "mod_time": "2026-01-01T00:00:00Z", "is_dir": False}]})
+        if self.path.startswith("/v1/peers/") and self.path.endswith("/files"):
+            return self._send(200, {"files": [{"name": "r.txt", "size": 5, "mod_time": "2026-01-01T00:00:00Z", "is_dir": False}]})
         if self.path == "/v1/transfers":
             return self._send(200, {"transfers": [REC]})
         if self.path == "/v1/shares":
@@ -107,6 +113,8 @@ class FakeDaemon(BaseHTTPRequestHandler):
             return self._send(201, dict(REC, kind="share"))
         if self.path == "/v1/fetches":
             return self._send(201, dict(REC, kind="fetch"))
+        if self.path == "/v1/trust":
+            return self._send(201, {"peer_id": body.get("peer_id"), "alias": body.get("alias", ""), "added_at": "2026-01-01T00:00:00Z"})
         return self._send(404, {"error": "nope"})
 
     def do_DELETE(self):
@@ -169,6 +177,23 @@ class ClientTest(unittest.TestCase):
             c.get("missing")
         with self.assertRaises(NotFoundError):
             c.revoke("missing")
+
+    def test_discover_trust_files(self):
+        c = self.client()
+        d = c.discover()
+        self.assertEqual(d["self"].peer_id, "p1")
+        self.assertEqual(d["peers"][0].id, "p9")
+        trusted = c.trust_list()
+        self.assertEqual(trusted[0].peer_id, "p9")
+        added = c.trust_add("p9", alias="laptop")
+        self.assertEqual(added.alias, "laptop")
+        c.trust_remove("p9")  # 204, no error
+        with self.assertRaises(ValueError):
+            c.trust_add("")
+        self.assertEqual(c.files()[0].name, "a.txt")
+        self.assertEqual(c.remote_files("p9")[0].name, "r.txt")
+        with self.assertRaises(ValueError):
+            c.remote_files("")
 
     def test_auth(self):
         with self.assertRaises(AuthError):

@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/shx-dow/lantern-go/internal/p2p"
+	"github.com/shx-dow/lantern-go/internal/storage"
 )
 
 // Config selects the listen port, the directory for local advertisements,
@@ -15,6 +17,9 @@ type Config struct {
 	Port      int
 	DataDir   string
 	Bootstrap []string
+	// Relay holds static relay/circuit multiaddrs dialed after boot for
+	// NAT traversal. Empty means no static relays.
+	Relay []string
 }
 
 // EventType classifies a Lantern event; progress events may be dropped
@@ -156,6 +161,11 @@ func New(cfg Config) (*Lantern, error) {
 	if err != nil {
 		return nil, fmt.Errorf("init p2p: %w", err)
 	}
+	if len(cfg.Relay) > 0 {
+		dialCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		node.ConnectStaticRelays(dialCtx, cfg.Relay)
+		cancel()
+	}
 
 	l := &Lantern{
 		node:        node,
@@ -228,16 +238,31 @@ func (l *Lantern) newSession(ctx context.Context, id string) *Session {
 }
 
 // ShareSession advertises path under a fresh code and returns a session
-// tracking the transfer. The session's context drives advertisement and
-// the transfer; closing it stops both.
+// tracking the transfer. Directories are zipped to a temp "<base>.zip"
+// served as a single file. The session's context drives advertisement and
+// the transfer; closing it stops both and cleans any staging dir.
 func (l *Lantern) ShareSession(ctx context.Context, path string) (*Session, *Peer, error) {
 	code, err := p2p.GenerateCode()
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate code: %w", err)
 	}
 	session := l.newSession(ctx, code)
+	cleanup := func() {}
+	if fi, err := os.Stat(path); err == nil && fi.IsDir() {
+		var zerr error
+		path, cleanup, zerr = storage.ZipDirToTemp(path)
+		if zerr != nil {
+			session.Close()
+			return nil, nil, zerr
+		}
+		go func() {
+			<-session.Done()
+			cleanup()
+		}()
+	}
 	peer, err := l.shareWithCode(session.ctx, path, code)
 	if err != nil {
+		cleanup()
 		session.Close()
 		return nil, nil, err
 	}

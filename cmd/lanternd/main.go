@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -40,8 +41,12 @@ func main() {
 		configPath = flag.String("config", "", "config file path (default $XDG_CONFIG_HOME/lantern/lanternd.json)")
 		tokenFlag  = flag.String("token", "", "bearer token (default $LANTERND_TOKEN, else persisted in data dir)")
 		defaultTTL = flag.Int64("default-ttl", -1, "default share lifetime in seconds (0 = no expiry, -1 = config default)")
-		trayFlag   = flag.Bool("tray", true, "show a tray icon that opens the web UI (falls back to console when unsupported)")
-		noTrayFlag = flag.Bool("no-tray", false, "disable the tray icon")
+		deviceName = flag.String("device-name", "", "human alias for this device (default config device_name or OS hostname)")
+		sharedDirs = flag.String("shared-dirs", "", "comma-separated dirs exposed via GET /v1/files (default config shared_dirs)")
+		bootstrapF = flag.String("bootstrap", "", "comma-separated bootstrap multiaddrs (default config bootstrap_peers; 'none' = LAN-only)")
+		relayF     = flag.String("relay", "", "comma-separated static relay multiaddrs for NAT traversal (default config relay_addrs)")
+		trayFlag   = flag.Bool("tray", false, "opt-in tray icon (GUI is frozen; headless is the default)")
+		noTrayFlag = flag.Bool("no-tray", false, "disable the tray icon (redundant now, kept for compat)")
 	)
 	flag.Parse()
 
@@ -86,8 +91,26 @@ func main() {
 	if !lanOnly {
 		bootstrap = nil // nil keeps the default public bootstraps
 	}
+	if strings.TrimSpace(*bootstrapF) != "" {
+		bootstrap = splitCSV(*bootstrapF)
+	} else if len(cfg.BootstrapPeers) > 0 {
+		bootstrap = cfg.BootstrapPeers
+	}
+	var relays []string
+	if strings.TrimSpace(*relayF) != "" {
+		relays = splitCSV(*relayF)
+	} else {
+		relays = cfg.RelayAddrs
+	}
 
-	ln, err := lantern.New(lantern.Config{Port: port, DataDir: dir, Bootstrap: bootstrap})
+	name := firstNonEmpty(*deviceName, cfg.DeviceName)
+	if name == "" {
+		if hn, err := os.Hostname(); err == nil {
+			name = hn
+		}
+	}
+
+	ln, err := lantern.New(lantern.Config{Port: port, DataDir: dir, Bootstrap: bootstrap, Relay: relays})
 	if err != nil {
 		log.Fatalf("init p2p: %v", err)
 	}
@@ -99,6 +122,27 @@ func main() {
 	}
 
 	d := daemon.New(ln)
+	d.SharedDirs = cfg.SharedDirs
+	if strings.TrimSpace(*sharedDirs) != "" {
+		var dirs []string
+		for _, p := range strings.Split(*sharedDirs, ",") {
+			if s := strings.TrimSpace(p); s != "" {
+				dirs = append(dirs, s)
+			}
+		}
+		d.SharedDirs = dirs
+	}
+	if trust, err := daemon.NewTrustStore(dir); err != nil {
+		log.Fatalf("trust store: %v", err)
+	} else {
+		d.Trust = trust
+	}
+	if node := ln.Node(); node != nil && node.Host != nil {
+		roots := d.SharedDirs
+		trust := d.Trust
+		node.SetListAccess(roots, func(id string) bool { return trust != nil && trust.Trusted(id) })
+		node.RegisterListHandler()
+	}
 
 	addrs := make([]string, 0)
 	peerID := ""
@@ -111,7 +155,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	daemon.NewHandler(d, peerID, addrs, lanOnly, ttl, dir).Routes(mux)
+	daemon.NewHandler(d, peerID, addrs, lanOnly, ttl, dir).WithDeviceName(name).Routes(mux)
 
 	// The UI page is public (it holds no secrets; API calls carry the
 	// token from browser storage). Everything under /v1/ stays authed.
@@ -187,4 +231,14 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func splitCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }

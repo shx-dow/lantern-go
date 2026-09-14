@@ -19,7 +19,7 @@ func TestLoadConfigFile(t *testing.T) {
 	// Round trip.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "lanternd.json")
-	data := `{"addr":"127.0.0.1:9999","p2p_port":4001,"data_dir":"/tmp/x","lan_only":false,"default_ttl_seconds":600}`
+	data := `{"addr":"127.0.0.1:9999","p2p_port":4001,"data_dir":"/tmp/x","device_name":"laptop","lan_only":false,"default_ttl_seconds":600}`
 	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -29,6 +29,9 @@ func TestLoadConfigFile(t *testing.T) {
 	}
 	if cfg.Addr != "127.0.0.1:9999" || cfg.P2PPort != 4001 || cfg.DataDir != "/tmp/x" {
 		t.Fatalf("bad decode: %+v", cfg)
+	}
+	if cfg.DeviceName != "laptop" {
+		t.Fatalf("device_name not decoded: %+v", cfg)
 	}
 	if cfg.LANOnly == nil || *cfg.LANOnly != false {
 		t.Fatalf("lan_only pointer not decoded: %+v", cfg)

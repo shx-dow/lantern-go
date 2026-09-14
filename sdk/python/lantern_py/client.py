@@ -4,11 +4,12 @@ import json
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from .errors import AuthError, LanternError, NotFoundError, TransferFailed
-from .models import Event, PeerInfo, Record, Status
+from .models import Event, FileEntry, PeerInfo, Record, Status, TrustEntry
 
 DEFAULT_URL = "http://127.0.0.1:43782"
 
@@ -128,6 +129,39 @@ class Client:
     def peers(self) -> List[PeerInfo]:
         data = self._request("GET", "/v1/peers")
         return [PeerInfo.from_dict(p) for p in (data or {}).get("peers", [])]
+
+    def discover(self) -> Dict[str, Any]:
+        """Self status plus connected peers (mirrors `lantern discover`)."""
+        st = self.status()
+        return {"self": st, "peers": self.peers()}
+
+    def trust_list(self) -> List[TrustEntry]:
+        data = self._request("GET", "/v1/trust")
+        return [TrustEntry.from_dict(e) for e in (data or {}).get("trusted", [])]
+
+    def trust_add(self, peer_id: str, alias: str = "") -> TrustEntry:
+        if not peer_id:
+            raise ValueError("peer_id must not be empty")
+        return TrustEntry.from_dict(
+            self._request("POST", "/v1/trust", {"peer_id": peer_id, "alias": alias})
+        )
+
+    def trust_remove(self, peer_id: str) -> None:
+        if not peer_id:
+            raise ValueError("peer_id must not be empty")
+        self._request("DELETE", "/v1/trust/" + peer_id)
+
+    def files(self, dir: str = "") -> List[FileEntry]:
+        path = "/v1/files" + (f"?dir={urllib.parse.quote(dir)}" if dir else "")
+        data = self._request("GET", path)
+        return [FileEntry.from_dict(f) for f in (data or {}).get("files", [])]
+
+    def remote_files(self, peer_id: str, dir: str = "") -> List[FileEntry]:
+        if not peer_id:
+            raise ValueError("peer_id must not be empty")
+        path = "/v1/peers/" + peer_id + "/files" + (f"?dir={urllib.parse.quote(dir)}" if dir else "")
+        data = self._request("GET", path)
+        return [FileEntry.from_dict(f) for f in (data or {}).get("files", [])]
 
     # -- waiting ----------------------------------------------------------
 

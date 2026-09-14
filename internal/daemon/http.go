@@ -15,6 +15,7 @@ type Handler struct {
 	peerID     string
 	addrs      []string
 	lanOnly    bool
+	deviceName string
 	defaultTTL time.Duration
 	uploadDir  string
 }
@@ -24,6 +25,12 @@ type Handler struct {
 // uploadDir roots browser uploads (defaults to the OS temp dir).
 func NewHandler(d *Daemon, peerID string, addrs []string, lanOnly bool, defaultTTL time.Duration, uploadDir string) *Handler {
 	return &Handler{daemon: d, peerID: peerID, addrs: addrs, lanOnly: lanOnly, defaultTTL: defaultTTL, uploadDir: uploadDir}
+}
+
+// WithDeviceName sets the human alias reported by GET /v1/status.
+func (h *Handler) WithDeviceName(name string) *Handler {
+	h.deviceName = name
+	return h
 }
 
 // Routes registers v1 endpoints on mux.
@@ -40,6 +47,11 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/peers", h.getPeers)
 	mux.HandleFunc("POST /v1/uploads", h.postUploads)
 	mux.HandleFunc("GET /v1/events", h.getEvents)
+	mux.HandleFunc("GET /v1/trust", h.getTrust)
+	mux.HandleFunc("POST /v1/trust", h.postTrust)
+	mux.HandleFunc("DELETE /v1/trust/{id}", h.deleteTrust)
+	mux.HandleFunc("GET /v1/files", h.getFiles)
+	mux.HandleFunc("GET /v1/peers/{id}/files", h.getRemoteFiles)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -136,9 +148,10 @@ func (h *Handler) getHistory(w http.ResponseWriter, _ *http.Request) {
 
 func (h *Handler) getStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"peer_id":  h.peerID,
-		"addrs":    h.addrs,
-		"lan_only": h.lanOnly,
+		"peer_id":     h.peerID,
+		"addrs":       h.addrs,
+		"lan_only":    h.lanOnly,
+		"device_name": h.deviceName,
 	})
 }
 
@@ -192,4 +205,82 @@ func (h *Handler) getEvents(w http.ResponseWriter, r *http.Request) {
 func mustGet(h *Handler, id string) Record {
 	rec, _ := h.daemon.Get(id)
 	return rec
+}
+
+type trustRequest struct {
+	PeerID string `json:"peer_id"`
+	Alias  string `json:"alias,omitempty"`
+}
+
+func (h *Handler) trustStore() (*TrustStore, error) {
+	if h.daemon.Trust == nil {
+		return nil, fmt.Errorf("pairing is not configured on this daemon")
+	}
+	return h.daemon.Trust, nil
+}
+
+func (h *Handler) getTrust(w http.ResponseWriter, _ *http.Request) {
+	store, err := h.trustStore()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"trusted": store.List()})
+}
+
+func (h *Handler) postTrust(w http.ResponseWriter, r *http.Request) {
+	store, err := h.trustStore()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	var req trustRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
+		return
+	}
+	entry, err := store.Add(strings.TrimSpace(req.PeerID), strings.TrimSpace(req.Alias))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, entry)
+}
+
+func (h *Handler) deleteTrust(w http.ResponseWriter, r *http.Request) {
+	store, err := h.trustStore()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	if !store.Remove(r.PathValue("id")) {
+		writeError(w, http.StatusNotFound, fmt.Errorf("peer not found"))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) getFiles(w http.ResponseWriter, r *http.Request) {
+	entries, err := ListSharedFiles(h.daemon.SharedDirs, r.URL.Query().Get("dir"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if entries == nil {
+		entries = []FileEntry{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"files": entries})
+}
+
+func (h *Handler) getRemoteFiles(w http.ResponseWriter, r *http.Request) {
+	entries, err := h.daemon.RemoteFiles(r.Context(), r.PathValue("id"), r.URL.Query().Get("dir"))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	if entries == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"files": []any{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"files": entries})
 }

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/shx-dow/lantern-go/internal/p2p"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
 
@@ -79,6 +81,11 @@ type Daemon struct {
 	mu      sync.Mutex
 	records map[string]*Record
 	history []Record
+
+	// Trust holds paired device peer IDs; nil means pairing disabled.
+	Trust *TrustStore
+	// SharedDirs roots local file discovery (GET /v1/files).
+	SharedDirs []string
 
 	subsMu  sync.Mutex
 	subs    map[uint64]chan EventDTO
@@ -384,4 +391,35 @@ func (d *Daemon) Peers() []PeerInfo {
 		out = append(out, PeerInfo{ID: id.String(), Addrs: addrs, Connected: true})
 	}
 	return out
+}
+
+// RemoteFiles lists one level of dir on a connected peer. The remote side
+// serves only its shared dirs and only to paired devices; anything else
+// surfaces as an error.
+func (d *Daemon) RemoteFiles(ctx context.Context, peerID, dir string) ([]p2p.ListEntry, error) {
+	if d.ln == nil {
+		return nil, fmt.Errorf("node not ready")
+	}
+	node := d.ln.Node()
+	if node == nil || node.Host == nil {
+		return nil, fmt.Errorf("node not ready")
+	}
+	id, err := peer.Decode(strings.TrimSpace(peerID))
+	if err != nil {
+		return nil, fmt.Errorf("invalid peer ID: %w", err)
+	}
+	host := node.Host
+	var info peer.AddrInfo
+	found := false
+	for _, p := range host.Network().Peers() {
+		if p == id {
+			found = true
+			info = peer.AddrInfo{ID: p, Addrs: host.Peerstore().Addrs(p)}
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("peer %s is not connected", id.String())
+	}
+	return node.ListRemote(ctx, info, dir)
 }

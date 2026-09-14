@@ -45,6 +45,10 @@ type Node struct {
 	mu          sync.Mutex
 	shares      map[string]*shareState
 	handlerOnce sync.Once
+
+	listOnce    sync.Once
+	listRoots   []string
+	listTrusted func(peerID string) bool
 }
 
 // NewNode brings up a TCP+QUIC host with relay, hole punching, DHT in
@@ -68,7 +72,16 @@ func NewNode(port int, bootstrapPeers []string, dataDirs ...string) (*Node, erro
 		quicAddr = "/ip4/0.0.0.0/udp/0/quic-v1"
 	}
 
+	// Stable peer ID across restarts: the key lives in the data dir so
+	// pairing and allow-lists survive reboots.
+	priv, err := LoadOrCreatePrivKey(localDir)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+
 	h, err := libp2p.New(
+		libp2p.Identity(priv),
 		libp2p.ListenAddrStrings(tcpAddr, quicAddr),
 		libp2p.EnableRelay(),
 		libp2p.EnableHolePunching(),
@@ -170,4 +183,21 @@ func GenerateCode() (string, error) {
 		return "", fmt.Errorf("generate code: %w", err)
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// ConnectStaticRelays dials relay/bootstrap multiaddrs so nodes behind NAT
+// can reserve circuits. Invalid entries are skipped; a nil/empty list is a
+// no-op. Callers should pass a timeout context.
+func (n *Node) ConnectStaticRelays(ctx context.Context, addrs []string) {
+	for _, a := range addrs {
+		ma, err := multiaddr.NewMultiaddr(a)
+		if err != nil {
+			continue
+		}
+		ai, err := peer.AddrInfoFromP2pAddr(ma)
+		if err != nil {
+			continue
+		}
+		_ = n.Host.Connect(ctx, *ai)
+	}
 }

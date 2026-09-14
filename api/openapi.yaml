@@ -213,11 +213,124 @@ paths:
                       $ref: '#/components/schemas/PeerInfo'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /v1/trust:
+    get:
+      summary: List paired devices
+      responses:
+        '200':
+          description: Paired devices.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [trusted]
+                properties:
+                  trusted:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TrustEntry'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/BadRequest'
+    post:
+      summary: Pair a device
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrustRequest'
+      responses:
+        '201':
+          description: Paired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrustEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/trust/{id}:
+    delete:
+      summary: Unpair a device
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Peer ID to unpair.
+      responses:
+        '204':
+          description: Unpaired.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/files:
+    get:
+      summary: List local shared-dir files
+      description: One level of dir, confined to lanternd shared_dirs. Omit dir to list the roots themselves.
+      parameters:
+        - name: dir
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: File entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [files]
+                properties:
+                  files:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FileEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/peers/{id}/files:
+    get:
+      summary: List files on a connected peer
+      description: Proxies the paired remote's shared dirs over /lantern/list/1.0.0. The remote serves only paired devices.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Connected peer ID.
+        - name: dir
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Remote file entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [files]
+                properties:
+                  files:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FileEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /v1/uploads:
     post:
       summary: Store a browser upload for sharing
-      description: |-
-        Accepts one multipart `file` (max 1 GiB), stores it under
+      description: |-        Accepts one multipart `file` (max 1 GiB), stores it under
         `<data-dir>/uploads/` with a random prefix, and returns the
         daemon-side path to pass to POST /v1/shares. Powers the /ui
         drop zone, which cannot see local paths directly.
@@ -362,7 +475,7 @@ components:
       properties:
         path:
           type: string
-          description: Absolute or daemon-relative path of the file to share.
+          description: Absolute or daemon-relative path of the file or directory to share (directories arrive as <name>.zip).
         ttl_seconds:
           type: integer
           format: int64
@@ -395,6 +508,9 @@ components:
       properties:
         peer_id:
           type: string
+        device_name:
+          type: string
+          description: Human alias for this device (config device_name or OS hostname).
         addrs:
           type: array
           items:
@@ -412,6 +528,39 @@ components:
           items:
             type: string
         connected:
+          type: boolean
+    TrustEntry:
+      type: object
+      required: [peer_id, added_at]
+      properties:
+        peer_id:
+          type: string
+        alias:
+          type: string
+        added_at:
+          type: string
+          format: date-time
+    TrustRequest:
+      type: object
+      required: [peer_id]
+      properties:
+        peer_id:
+          type: string
+        alias:
+          type: string
+    FileEntry:
+      type: object
+      required: [name, size, mod_time, is_dir]
+      properties:
+        name:
+          type: string
+        size:
+          type: integer
+          format: int64
+        mod_time:
+          type: string
+          format: date-time
+        is_dir:
           type: boolean
     EventDTO:
       type: object

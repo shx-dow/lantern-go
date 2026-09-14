@@ -1,21 +1,23 @@
 # Lantern
 
-Lantern is a peer-to-peer command-line file transfer tool written in Go. It
-uses libp2p for connectivity, local mDNS and DHT discovery, and an optional
-relay binary for networks where direct connections are unavailable.
+Local-first, agent-native file transfer. Ask your agent to find, fetch, or
+send files across your trusted devices — no account, no cloud store. Bytes
+go peer-to-peer over libp2p (mDNS + DHT, optional relay); agents coordinate
+through the CLI, daemon HTTP API, MCP shim, or Python SDK.
 
 ## Status
 
-Lantern is under active development. The transfer path has authenticated
-requests, encrypted chunked streams, full-file hashing, and resumable partial
-files. The command-line and terminal UI are usable for development, but the
-protocol and configuration interfaces may still change.
+Under active development. The transfer path has authenticated requests,
+encrypted chunked streams, full-file hashing, and resumable partial files.
+Peer IDs are stable across restarts, devices pair via a trust store, and
+shared dirs support local + remote (paired-only) listing. Directories share
+as `<name>.zip`. The desktop shell is frozen; headless is the default.
 
 ## Run it
 
 ```sh
 go run ./cmd/lantern
-go run ./cmd/lantern send ./path/to/file
+go run ./cmd/lantern send ./path/to/file-or-dir
 go run ./cmd/lantern receive <share-code> [output-directory]
 ```
 
@@ -23,19 +25,27 @@ The sender prints a 128-bit share code. The receiver needs that code and must
 be able to discover or connect to the sender through mDNS, the DHT, or a
 configured libp2p route.
 
+Persistent daemon (pairs devices, serves shared dirs, powers CLI/MCP/SDK):
+
+```sh
+go run ./cmd/lanternd --shared-dirs ~/Share --device-name laptop
+lantern --daemon discover
+lantern --daemon trust add <peer-id> laptop
+lantern --daemon files
+lantern --daemon remote-files <peer-id>
+```
+
+MCP shim (stdio, proxies the daemon API):
+
+```sh
+go run ./cmd/lantern-mcp
+```
+
 To run a relay locally:
 
 ```sh
 go run ./cmd/lantern-relay 4001
 ```
-
-Desktop shell (spike, console fallback without Wails deps):
-
-```sh
-go run ./cmd/lantern-gui
-```
-
-See `cmd/lantern-gui/README.md` for the Wails v3 window build.
 
 ## Development
 

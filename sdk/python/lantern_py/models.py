@@ -79,6 +79,7 @@ class Event:
 @dataclass
 class Status:
     peer_id: str = ""
+    device_name: str = ""
     addrs: List[str] = field(default_factory=list)
     lan_only: bool = False
 
@@ -86,6 +87,7 @@ class Status:
     def from_dict(cls, d: Dict[str, Any]) -> "Status":
         return cls(
             peer_id=d.get("peer_id", ""),
+            device_name=d.get("device_name", "") or "",
             addrs=list(d.get("addrs", []) or []),
             lan_only=bool(d.get("lan_only", False)),
         )
@@ -103,4 +105,36 @@ class PeerInfo:
             id=d.get("id", ""),
             addrs=list(d.get("addrs", []) or []),
             connected=bool(d.get("connected", False)),
+        )
+
+
+@dataclass
+class TrustEntry:
+    peer_id: str = ""
+    alias: str = ""
+    added_at: str = ""
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "TrustEntry":
+        return cls(
+            peer_id=d.get("peer_id", ""),
+            alias=d.get("alias", "") or "",
+            added_at=d.get("added_at", "") or "",
+        )
+
+
+@dataclass
+class FileEntry:
+    name: str = ""
+    size: int = 0
+    mod_time: str = ""
+    is_dir: bool = False
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "FileEntry":
+        return cls(
+            name=d.get("name", ""),
+            size=d.get("size", 0) or 0,
+            mod_time=d.get("mod_time", "") or "",
+            is_dir=bool(d.get("is_dir", False)),
         )
