@@ -198,7 +198,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage: lantern [--json] [--port N] [--data-dir DIR] [--daemon[=URL]] <command> [args]
 
   commands:
-    send <path>                  share a file (prints a share code)
+    send <path>                  share a file or directory (dirs arrive as <name>.zip)
     receive <code> [output-dir]  fetch a file (or use --out DIR)
     status                       daemon status (needs --daemon)
     list [transfers|history]     daemon transfers (needs --daemon)

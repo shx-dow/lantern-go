@@ -43,6 +43,8 @@ func main() {
 		defaultTTL = flag.Int64("default-ttl", -1, "default share lifetime in seconds (0 = no expiry, -1 = config default)")
 		deviceName = flag.String("device-name", "", "human alias for this device (default config device_name or OS hostname)")
 		sharedDirs = flag.String("shared-dirs", "", "comma-separated dirs exposed via GET /v1/files (default config shared_dirs)")
+		bootstrapF = flag.String("bootstrap", "", "comma-separated bootstrap multiaddrs (default config bootstrap_peers; 'none' = LAN-only)")
+		relayF     = flag.String("relay", "", "comma-separated static relay multiaddrs for NAT traversal (default config relay_addrs)")
 		trayFlag   = flag.Bool("tray", false, "opt-in tray icon (GUI is frozen; headless is the default)")
 		noTrayFlag = flag.Bool("no-tray", false, "disable the tray icon (redundant now, kept for compat)")
 	)
@@ -89,6 +91,17 @@ func main() {
 	if !lanOnly {
 		bootstrap = nil // nil keeps the default public bootstraps
 	}
+	if strings.TrimSpace(*bootstrapF) != "" {
+		bootstrap = splitCSV(*bootstrapF)
+	} else if len(cfg.BootstrapPeers) > 0 {
+		bootstrap = cfg.BootstrapPeers
+	}
+	var relays []string
+	if strings.TrimSpace(*relayF) != "" {
+		relays = splitCSV(*relayF)
+	} else {
+		relays = cfg.RelayAddrs
+	}
 
 	name := firstNonEmpty(*deviceName, cfg.DeviceName)
 	if name == "" {
@@ -97,7 +110,7 @@ func main() {
 		}
 	}
 
-	ln, err := lantern.New(lantern.Config{Port: port, DataDir: dir, Bootstrap: bootstrap})
+	ln, err := lantern.New(lantern.Config{Port: port, DataDir: dir, Bootstrap: bootstrap, Relay: relays})
 	if err != nil {
 		log.Fatalf("init p2p: %v", err)
 	}
@@ -218,4 +231,14 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func splitCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }

@@ -475,7 +475,7 @@ components:
       properties:
         path:
           type: string
-          description: Absolute or daemon-relative path of the file to share.
+          description: Absolute or daemon-relative path of the file or directory to share (directories arrive as <name>.zip).
         ttl_seconds:
           type: integer
           format: int64

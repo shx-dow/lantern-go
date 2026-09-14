@@ -184,3 +184,20 @@ func GenerateCode() (string, error) {
 	}
 	return hex.EncodeToString(b), nil
 }
+
+// ConnectStaticRelays dials relay/bootstrap multiaddrs so nodes behind NAT
+// can reserve circuits. Invalid entries are skipped; a nil/empty list is a
+// no-op. Callers should pass a timeout context.
+func (n *Node) ConnectStaticRelays(ctx context.Context, addrs []string) {
+	for _, a := range addrs {
+		ma, err := multiaddr.NewMultiaddr(a)
+		if err != nil {
+			continue
+		}
+		ai, err := peer.AddrInfoFromP2pAddr(ma)
+		if err != nil {
+			continue
+		}
+		_ = n.Host.Connect(ctx, *ai)
+	}
+}
