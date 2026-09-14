@@ -196,12 +196,13 @@ func normalizeBaseURL(v string) string {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: lantern [--json] [--port N] [--data-dir DIR] [--daemon[=URL]] <command> [args]
 
-commands:
-  send <path>                  share a file (prints a share code)
-  receive <code> [output-dir]  fetch a file (or use --out DIR)
-  status                       daemon status (needs --daemon)
-  list [transfers|history]     daemon transfers (needs --daemon)
-  peers                        connected peers (needs --daemon)
+ commands:
+   send <path>                  share a file (prints a share code)
+   receive <code> [output-dir]  fetch a file (or use --out DIR)
+   status                       daemon status (needs --daemon)
+   list [transfers|history]     daemon transfers (needs --daemon)
+   peers                        connected peers (needs --daemon)
+   discover                     self + connected peers (needs --daemon)
 
 flags:
   --json            machine-readable JSONL on stdout (agents/MCP/GUI)
@@ -365,10 +366,37 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 		if opts.jsonOut {
 			enc.Encode(st)
 		} else {
-			fmt.Printf("peer: %v\nlan_only: %v\naddrs:\n", st["peer_id"], st["lan_only"])
+			fmt.Printf("device: %v\npeer: %v\nlan_only: %v\naddrs:\n", st["device_name"], st["peer_id"], st["lan_only"])
 			if addrs, ok := st["addrs"].([]any); ok {
 				for _, a := range addrs {
 					fmt.Printf("  %v\n", a)
+				}
+			}
+		}
+	case "discover":
+		var st map[string]any
+		if err := c.get("/v1/status", &st); err != nil {
+			fatal(opts.jsonOut, err)
+		}
+		var out map[string][]map[string]any
+		if err := c.get("/v1/peers", &out); err != nil {
+			fatal(opts.jsonOut, err)
+		}
+		if opts.jsonOut {
+			enc.Encode(map[string]any{"self": st, "peers": out["peers"]})
+		} else {
+			fmt.Printf("self: %v (%v)\n", st["device_name"], st["peer_id"])
+			if len(out["peers"]) == 0 {
+				fmt.Println("no connected peers")
+			} else {
+				fmt.Println("peers:")
+				for _, p := range out["peers"] {
+					fmt.Printf("  %v\n", p["id"])
+					if addrs, ok := p["addrs"].([]any); ok {
+						for _, a := range addrs {
+							fmt.Printf("    %v\n", a)
+						}
+					}
 				}
 			}
 		}

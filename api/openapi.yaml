@@ -395,6 +395,9 @@ components:
       properties:
         peer_id:
           type: string
+        device_name:
+          type: string
+          description: Human alias for this device (config device_name or OS hostname).
         addrs:
           type: array
           items:

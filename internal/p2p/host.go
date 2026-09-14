@@ -68,7 +68,16 @@ func NewNode(port int, bootstrapPeers []string, dataDirs ...string) (*Node, erro
 		quicAddr = "/ip4/0.0.0.0/udp/0/quic-v1"
 	}
 
+	// Stable peer ID across restarts: the key lives in the data dir so
+	// pairing and allow-lists survive reboots.
+	priv, err := LoadOrCreatePrivKey(localDir)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+
 	h, err := libp2p.New(
+		libp2p.Identity(priv),
 		libp2p.ListenAddrStrings(tcpAddr, quicAddr),
 		libp2p.EnableRelay(),
 		libp2p.EnableHolePunching(),

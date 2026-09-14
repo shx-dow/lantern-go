@@ -15,6 +15,7 @@ type Handler struct {
 	peerID     string
 	addrs      []string
 	lanOnly    bool
+	deviceName string
 	defaultTTL time.Duration
 	uploadDir  string
 }
@@ -24,6 +25,12 @@ type Handler struct {
 // uploadDir roots browser uploads (defaults to the OS temp dir).
 func NewHandler(d *Daemon, peerID string, addrs []string, lanOnly bool, defaultTTL time.Duration, uploadDir string) *Handler {
 	return &Handler{daemon: d, peerID: peerID, addrs: addrs, lanOnly: lanOnly, defaultTTL: defaultTTL, uploadDir: uploadDir}
+}
+
+// WithDeviceName sets the human alias reported by GET /v1/status.
+func (h *Handler) WithDeviceName(name string) *Handler {
+	h.deviceName = name
+	return h
 }
 
 // Routes registers v1 endpoints on mux.
@@ -136,9 +143,10 @@ func (h *Handler) getHistory(w http.ResponseWriter, _ *http.Request) {
 
 func (h *Handler) getStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"peer_id":  h.peerID,
-		"addrs":    h.addrs,
-		"lan_only": h.lanOnly,
+		"peer_id":     h.peerID,
+		"addrs":       h.addrs,
+		"lan_only":    h.lanOnly,
+		"device_name": h.deviceName,
 	})
 }
 

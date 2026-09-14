@@ -40,6 +40,7 @@ func main() {
 		configPath = flag.String("config", "", "config file path (default $XDG_CONFIG_HOME/lantern/lanternd.json)")
 		tokenFlag  = flag.String("token", "", "bearer token (default $LANTERND_TOKEN, else persisted in data dir)")
 		defaultTTL = flag.Int64("default-ttl", -1, "default share lifetime in seconds (0 = no expiry, -1 = config default)")
+		deviceName = flag.String("device-name", "", "human alias for this device (default config device_name or OS hostname)")
 		trayFlag   = flag.Bool("tray", true, "show a tray icon that opens the web UI (falls back to console when unsupported)")
 		noTrayFlag = flag.Bool("no-tray", false, "disable the tray icon")
 	)
@@ -87,6 +88,13 @@ func main() {
 		bootstrap = nil // nil keeps the default public bootstraps
 	}
 
+	name := firstNonEmpty(*deviceName, cfg.DeviceName)
+	if name == "" {
+		if hn, err := os.Hostname(); err == nil {
+			name = hn
+		}
+	}
+
 	ln, err := lantern.New(lantern.Config{Port: port, DataDir: dir, Bootstrap: bootstrap})
 	if err != nil {
 		log.Fatalf("init p2p: %v", err)
@@ -111,7 +119,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	daemon.NewHandler(d, peerID, addrs, lanOnly, ttl, dir).Routes(mux)
+	daemon.NewHandler(d, peerID, addrs, lanOnly, ttl, dir).WithDeviceName(name).Routes(mux)
 
 	// The UI page is public (it holds no secrets; API calls carry the
 	// token from browser storage). Everything under /v1/ stays authed.

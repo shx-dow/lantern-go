@@ -13,6 +13,7 @@ type ConfigFile struct {
 	Addr              string `json:"addr"`
 	P2PPort           int    `json:"p2p_port"`
 	DataDir           string `json:"data_dir"`
+	DeviceName        string `json:"device_name,omitempty"`
 	LANOnly           *bool  `json:"lan_only,omitempty"`
 	DefaultTTLSeconds int64  `json:"default_ttl_seconds,omitempty"`
 }
