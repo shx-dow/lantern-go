@@ -1,4 +1,7 @@
-# lantern-gui (Wails v3 spike)
+# lantern-gui (FROZEN — headless first)
+
+> Frozen until agent `send/get` works headless. No new GUI work; daemon,
+> CLI `--json`, SDKs, and the MCP shim are the supported seams.
 
 Desktop shell for Lantern. Thin client over `lanternd`'s localhost v1 API
 (`api/openapi.yaml`) — every bound method in `service.go` proxies to the

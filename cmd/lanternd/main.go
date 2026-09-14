@@ -41,8 +41,8 @@ func main() {
 		tokenFlag  = flag.String("token", "", "bearer token (default $LANTERND_TOKEN, else persisted in data dir)")
 		defaultTTL = flag.Int64("default-ttl", -1, "default share lifetime in seconds (0 = no expiry, -1 = config default)")
 		deviceName = flag.String("device-name", "", "human alias for this device (default config device_name or OS hostname)")
-		trayFlag   = flag.Bool("tray", true, "show a tray icon that opens the web UI (falls back to console when unsupported)")
-		noTrayFlag = flag.Bool("no-tray", false, "disable the tray icon")
+		trayFlag   = flag.Bool("tray", false, "opt-in tray icon (GUI is frozen; headless is the default)")
+		noTrayFlag = flag.Bool("no-tray", false, "disable the tray icon (redundant now, kept for compat)")
 	)
 	flag.Parse()
 
