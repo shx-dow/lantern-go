@@ -51,6 +51,7 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/trust", h.postTrust)
 	mux.HandleFunc("DELETE /v1/trust/{id}", h.deleteTrust)
 	mux.HandleFunc("GET /v1/files", h.getFiles)
+	mux.HandleFunc("GET /v1/peers/{id}/files", h.getRemoteFiles)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -267,6 +268,19 @@ func (h *Handler) getFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	if entries == nil {
 		entries = []FileEntry{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"files": entries})
+}
+
+func (h *Handler) getRemoteFiles(w http.ResponseWriter, r *http.Request) {
+	entries, err := h.daemon.RemoteFiles(r.Context(), r.PathValue("id"), r.URL.Query().Get("dir"))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	if entries == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"files": []any{}})
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"files": entries})
 }

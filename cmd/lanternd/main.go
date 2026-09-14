@@ -124,6 +124,12 @@ func main() {
 	} else {
 		d.Trust = trust
 	}
+	if node := ln.Node(); node != nil && node.Host != nil {
+		roots := d.SharedDirs
+		trust := d.Trust
+		node.SetListAccess(roots, func(id string) bool { return trust != nil && trust.Trusted(id) })
+		node.RegisterListHandler()
+	}
 
 	addrs := make([]string, 0)
 	peerID := ""

@@ -72,6 +72,7 @@ func tools() []toolDef {
 		{"trust_add", "Pair a device", obj(map[string]any{"peer_id": str("Peer ID to pair"), "alias": str("Human alias")}, "peer_id")},
 		{"trust_remove", "Unpair a device", obj(map[string]any{"peer_id": str("Peer ID to unpair")}, "peer_id")},
 		{"files", "List local shared-dir files", obj(map[string]any{"dir": str("Subdirectory (omit for roots)")})},
+		{"remote_files", "List files on a connected peer", obj(map[string]any{"peer_id": str("Connected peer ID"), "dir": str("Subdirectory (omit for roots)")}, "peer_id")},
 	}
 }
 
@@ -233,6 +234,15 @@ func (c *daemonClient) callTool(name string, args map[string]any) (any, error) {
 		return map[string]any{"removed": str("peer_id")}, nil
 	case "files":
 		path := "/v1/files"
+		if d := str("dir"); d != "" {
+			path += "?dir=" + d
+		}
+		return c.doJSON(http.MethodGet, path, nil)
+	case "remote_files":
+		if str("peer_id") == "" {
+			return nil, fmt.Errorf("peer_id is required")
+		}
+		path := "/v1/peers/" + str("peer_id") + "/files"
 		if d := str("dir"); d != "" {
 			path += "?dir=" + d
 		}

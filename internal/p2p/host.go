@@ -45,6 +45,10 @@ type Node struct {
 	mu          sync.Mutex
 	shares      map[string]*shareState
 	handlerOnce sync.Once
+
+	listOnce    sync.Once
+	listRoots   []string
+	listTrusted func(peerID string) bool
 }
 
 // NewNode brings up a TCP+QUIC host with relay, hole punching, DHT in

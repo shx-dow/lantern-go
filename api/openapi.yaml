@@ -295,6 +295,38 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /v1/peers/{id}/files:
+    get:
+      summary: List files on a connected peer
+      description: Proxies the paired remote's shared dirs over /lantern/list/1.0.0. The remote serves only paired devices.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Connected peer ID.
+        - name: dir
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Remote file entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [files]
+                properties:
+                  files:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FileEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /v1/uploads:
     post:
       summary: Store a browser upload for sharing

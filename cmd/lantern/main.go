@@ -208,6 +208,7 @@ func usage() {
     trust add <peer-id> [alias]  pair a device (needs --daemon)
     trust remove <peer-id>       unpair a device (needs --daemon)
     files [dir]                  list shared-dir files (needs --daemon)
+    remote-files <peer-id> [dir] list files on a connected peer (needs --daemon)
 
 flags:
   --json            machine-readable JSONL on stdout (agents/MCP/GUI)
@@ -562,6 +563,31 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 			enc.Encode(out)
 		} else if len(out["files"]) == 0 {
 			fmt.Println("no files (configure --shared-dirs on lanternd)")
+		} else {
+			for _, f := range out["files"] {
+				fmt.Printf("%v %v %v\n", f["name"], f["size"], f["mod_time"])
+			}
+		}
+	case "remote-files":
+		if len(opts.positional) < 1 {
+			fatal(opts.jsonOut, fmt.Errorf("usage: lantern remote-files <peer-id> [dir]"))
+		}
+		dir := ""
+		if len(opts.positional) > 1 {
+			dir = opts.positional[1]
+		}
+		path := "/v1/peers/" + opts.positional[0] + "/files"
+		if dir != "" {
+			path += "?dir=" + url.QueryEscape(dir)
+		}
+		var out map[string][]map[string]any
+		if err := c.get(path, &out); err != nil {
+			fatal(opts.jsonOut, err)
+		}
+		if opts.jsonOut {
+			enc.Encode(out)
+		} else if len(out["files"]) == 0 {
+			fmt.Println("no files")
 		} else {
 			for _, f := range out["files"] {
 				fmt.Printf("%v %v %v\n", f["name"], f["size"], f["mod_time"])
