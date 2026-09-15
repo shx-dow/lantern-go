@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/shx-dow/lantern-go/internal/format"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
+	"github.com/shx-dow/lantern-go/pkg/lanternclient"
 )
 
 type mdnsFilter struct{}
@@ -228,102 +228,13 @@ examples:
   lantern --daemon status`)
 }
 
-// daemonRecord mirrors internal/daemon Record JSON.
-type daemonRecord struct {
-	ID       string `json:"id"`
-	Kind     string `json:"kind"`
-	Code     string `json:"code"`
-	FileName string `json:"file_name"`
-	FileSize int64  `json:"file_size"`
-	Bytes    int64  `json:"bytes"`
-	Total    int64  `json:"total"`
-	State    string `json:"state"`
-	Error    string `json:"error"`
-	PeerID   string `json:"peer_id"`
-}
+// daemonRecord aliases the shared client record for compactness.
+type daemonRecord = lanternclient.Record
 
-type daemonClient struct {
-	base   string
-	token  string
-	api    *http.Client
-	stream *http.Client
-}
+type daemonClient = lanternclient.Client
 
 func newDaemonClient(base, token string) *daemonClient {
-	return &daemonClient{
-		base:   strings.TrimSuffix(base, "/"),
-		token:  token,
-		api:    &http.Client{Timeout: 15 * time.Second},
-		stream: &http.Client{Timeout: 0},
-	}
-}
-
-func (c *daemonClient) setAuth(req *http.Request) {
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-}
-
-func (c *daemonClient) post(path string, body any, out any, expected int) error {
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(body); err != nil {
-		return err
-	}
-	req, err := http.NewRequest(http.MethodPost, c.base+path, &buf)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	c.setAuth(req)
-	resp, err := c.api.Do(req)
-	if err != nil {
-		return fmt.Errorf("daemon %s: %w (is lanternd running at %s?)", path, err, c.base)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != expected {
-		return apiError(resp)
-	}
-	if out != nil {
-		return json.NewDecoder(resp.Body).Decode(out)
-	}
-	return nil
-}
-
-func (c *daemonClient) get(path string, out any) error {
-	req, err := http.NewRequest(http.MethodGet, c.base+path, nil)
-	if err != nil {
-		return err
-	}
-	c.setAuth(req)
-	resp, err := c.api.Do(req)
-	if err != nil {
-		return fmt.Errorf("daemon %s: %w (is lanternd running at %s?)", path, err, c.base)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return apiError(resp)
-	}
-	if out != nil {
-		return json.NewDecoder(resp.Body).Decode(out)
-	}
-	return nil
-}
-
-func (c *daemonClient) delete(path string) error {
-	req, err := http.NewRequest(http.MethodDelete, c.base+path, nil)
-	if err != nil {
-		return err
-	}
-	c.setAuth(req)
-	resp, err := c.api.Do(req)
-	if err != nil {
-		return fmt.Errorf("daemon %s: %w (is lanternd running at %s?)", path, err, c.base)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-		return apiError(resp)
-	}
-	return nil
+	return lanternclient.New(base, token)
 }
 
 func apiError(resp *http.Response) error {
@@ -348,7 +259,8 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 			fatal(opts.jsonOut, fmt.Errorf("usage: lantern send <path>"))
 		}
 		var rec daemonRecord
-		if err := c.post("/v1/shares", map[string]string{"path": opts.positional[0]}, &rec, http.StatusCreated); err != nil {
+		rec, err := c.Share(opts.positional[0], 0)
+		if err != nil {
 			fatal(opts.jsonOut, err)
 		}
 		if opts.jsonOut {
@@ -370,7 +282,8 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 			outputDir = opts.positional[1]
 		}
 		var rec daemonRecord
-		if err := c.post("/v1/fetches", map[string]string{"code": code, "out_dir": outputDir}, &rec, http.StatusCreated); err != nil {
+		rec, err := c.Fetch(code, outputDir)
+		if err != nil {
 			fatal(opts.jsonOut, err)
 		}
 		if opts.jsonOut {
@@ -382,63 +295,53 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 			os.Exit(1)
 		}
 	case "status":
-		var st map[string]any
-		if err := c.get("/v1/status", &st); err != nil {
+		st, err := c.Status()
+		if err != nil {
 			fatal(opts.jsonOut, err)
 		}
 		if opts.jsonOut {
 			enc.Encode(st)
 		} else {
-			fmt.Printf("device: %v\npeer: %v\nlan_only: %v\naddrs:\n", st["device_name"], st["peer_id"], st["lan_only"])
-			if addrs, ok := st["addrs"].([]any); ok {
-				for _, a := range addrs {
-					fmt.Printf("  %v\n", a)
-				}
+			fmt.Printf("device: %s\npeer: %s\nlan_only: %v\naddrs:\n", st.DeviceName, st.PeerID, st.LANOnly)
+			for _, a := range st.Addrs {
+				fmt.Printf("  %s\n", a)
 			}
 		}
 	case "discover":
-		var st map[string]any
-		if err := c.get("/v1/status", &st); err != nil {
-			fatal(opts.jsonOut, err)
-		}
-		var out map[string][]map[string]any
-		if err := c.get("/v1/peers", &out); err != nil {
+		st, peers, err := c.Discover()
+		if err != nil {
 			fatal(opts.jsonOut, err)
 		}
 		if opts.jsonOut {
-			enc.Encode(map[string]any{"self": st, "peers": out["peers"]})
+			enc.Encode(map[string]any{"self": st, "peers": peers})
 		} else {
-			fmt.Printf("self: %v (%v)\n", st["device_name"], st["peer_id"])
-			if len(out["peers"]) == 0 {
+			fmt.Printf("self: %s (%s)\n", st.DeviceName, st.PeerID)
+			if len(peers) == 0 {
 				fmt.Println("no connected peers")
 			} else {
 				fmt.Println("peers:")
-				for _, p := range out["peers"] {
-					fmt.Printf("  %v\n", p["id"])
-					if addrs, ok := p["addrs"].([]any); ok {
-						for _, a := range addrs {
-							fmt.Printf("    %v\n", a)
-						}
+				for _, p := range peers {
+					fmt.Printf("  %s\n", p.ID)
+					for _, a := range p.Addrs {
+						fmt.Printf("    %s\n", a)
 					}
 				}
 			}
 		}
 	case "peers":
-		var out map[string][]map[string]any
-		if err := c.get("/v1/peers", &out); err != nil {
+		peers, err := c.Peers()
+		if err != nil {
 			fatal(opts.jsonOut, err)
 		}
 		if opts.jsonOut {
-			enc.Encode(out)
-		} else if len(out["peers"]) == 0 {
+			enc.Encode(map[string]any{"peers": peers})
+		} else if len(peers) == 0 {
 			fmt.Println("no connected peers")
 		} else {
-			for _, p := range out["peers"] {
-				fmt.Printf("%v\n", p["id"])
-				if addrs, ok := p["addrs"].([]any); ok {
-					for _, a := range addrs {
-						fmt.Printf("  %v\n", a)
-					}
+			for _, p := range peers {
+				fmt.Printf("%s\n", p.ID)
+				for _, a := range p.Addrs {
+					fmt.Printf("  %s\n", a)
 				}
 			}
 		}
@@ -449,44 +352,37 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 		}
 		switch what {
 		case "transfers", "shares":
-			kind := ""
-			if what == "shares" {
-				kind = "?kind=share"
-			}
-			var out map[string][]daemonRecord
-			path := "/v1/transfers" + kind
+			var transfers []daemonRecord
+			var err error
 			// /v1/shares returns {"shares":[...]}; normalize to transfers shape.
 			if what == "shares" {
-				var s struct {
-					Shares []daemonRecord `json:"shares"`
-				}
-				if err := c.get("/v1/shares", &s); err != nil {
-					fatal(opts.jsonOut, err)
-				}
-				out = map[string][]daemonRecord{"transfers": s.Shares}
-			} else if err := c.get(path, &out); err != nil {
+				transfers, err = c.Shares()
+			} else {
+				transfers, err = c.Transfers("")
+			}
+			if err != nil {
 				fatal(opts.jsonOut, err)
 			}
 			if opts.jsonOut {
-				enc.Encode(out)
-			} else if len(out["transfers"]) == 0 {
+				enc.Encode(map[string][]daemonRecord{"transfers": transfers})
+			} else if len(transfers) == 0 {
 				fmt.Println("no transfers")
 			} else {
-				for _, r := range out["transfers"] {
+				for _, r := range transfers {
 					fmt.Printf("%s %s %s %d/%d %s\n", r.ID, r.Kind, r.FileName, r.Bytes, r.Total, r.State)
 				}
 			}
 		case "history":
-			var out map[string][]daemonRecord
-			if err := c.get("/v1/history", &out); err != nil {
+			history, err := c.History()
+			if err != nil {
 				fatal(opts.jsonOut, err)
 			}
 			if opts.jsonOut {
-				enc.Encode(out)
-			} else if len(out["history"]) == 0 {
+				enc.Encode(map[string][]daemonRecord{"history": history})
+			} else if len(history) == 0 {
 				fmt.Println("no history")
 			} else {
-				for _, r := range out["history"] {
+				for _, r := range history {
 					fmt.Printf("%s %s %s %s\n", r.ID, r.Kind, r.FileName, r.State)
 				}
 			}
@@ -500,17 +396,17 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 		}
 		switch sub {
 		case "list", "":
-			var out map[string][]map[string]any
-			if err := c.get("/v1/trust", &out); err != nil {
+			trusted, err := c.TrustList()
+			if err != nil {
 				fatal(opts.jsonOut, err)
 			}
 			if opts.jsonOut {
-				enc.Encode(out)
-			} else if len(out["trusted"]) == 0 {
+				enc.Encode(map[string]any{"trusted": trusted})
+			} else if len(trusted) == 0 {
 				fmt.Println("no paired devices")
 			} else {
-				for _, p := range out["trusted"] {
-					fmt.Printf("%v %v\n", p["peer_id"], p["alias"])
+				for _, p := range trusted {
+					fmt.Printf("%s %s\n", p.PeerID, p.Alias)
 				}
 			}
 		case "add":
@@ -521,20 +417,20 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 			if len(opts.positional) > 2 {
 				alias = opts.positional[2]
 			}
-			var entry map[string]any
-			if err := c.post("/v1/trust", map[string]string{"peer_id": opts.positional[1], "alias": alias}, &entry, http.StatusCreated); err != nil {
+			entry, err := c.TrustAdd(opts.positional[1], alias)
+			if err != nil {
 				fatal(opts.jsonOut, err)
 			}
 			if opts.jsonOut {
 				enc.Encode(entry)
 			} else {
-				fmt.Printf("paired %v\n", entry["peer_id"])
+				fmt.Printf("paired %s\n", entry.PeerID)
 			}
 		case "remove", "rm":
 			if len(opts.positional) < 2 {
 				fatal(opts.jsonOut, fmt.Errorf("usage: lantern trust remove <peer-id>"))
 			}
-			if err := c.delete("/v1/trust/" + opts.positional[1]); err != nil {
+			if err := c.TrustRemove(opts.positional[1]); err != nil {
 				fatal(opts.jsonOut, err)
 			}
 			if opts.jsonOut {
@@ -550,22 +446,17 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 		if len(opts.positional) > 0 {
 			dir = opts.positional[0]
 		}
-		path := "/v1/files"
-		if dir != "" {
-			path += "?dir=" + url.QueryEscape(dir)
-		}
-		var out map[string][]map[string]any
-		// GET helper with query: reuse c.get directly.
-		if err := c.get(path, &out); err != nil {
+		files, err := c.Files(dir)
+		if err != nil {
 			fatal(opts.jsonOut, err)
 		}
 		if opts.jsonOut {
-			enc.Encode(out)
-		} else if len(out["files"]) == 0 {
+			enc.Encode(map[string]any{"files": files})
+		} else if len(files) == 0 {
 			fmt.Println("no files (configure --shared-dirs on lanternd)")
 		} else {
-			for _, f := range out["files"] {
-				fmt.Printf("%v %v %v\n", f["name"], f["size"], f["mod_time"])
+			for _, f := range files {
+				fmt.Printf("%s %d %s\n", f.Name, f.Size, f.ModTime)
 			}
 		}
 	case "remote-files":
@@ -576,21 +467,17 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 		if len(opts.positional) > 1 {
 			dir = opts.positional[1]
 		}
-		path := "/v1/peers/" + opts.positional[0] + "/files"
-		if dir != "" {
-			path += "?dir=" + url.QueryEscape(dir)
-		}
-		var out map[string][]map[string]any
-		if err := c.get(path, &out); err != nil {
+		files, err := c.RemoteFiles(opts.positional[0], dir)
+		if err != nil {
 			fatal(opts.jsonOut, err)
 		}
 		if opts.jsonOut {
-			enc.Encode(out)
-		} else if len(out["files"]) == 0 {
+			enc.Encode(map[string]any{"files": files})
+		} else if len(files) == 0 {
 			fmt.Println("no files")
 		} else {
-			for _, f := range out["files"] {
-				fmt.Printf("%v %v %v\n", f["name"], f["size"], f["mod_time"])
+			for _, f := range files {
+				fmt.Printf("%s %d %s\n", f.Name, f.Size, f.ModTime)
 			}
 		}
 	default:
@@ -646,9 +533,7 @@ func runDaemonTransfer(ctx context.Context, c *daemonClient, enc *json.Encoder, 
 }
 
 func daemonGet(c *daemonClient, id string) (daemonRecord, error) {
-	var rec daemonRecord
-	err := c.get("/v1/transfers/"+id, &rec)
-	return rec, err
+	return c.Get(id)
 }
 
 func isTerminal(state string) bool {
@@ -656,20 +541,11 @@ func isTerminal(state string) bool {
 }
 
 func streamDaemonEvents(ctx context.Context, c *daemonClient, enc *json.Encoder, jsonOut bool, id, doneVerb, doneName string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/v1/events", nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "text/event-stream")
-	c.setAuth(req)
-	resp, err := c.stream.Do(req)
+	resp, err := c.OpenEventsStream(ctx)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return apiError(resp)
-	}
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)

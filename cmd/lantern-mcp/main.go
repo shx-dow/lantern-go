@@ -12,20 +12,18 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"strings"
-	"time"
+
+	"github.com/shx-dow/lantern-go/pkg/lanternclient"
 )
 
 const (
-	defaultDaemonURL = "http://127.0.0.1:43782"
-	mcpVersion       = "2024-11-05"
-	serverVersion    = "0.1.0"
+	mcpVersion    = "2024-11-05"
+	serverVersion = "0.1.0"
 )
 
 type rpcRequest struct {
@@ -76,66 +74,13 @@ func tools() []toolDef {
 	}
 }
 
-type daemonClient struct {
-	base  string
-	token string
-	api   *http.Client
-}
+type daemonClient = lanternclient.Client
 
 func newDaemonClient() *daemonClient {
-	base := strings.TrimSuffix(firstNonEmpty(os.Getenv("LANTERND_URL"), defaultDaemonURL), "/")
-	return &daemonClient{base: base, token: firstNonEmpty(os.Getenv("LANTERN_DAEMON_TOKEN"), os.Getenv("LANTERND_TOKEN")), api: &http.Client{Timeout: 30 * time.Second}}
+	return lanternclient.NewFromEnv()
 }
 
-func firstNonEmpty(v ...string) string {
-	for _, s := range v {
-		if s != "" {
-			return s
-		}
-	}
-	return ""
-}
-
-func (c *daemonClient) setAuth(r *http.Request) {
-	if c.token != "" {
-		r.Header.Set("Authorization", "Bearer "+c.token)
-	}
-}
-
-func (c *daemonClient) doJSON(method, path string, body any) (any, error) {
-	var rdr io.Reader
-	if body != nil {
-		var buf bytes.Buffer
-		if err := json.NewEncoder(&buf).Encode(body); err != nil {
-			return nil, err
-		}
-		rdr = &buf
-	}
-	req, err := http.NewRequest(method, c.base+path, rdr)
-	if err != nil {
-		return nil, err
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	c.setAuth(req)
-	resp, err := c.api.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("%s %s: %w (is lanternd running at %s?)", method, path, err, c.base)
-	}
-	defer resp.Body.Close()
-	var v any
-	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil && resp.StatusCode < 300 {
-		return nil, fmt.Errorf("decode %s %s: %w", method, path, err)
-	}
-	if resp.StatusCode >= 300 {
-		msg, _ := json.Marshal(v)
-		return nil, fmt.Errorf("daemon %s (status %d)", strings.TrimSpace(string(msg)), resp.StatusCode)
-	}
-	return v, nil
-}
-
-func (c *daemonClient) callTool(name string, args map[string]any) (any, error) {
+func callTool(c *daemonClient, name string, args map[string]any) (any, error) {
 	str := func(k string) string {
 		v, _ := args[k].(string)
 		return v
@@ -160,7 +105,7 @@ func (c *daemonClient) callTool(name string, args map[string]any) (any, error) {
 		if v, ok := args["ttl_seconds"]; ok && v != nil {
 			body["ttl_seconds"] = num("ttl_seconds")
 		}
-		return c.doJSON(http.MethodPost, "/v1/shares", body)
+		return c.Do(http.MethodPost, "/v1/shares", body)
 	case "fetch":
 		if str("code") == "" {
 			return nil, fmt.Errorf("code is required")
@@ -169,15 +114,15 @@ func (c *daemonClient) callTool(name string, args map[string]any) (any, error) {
 		if out == "" {
 			out = "."
 		}
-		return c.doJSON(http.MethodPost, "/v1/fetches", map[string]any{"code": str("code"), "out_dir": out})
+		return c.Do(http.MethodPost, "/v1/fetches", map[string]any{"code": str("code"), "out_dir": out})
 	case "status":
-		return c.doJSON(http.MethodGet, "/v1/status", nil)
+		return c.Do(http.MethodGet, "/v1/status", nil)
 	case "discover":
-		self, err := c.doJSON(http.MethodGet, "/v1/status", nil)
+		self, err := c.Do(http.MethodGet, "/v1/status", nil)
 		if err != nil {
 			return nil, err
 		}
-		peers, err := c.doJSON(http.MethodGet, "/v1/peers", nil)
+		peers, err := c.Do(http.MethodGet, "/v1/peers", nil)
 		if err != nil {
 			return nil, err
 		}
@@ -192,19 +137,19 @@ func (c *daemonClient) callTool(name string, args map[string]any) (any, error) {
 		if k := str("kind"); k != "" {
 			path += "?kind=" + k
 		}
-		return c.doJSON(http.MethodGet, path, nil)
+		return c.Do(http.MethodGet, path, nil)
 	case "transfer":
 		if str("id") == "" {
 			return nil, fmt.Errorf("id is required")
 		}
-		return c.doJSON(http.MethodGet, "/v1/transfers/"+str("id"), nil)
+		return c.Do(http.MethodGet, "/v1/transfers/"+str("id"), nil)
 	case "history":
-		return c.doJSON(http.MethodGet, "/v1/history", nil)
+		return c.Do(http.MethodGet, "/v1/history", nil)
 	case "cancel":
 		if str("id") == "" {
 			return nil, fmt.Errorf("id is required")
 		}
-		_, err := c.doJSON(http.MethodDelete, "/v1/transfers/"+str("id"), nil)
+		_, err := c.Do(http.MethodDelete, "/v1/transfers/"+str("id"), nil)
 		if err != nil {
 			// DELETE returns 204 with empty body: treat EOF as success.
 			if strings.Contains(err.Error(), "EOF") || strings.Contains(err.Error(), "decode") {
@@ -214,17 +159,17 @@ func (c *daemonClient) callTool(name string, args map[string]any) (any, error) {
 		}
 		return map[string]any{"cancelled": str("id")}, nil
 	case "trust_list":
-		return c.doJSON(http.MethodGet, "/v1/trust", nil)
+		return c.Do(http.MethodGet, "/v1/trust", nil)
 	case "trust_add":
 		if str("peer_id") == "" {
 			return nil, fmt.Errorf("peer_id is required")
 		}
-		return c.doJSON(http.MethodPost, "/v1/trust", map[string]any{"peer_id": str("peer_id"), "alias": str("alias")})
+		return c.Do(http.MethodPost, "/v1/trust", map[string]any{"peer_id": str("peer_id"), "alias": str("alias")})
 	case "trust_remove":
 		if str("peer_id") == "" {
 			return nil, fmt.Errorf("peer_id is required")
 		}
-		_, err := c.doJSON(http.MethodDelete, "/v1/trust/"+str("peer_id"), nil)
+		_, err := c.Do(http.MethodDelete, "/v1/trust/"+str("peer_id"), nil)
 		if err != nil {
 			if strings.Contains(err.Error(), "EOF") || strings.Contains(err.Error(), "decode") {
 				return map[string]any{"removed": str("peer_id")}, nil
@@ -237,7 +182,7 @@ func (c *daemonClient) callTool(name string, args map[string]any) (any, error) {
 		if d := str("dir"); d != "" {
 			path += "?dir=" + d
 		}
-		return c.doJSON(http.MethodGet, path, nil)
+		return c.Do(http.MethodGet, path, nil)
 	case "remote_files":
 		if str("peer_id") == "" {
 			return nil, fmt.Errorf("peer_id is required")
@@ -246,7 +191,7 @@ func (c *daemonClient) callTool(name string, args map[string]any) (any, error) {
 		if d := str("dir"); d != "" {
 			path += "?dir=" + d
 		}
-		return c.doJSON(http.MethodGet, path, nil)
+		return c.Do(http.MethodGet, path, nil)
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
@@ -308,7 +253,7 @@ func (s *server) handle(req rpcRequest) {
 		if p.Arguments == nil {
 			p.Arguments = map[string]any{}
 		}
-		v, err := s.dc.callTool(p.Name, p.Arguments)
+		v, err := callTool(s.dc, p.Name, p.Arguments)
 		if err != nil {
 			text, _ := json.Marshal(map[string]any{"error": err.Error()})
 			s.respond(req.ID, map[string]any{"content": []any{map[string]any{"type": "text", "text": string(text)}}, "isError": true})

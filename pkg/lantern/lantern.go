@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/shx-dow/lantern-go/internal/p2p"
 	"github.com/shx-dow/lantern-go/internal/storage"
 )
@@ -21,6 +23,10 @@ type Config struct {
 	// NAT traversal. Empty means no static relays.
 	Relay []string
 }
+
+// ListEntry is one file or directory in a local or remote listing.
+// It aliases the transport type so callers never import internal/p2p.
+type ListEntry = p2p.ListEntry
 
 // EventType classifies a Lantern event; progress events may be dropped
 // under backpressure but terminal events (done/error) are always delivered.
@@ -151,13 +157,18 @@ func (s *Session) finish(state TransferState) {
 }
 
 // New starts the p2p node and returns a Lantern bound to it. An empty
-// DataDir falls back to the OS temp dir.
+// DataDir falls back to the OS temp dir. The identity key is loaded from
+// (or created in) the data dir, so the peer ID is stable across restarts.
 func New(cfg Config) (*Lantern, error) {
 	if cfg.DataDir == "" {
 		cfg.DataDir = os.TempDir()
 	}
 
-	node, err := p2p.NewNode(cfg.Port, cfg.Bootstrap, cfg.DataDir)
+	key, err := p2p.LoadOrCreatePrivKey(cfg.DataDir)
+	if err != nil {
+		return nil, fmt.Errorf("init identity: %w", err)
+	}
+	node, err := p2p.NewNode(cfg.Port, cfg.Bootstrap, key, cfg.DataDir)
 	if err != nil {
 		return nil, fmt.Errorf("init p2p: %w", err)
 	}
@@ -346,6 +357,33 @@ func (l *Lantern) receive(ctx context.Context, code string, outputDir string) (*
 		ID:   pi.ID.String(),
 		Code: code,
 	}, nil
+}
+
+// RemoteFiles lists one level of dir on a connected peer. The remote side
+// serves only its shared dirs and only to paired devices; anything else
+// surfaces as an error.
+func (l *Lantern) RemoteFiles(ctx context.Context, peerID, dir string) ([]ListEntry, error) {
+	if l.node == nil || l.node.Host == nil {
+		return nil, fmt.Errorf("node not ready")
+	}
+	id, err := peer.Decode(strings.TrimSpace(peerID))
+	if err != nil {
+		return nil, fmt.Errorf("invalid peer ID: %w", err)
+	}
+	host := l.node.Host
+	var info peer.AddrInfo
+	found := false
+	for _, p := range host.Network().Peers() {
+		if p == id {
+			found = true
+			info = peer.AddrInfo{ID: p, Addrs: host.Peerstore().Addrs(p)}
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("peer %s is not connected", id.String())
+	}
+	return l.node.ListRemote(ctx, info, dir)
 }
 
 func (l *Lantern) forwardProgress(ctx context.Context, progress <-chan p2p.TransferProgress, transferID string) {

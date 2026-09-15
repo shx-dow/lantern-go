@@ -12,6 +12,7 @@ import (
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-kad-dht"
+	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
@@ -52,13 +53,14 @@ type Node struct {
 }
 
 // NewNode brings up a TCP+QUIC host with relay, hole punching, DHT in
-// server mode, and mDNS. dataDirs optionally overrides the directory for
-// local advertisements; only the first entry is used.
-func NewNode(port int, bootstrapPeers []string, dataDirs ...string) (*Node, error) {
+// server mode, and mDNS. key is the host identity: pass a persisted key
+// (LoadOrCreatePrivKey) for a stable peer ID, or nil for an ephemeral
+// in-memory identity. dataDir holds local advertisements.
+func NewNode(port int, bootstrapPeers []string, key crypto.PrivKey, dataDir string) (*Node, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	localDir := os.TempDir()
-	if len(dataDirs) > 0 && dataDirs[0] != "" {
-		localDir = dataDirs[0]
+	localDir := dataDir
+	if localDir == "" {
+		localDir = os.TempDir()
 	}
 	if err := os.MkdirAll(localDir, storage.PrivateDirPerm); err != nil {
 		cancel()
@@ -72,12 +74,14 @@ func NewNode(port int, bootstrapPeers []string, dataDirs ...string) (*Node, erro
 		quicAddr = "/ip4/0.0.0.0/udp/0/quic-v1"
 	}
 
-	// Stable peer ID across restarts: the key lives in the data dir so
-	// pairing and allow-lists survive reboots.
-	priv, err := LoadOrCreatePrivKey(localDir)
-	if err != nil {
-		cancel()
-		return nil, err
+	priv := key
+	if priv == nil {
+		var err error
+		priv, _, err = crypto.GenerateEd25519Key(rand.Reader)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("generate ephemeral identity: %w", err)
+		}
 	}
 
 	h, err := libp2p.New(
