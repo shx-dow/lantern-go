@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -59,79 +58,30 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	listenAddr := *addr
-	if listenAddr == "" {
-		listenAddr = cfg.Addr
-	}
-	if listenAddr == "" {
-		listenAddr = "127.0.0.1:43782"
-	}
-	port := *p2pPort
-	if port < 0 {
-		port = cfg.P2PPort
-	}
-	dir := *dataDir
-	if dir == "" {
-		dir = cfg.DataDir
-	}
-	lanOnly := *lan && !*lanNeg
-	if cfg.LANOnly != nil && !flagNSet("lan") && !*lanNeg {
-		lanOnly = *cfg.LANOnly
-	}
-	ttlSecs := *defaultTTL
-	if ttlSecs < 0 {
-		ttlSecs = cfg.DefaultTTLSeconds
-	}
-	var ttl time.Duration
-	if ttlSecs > 0 {
-		ttl = time.Duration(ttlSecs) * time.Second
-	}
+	r := daemon.Resolve(cfg, daemon.Flags{
+		Addr: *addr, P2PPort: *p2pPort, DataDir: *dataDir,
+		DeviceName: *deviceName, SharedDirs: *sharedDirs,
+		Bootstrap: *bootstrapF, Relay: *relayF, Token: *tokenFlag,
+		DefaultTTL: *defaultTTL, LAN: *lan, LANNeg: *lanNeg,
+		LANSet: flagNSet("lan"),
+	})
+	listenAddr, port, dir := r.Addr, r.P2PPort, r.DataDir
+	lanOnly, ttl := r.LANOnly, r.DefaultTTL
+	name := r.DeviceName
 
-	bootstrap := []string{"none"}
-	if !lanOnly {
-		bootstrap = nil // nil keeps the default public bootstraps
-	}
-	if strings.TrimSpace(*bootstrapF) != "" {
-		bootstrap = splitCSV(*bootstrapF)
-	} else if len(cfg.BootstrapPeers) > 0 {
-		bootstrap = cfg.BootstrapPeers
-	}
-	var relays []string
-	if strings.TrimSpace(*relayF) != "" {
-		relays = splitCSV(*relayF)
-	} else {
-		relays = cfg.RelayAddrs
-	}
-
-	name := firstNonEmpty(*deviceName, cfg.DeviceName)
-	if name == "" {
-		if hn, err := os.Hostname(); err == nil {
-			name = hn
-		}
-	}
-
-	ln, err := lantern.New(lantern.Config{Port: port, DataDir: dir, Bootstrap: bootstrap, Relay: relays})
+	ln, err := lantern.New(lantern.Config{Port: port, DataDir: dir, Bootstrap: r.BootstrapPeers, Relay: r.RelayAddrs})
 	if err != nil {
 		log.Fatalf("init p2p: %v", err)
 	}
 	defer ln.Close()
 
-	token, err := daemon.LoadOrCreateToken(dir, firstNonEmpty(*tokenFlag, os.Getenv("LANTERND_TOKEN")))
+	token, err := daemon.LoadOrCreateToken(dir, r.TokenSeed)
 	if err != nil {
 		log.Fatalf("token: %v", err)
 	}
 
 	d := daemon.New(ln)
-	d.SharedDirs = cfg.SharedDirs
-	if strings.TrimSpace(*sharedDirs) != "" {
-		var dirs []string
-		for _, p := range strings.Split(*sharedDirs, ",") {
-			if s := strings.TrimSpace(p); s != "" {
-				dirs = append(dirs, s)
-			}
-		}
-		d.SharedDirs = dirs
-	}
+	d.SharedDirs = r.SharedDirs
 	if trust, err := daemon.NewTrustStore(dir); err != nil {
 		log.Fatalf("trust store: %v", err)
 	} else {
@@ -222,23 +172,4 @@ func flagNSet(name string) bool {
 		}
 	})
 	return set
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func splitCSV(s string) []string {
-	var out []string
-	for _, p := range strings.Split(s, ",") {
-		if v := strings.TrimSpace(p); v != "" {
-			out = append(out, v)
-		}
-	}
-	return out
 }
