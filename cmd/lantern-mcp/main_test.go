@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/shx-dow/lantern-go/pkg/lanternclient"
 )
 
 func testServer(t *testing.T, dc *daemonClient) (*server, *bytes.Buffer) {
@@ -58,7 +60,7 @@ func TestToolsCallStatusProxiesDaemon(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	dc := &daemonClient{base: srv.URL, api: srv.Client()}
+	dc := lanternclient.New(srv.URL, "")
 	s, buf := testServer(t, dc)
 	params, _ := json.Marshal(map[string]any{"name": "status", "arguments": map[string]any{}})
 	s.handle(rpcRequest{JSONRPC: "2.0", ID: 3, Method: "tools/call", Params: params})
