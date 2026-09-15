@@ -157,13 +157,18 @@ func (s *Session) finish(state TransferState) {
 }
 
 // New starts the p2p node and returns a Lantern bound to it. An empty
-// DataDir falls back to the OS temp dir.
+// DataDir falls back to the OS temp dir. The identity key is loaded from
+// (or created in) the data dir, so the peer ID is stable across restarts.
 func New(cfg Config) (*Lantern, error) {
 	if cfg.DataDir == "" {
 		cfg.DataDir = os.TempDir()
 	}
 
-	node, err := p2p.NewNode(cfg.Port, cfg.Bootstrap, cfg.DataDir)
+	key, err := p2p.LoadOrCreatePrivKey(cfg.DataDir)
+	if err != nil {
+		return nil, fmt.Errorf("init identity: %w", err)
+	}
+	node, err := p2p.NewNode(cfg.Port, cfg.Bootstrap, key, cfg.DataDir)
 	if err != nil {
 		return nil, fmt.Errorf("init p2p: %w", err)
 	}

@@ -26,20 +26,38 @@ func TestIdentityPersistsAcrossLoads(t *testing.T) {
 	}
 }
 
-func TestNodesSharePeerIDWithSameDir(t *testing.T) {
-	dir := t.TempDir()
-	a, err := NewNode(0, []string{"none"}, dir)
+func TestNodesSharePeerIDWithSameKey(t *testing.T) {
+	key, err := LoadOrCreatePrivKey(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	idA := a.Host.ID()
-	a.Close()
-	b, err := NewNode(0, []string{"none"}, dir)
+	a, err := NewNode(0, []string{"none"}, key, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := NewNode(0, []string{"none"}, key, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	if idA != b.Host.ID() {
-		t.Fatalf("peer IDs differ: %s vs %s", idA, b.Host.ID())
+	if a.Host.ID() != b.Host.ID() {
+		t.Fatalf("peer IDs differ: %s vs %s", a.Host.ID(), b.Host.ID())
+	}
+}
+
+func TestNilKeyGivesEphemeralIdentity(t *testing.T) {
+	a, err := NewNode(0, []string{"none"}, nil, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := NewNode(0, []string{"none"}, nil, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if a.Host.ID() == b.Host.ID() {
+		t.Fatal("ephemeral nodes share a peer ID")
 	}
 }

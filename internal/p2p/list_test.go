@@ -12,7 +12,7 @@ import (
 
 func testListNode(t *testing.T, root string, trusted map[string]bool) *Node {
 	t.Helper()
-	n, err := NewNode(0, []string{"none"}, t.TempDir())
+	n, err := NewNode(0, []string{"none"}, nil, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func TestListRemoteAllowed(t *testing.T) {
 	provider := testListNode(t, root, nil)
 	// Trust the requester after boot (its ID is stable per temp dir key,
 	// but here both nodes are fresh; allow by actual requester ID below).
-	requester, err := NewNode(0, []string{"none"}, t.TempDir())
+	requester, err := NewNode(0, []string{"none"}, nil, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestListRemoteAllowed(t *testing.T) {
 func TestListRemoteDeniedWhenUnpaired(t *testing.T) {
 	root := t.TempDir()
 	provider := testListNode(t, root, map[string]bool{})
-	requester, err := NewNode(0, []string{"none"}, t.TempDir())
+	requester, err := NewNode(0, []string{"none"}, nil, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestListRemoteDeniedWhenUnpaired(t *testing.T) {
 func TestListRemoteRejectsBreakout(t *testing.T) {
 	root := t.TempDir()
 	provider := testListNode(t, root, nil)
-	requester, err := NewNode(0, []string{"none"}, t.TempDir())
+	requester, err := NewNode(0, []string{"none"}, nil, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
