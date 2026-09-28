@@ -92,6 +92,7 @@ func main() {
 		trust := d.Trust
 		node.SetListAccess(roots, func(id string) bool { return trust != nil && trust.Trusted(id) })
 		node.RegisterListHandler()
+		node.RegisterFSHandler()
 	}
 
 	addrs := make([]string, 0)

@@ -15,7 +15,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/shx-dow/lantern-go/pkg/lanternclient"
@@ -71,6 +73,17 @@ func tools() []toolDef {
 		{"trust_remove", "Unpair a device", obj(map[string]any{"peer_id": str("Peer ID to unpair")}, "peer_id")},
 		{"files", "List local shared-dir files", obj(map[string]any{"dir": str("Subdirectory (omit for roots)")})},
 		{"remote_files", "List files on a connected peer", obj(map[string]any{"peer_id": str("Connected peer ID"), "dir": str("Subdirectory (omit for roots)")}, "peer_id")},
+		{"devices", "List paired devices with online status and aliases. Start here when the user names a device.", obj(map[string]any{})},
+		{"read", "Read a file from a paired device. Device may be an alias or a peer ID. Text comes back as text, binary as base64.", obj(map[string]any{
+			"device": str("Device alias (e.g. laptop) or peer ID"),
+			"path":   str("Absolute path on that device"),
+			"offset": num("Byte offset to start from (default 0)"),
+			"length": num("Max bytes to return (default 256KB, max 8MB)"),
+		}, "device", "path")},
+		{"stat", "Get size and modification time for a path on a paired device", obj(map[string]any{
+			"device": str("Device alias or peer ID"),
+			"path":   str("Absolute path on that device"),
+		}, "device", "path")},
 	}
 }
 
@@ -135,7 +148,7 @@ func callTool(c *daemonClient, name string, args map[string]any) (any, error) {
 	case "transfers":
 		path := "/v1/transfers"
 		if k := str("kind"); k != "" {
-			path += "?kind=" + k
+			path += "?kind=" + url.QueryEscape(k)
 		}
 		return c.Do(http.MethodGet, path, nil)
 	case "transfer":
@@ -180,18 +193,45 @@ func callTool(c *daemonClient, name string, args map[string]any) (any, error) {
 	case "files":
 		path := "/v1/files"
 		if d := str("dir"); d != "" {
-			path += "?dir=" + d
+			path += "?dir=" + url.QueryEscape(d)
 		}
 		return c.Do(http.MethodGet, path, nil)
 	case "remote_files":
 		if str("peer_id") == "" {
 			return nil, fmt.Errorf("peer_id is required")
 		}
-		path := "/v1/peers/" + str("peer_id") + "/files"
+		path := "/v1/peers/" + url.PathEscape(str("peer_id")) + "/files"
 		if d := str("dir"); d != "" {
-			path += "?dir=" + d
+			path += "?dir=" + url.QueryEscape(d)
 		}
 		return c.Do(http.MethodGet, path, nil)
+	case "devices":
+		return c.Do(http.MethodGet, "/v1/devices", nil)
+	case "read":
+		dev, path := str("device"), str("path")
+		if dev == "" {
+			return nil, fmt.Errorf("device is required (use devices to list aliases)")
+		}
+		if path == "" {
+			return nil, fmt.Errorf("path is required")
+		}
+		q := url.Values{}
+		q.Set("path", path)
+		if v := num("offset"); v > 0 {
+			q.Set("offset", strconv.FormatInt(v, 10))
+		}
+		if v := num("length"); v > 0 {
+			q.Set("length", strconv.FormatInt(v, 10))
+		}
+		return c.Do(http.MethodGet, "/v1/peers/"+url.PathEscape(dev)+"/read?"+q.Encode(), nil)
+	case "stat":
+		dev, path := str("device"), str("path")
+		if dev == "" || path == "" {
+			return nil, fmt.Errorf("device and path are required")
+		}
+		q := url.Values{}
+		q.Set("path", path)
+		return c.Do(http.MethodGet, "/v1/peers/"+url.PathEscape(dev)+"/stat?"+q.Encode(), nil)
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}

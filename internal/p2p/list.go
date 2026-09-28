@@ -134,31 +134,9 @@ func listRootsLocal(roots []string, dir string) ([]ListEntry, error) {
 		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 		return out, nil
 	}
-	abs, err := filepath.Abs(clean)
+	resolved, err := resolveWithinRoots(roots, clean)
 	if err != nil {
-		return nil, fmt.Errorf("resolve dir: %w", err)
-	}
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return nil, fmt.Errorf("resolve dir: %w", err)
-	}
-	allowed := false
-	for _, r := range roots {
-		rabs, err := filepath.Abs(r)
-		if err != nil {
-			continue
-		}
-		rres, err := filepath.EvalSymlinks(rabs)
-		if err != nil {
-			rres = rabs
-		}
-		if resolved == rres || strings.HasPrefix(resolved, rres+string(os.PathSeparator)) {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
-		return nil, fmt.Errorf("dir %q is outside shared dirs", dir)
+		return nil, err
 	}
 	ents, err := os.ReadDir(resolved)
 	if err != nil {
@@ -177,4 +155,34 @@ func listRootsLocal(roots []string, dir string) ([]ListEntry, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// resolveWithinRoots canonicalizes path (absolute + symlinks evaluated)
+// and confirms it sits inside one of roots. Every filesystem operation the
+// node serves goes through here, so a shared root is a hard boundary that
+// neither a listing nor a read can step outside of.
+func resolveWithinRoots(roots []string, path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+	for _, r := range roots {
+		rabs, err := filepath.Abs(r)
+		if err != nil {
+			continue
+		}
+		rres, err := filepath.EvalSymlinks(rabs)
+		if err != nil {
+			// Unresolvable root (missing dir): compare against abs path.
+			rres = rabs
+		}
+		if resolved == rres || strings.HasPrefix(resolved, rres+string(os.PathSeparator)) {
+			return resolved, nil
+		}
+	}
+	return "", fmt.Errorf("path %q is outside shared dirs", path)
 }

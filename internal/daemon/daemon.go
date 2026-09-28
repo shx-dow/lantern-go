@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shx-dow/lantern-go/internal/p2p"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
 
@@ -180,6 +181,14 @@ func (d *Daemon) Fetch(code, outDir string) (*Record, error) {
 	d.mu.Unlock()
 	go d.watch(session, rec.ID)
 	return rec, nil
+}
+
+// node returns the underlying p2p node, or nil before it is set up.
+func (d *Daemon) node() *p2p.Node {
+	if d == nil || d.ln == nil {
+		return nil
+	}
+	return d.ln.Node()
 }
 
 // Get returns a snapshot of one transfer.
@@ -399,4 +408,21 @@ func (d *Daemon) RemoteFiles(ctx context.Context, peerID, dir string) ([]lantern
 		return nil, fmt.Errorf("node not ready")
 	}
 	return d.ln.RemoteFiles(ctx, peerID, dir)
+}
+
+// ReadFile pulls a byte range from a paired device. It is the read path an
+// agent uses to "get me xyz from the laptop" without a share code.
+func (d *Daemon) ReadFile(ctx context.Context, ref, path string, offset, length int64) (lantern.ReadResult, error) {
+	if d.ln == nil {
+		return lantern.ReadResult{}, fmt.Errorf("node not ready")
+	}
+	return d.ln.ReadRemote(ctx, ref, path, offset, length)
+}
+
+// StatFile returns metadata for one path on a paired device.
+func (d *Daemon) StatFile(ctx context.Context, ref, path string) (lantern.Entry, error) {
+	if d.ln == nil {
+		return lantern.Entry{}, fmt.Errorf("node not ready")
+	}
+	return d.ln.StatRemote(ctx, ref, path)
 }
