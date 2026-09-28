@@ -45,11 +45,68 @@ const (
 
 // SetListAccess configures the read-only roots served by the list handler
 // and the pairing gate. A nil isTrusted denies everyone.
+//
+// Writing is gated separately by SetWritePolicy so a node can serve reads
+// while refusing writes; see that function for why the default is closed.
 func (n *Node) SetListAccess(roots []string, isTrusted func(peerID string) bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.listRoots = append([]string(nil), roots...)
 	n.listTrusted = isTrusted
+}
+
+// WritePolicy decides whether a paired peer may write, and where.
+//
+// Mode is one of the Write* constants. Roots bounds the destinations: a
+// write must land inside one of them, exactly as reads are bounded. A nil
+// policy denies every write, which is the default for a node that never
+// calls SetWritePolicy.
+type WritePolicy struct {
+	// Mode is WriteDenied, WriteSharedRoots, or WriteAnywhere.
+	Mode string
+	// Roots bounds destination paths. Ignored under WriteAnywhere.
+	Roots []string
+	// MaxBytes caps one write. Zero means DefaultMaxWriteBytes.
+	MaxBytes int64
+}
+
+// Write modes for SetWritePolicy.
+const (
+	// WriteDenied refuses every write. The default.
+	WriteDenied = "denied"
+	// WriteSharedRoots allows writes confined to Roots.
+	WriteSharedRoots = "shared-roots"
+	// WriteAnywhere allows writes to any path. Deliberately awkward: it
+	// exists for the NAS case, and a node using it has effectively handed
+	// paired peers write access to the whole filesystem.
+	WriteAnywhere = "anywhere"
+)
+
+// DefaultMaxWriteBytes caps one push when a policy does not set its own.
+const DefaultMaxWriteBytes = 512 * 1024 * 1024
+
+// SetWritePolicy enables or restricts the write side of the fs protocol.
+// Pass nil (or a WriteDenied policy) to refuse all writes, which is what a
+// node that never calls this serves.
+func (n *Node) SetWritePolicy(p *WritePolicy) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if p == nil {
+		n.writePolicy = nil
+		return
+	}
+	cp := *p
+	cp.Roots = append([]string(nil), p.Roots...)
+	n.writePolicy = &cp
+}
+
+func (n *Node) policy() WritePolicy {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.writePolicy == nil {
+		return WritePolicy{Mode: WriteDenied}
+	}
+	return *n.writePolicy
 }
 
 // RegisterListHandler installs the list stream handler (idempotent).

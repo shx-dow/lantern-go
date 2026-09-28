@@ -84,6 +84,32 @@ func (l *Lantern) StatRemote(ctx context.Context, ref, path string) (Entry, erro
 	return *entry, nil
 }
 
+// PushResult describes what a remote stored.
+type PushResult struct {
+	Entry  Entry
+	Bytes  int64
+	SHA256 string
+}
+
+// PushRemote writes content to path on a paired device. The sending device
+// dials the receiver and writes directly, so an agent holding a file can
+// place it without the receiver having to ask for it.
+//
+// Whether the write lands is entirely the remote's decision: its write
+// policy, its overwrite setting, and its shared roots all apply, and a
+// refusal comes back before any content is sent.
+func (l *Lantern) PushRemote(ctx context.Context, ref, path string, content []byte, overwrite bool) (PushResult, error) {
+	pi, err := l.resolvePeer(ref)
+	if err != nil {
+		return PushResult{}, err
+	}
+	entry, sum, err := l.node.WriteFS(ctx, pi, path, content, overwrite)
+	if err != nil {
+		return PushResult{}, err
+	}
+	return PushResult{Entry: entry, Bytes: entry.Size, SHA256: sum}, nil
+}
+
 // ListRemoteEntries lists one directory level on a paired device. Empty dir
 // lists the remote's shared roots.
 func (l *Lantern) ListRemoteEntries(ctx context.Context, ref, dir string) ([]Entry, error) {

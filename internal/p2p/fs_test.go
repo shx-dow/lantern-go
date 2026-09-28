@@ -8,25 +8,40 @@ import (
 	"testing"
 	"time"
 
+	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 // fsPair brings up a provider serving root and a requester, trusting it.
+// fsHost starts a bare libp2p host for fs tests. NewNode also brings up
+// mDNS, a DHT, QUIC, and hole punching, none of which the fs protocol uses;
+// paying for that once per test made this package slow enough to time out
+// unrelated tests on a two-core CI runner.
+func fsHost(t *testing.T) *Node {
+	t.Helper()
+	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { h.Close() })
+	return &Node{Host: h}
+}
+
+// fsPair returns a requester and the provider it may talk to, with the
+// provider serving root and trusting the requester.
 func fsPair(t *testing.T, root string) (*Node, peer.AddrInfo) {
 	t.Helper()
-	provider, err := NewNode(0, []string{"none"}, nil, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { provider.Close() })
+	return fsPairWith(t, root, nil)
+}
 
-	requester, err := NewNode(0, []string{"none"}, nil, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { requester.Close() })
+// fsPairWith is fsPair with an optional write policy for the provider.
+func fsPairWith(t *testing.T, root string, pol *WritePolicy) (*Node, peer.AddrInfo) {
+	t.Helper()
+	provider := fsHost(t)
+	requester := fsHost(t)
 
 	provider.SetListAccess([]string{root}, func(id string) bool { return id == requester.Host.ID().String() })
+	provider.SetWritePolicy(pol)
 	provider.RegisterFSHandler()
 	return requester, peer.AddrInfo{ID: provider.Host.ID(), Addrs: provider.Host.Addrs()}
 }
@@ -165,19 +180,10 @@ func TestFSRejectsSymlinkEscape(t *testing.T) {
 func TestFSDeniedWhenUnpaired(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "a.txt"), "hi")
-	provider, err := NewNode(0, []string{"none"}, nil, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { provider.Close() })
+	provider := fsHost(t)
 	provider.SetListAccess([]string{root}, func(string) bool { return false })
 	provider.RegisterFSHandler()
-
-	requester, err := NewNode(0, []string{"none"}, nil, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { requester.Close() })
+	requester := fsHost(t)
 
 	pi := peer.AddrInfo{ID: provider.Host.ID(), Addrs: provider.Host.Addrs()}
 	if _, _, _, _, err := requester.ReadFS(fsCtx(t), pi, FSRequest{Op: OpRead, Path: filepath.Join(root, "a.txt")}); err == nil {

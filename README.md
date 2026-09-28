@@ -17,17 +17,24 @@ Two ways to move bytes, and they are not equivalent:
   asks; the serving device answers, scoped to its `--shared-dirs`. This is
   what an agent uses for "get me this from the laptop" and "read this off
   the nas".
-- **Share-code transfer** (the original path). Still the only way to move a
-  file to a device *you* are not currently talking to, and the only way to
-  hand a file to an unpaired peer. Directories share as `<name>.zip`.
+- **Share-code transfer** (the original path). Still the only way to hand a
+  file to an unpaired peer, and the only way to move a directory. Folders
+  share as `<name>.zip`.
 
-Reads are one-directional: a paired device can read from another, and
-nothing can write to a remote device's filesystem. Writes are not implemented.
+Plus **push**: the sending device dials the receiver and writes directly, so
+an agent holding a file can place it on another device without the receiver
+having to ask. This is the one case the share-code path used to be the only
+answer to.
+
+Push is **off by default**. A device refuses every write unless it is started
+with `--allow-writes`, and its writable roots bound where content can land.
+Pairing a device is never by itself enough to change anything on it.
 
 Known gaps: connections are not held open between calls, so the first
-request after a restart re-discovers the peer; `fetch` is a share-code
-transfer rather than being unified onto the read path; sync is unimplemented.
-The desktop shell is frozen; headless is the default.
+request after a restart re-discovers the peer; push is single-file, and
+directories still need the share-code path; `fetch` is a share-code transfer
+rather than being unified onto the read path; sync is unimplemented. The
+desktop shell is frozen; headless is the default.
 
 ## Run it
 
@@ -55,8 +62,27 @@ comes back as text when it is clean UTF-8 and base64 otherwise, with
 default); a partial read returns a `warning` naming the offset to resume from.
 `GET /v1/peers/{id}/stat` returns size and mtime without the bytes.
 
-The share-code path, for unpaired peers and for moving files you are not
-reading:
+Pushing to a paired device that accepts writes:
+
+```sh
+# on the receiving device, opt in
+go run ./cmd/lanternd --shared-dirs ~/inbox --writable-dirs ~/inbox --allow-writes
+
+# from the sending device
+curl -s -X POST -H "Authorization: Bearer $LANTERN_DAEMON_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"to":"nas","path":"./report.txt"}' \
+  http://127.0.0.1:43782/v1/pushes
+```
+
+A bare `remote_path` is resolved by the receiving device against its first
+writable root, so the example above lands in `~/inbox/report.txt`. Existing
+files are never replaced unless you pass `"overwrite": true`, and the response
+carries both the digest of what was sent and the digest the receiver computed,
+so a corrupted copy is reported as a failure rather than a success. Only
+paths and metadata cross this API; the bytes move peer-to-peer.
+
+The share-code path, for unpaired peers and for moving directories:
 
 ```sh
 go run ./cmd/lantern
@@ -111,13 +137,23 @@ is the whole point of the read path, and it is a standing capability rather
 than a one-shot transfer: it has no natural end point, and it lasts until the
 pairing is removed. Shared roots are a hard boundary — paths outside them,
 including via symlink, are refused — and `lantern --daemon trust remove
-<peer-id>` revokes access immediately. There are no access tiers yet
-(supervised / auto / full); every paired device currently has full read
-access to every shared root, so declare shared dirs narrowly.
+<peer-id>` revokes access immediately.
 
-Reads are encrypted and authenticated by the libp2p transport. Unlike the
-share-code path there is no separate application-layer key exchange, because
-there is no code to derive a key from; a per-pair key is planned.
+**A paired device can write into a device's `--writable-dirs` only if that
+device was started with `--allow-writes`.** Without it, every write is refused
+and the reason is reported. When writes are enabled they are still bounded:
+destinations must resolve inside a writable root, an existing file is never
+replaced without an explicit overwrite, a write is staged to a temp file and
+renamed into place so a reader never sees a half-written file, and the sender
+compares digests before calling it delivered. There is no per-peer write
+policy yet — enabling writes trusts every paired device equally, and there
+are no access tiers (supervised / auto / full) on either path.
+
+Writes are the half of this product that most deserves an audit before
+anyone points it at a real machine. Reads are encrypted and authenticated by
+the libp2p transport. Unlike the share-code path there is no separate
+application-layer key exchange, because there is no code to derive a key
+from; a per-pair key is planned.
 
 The share code is a high-entropy transfer secret, not a short human PIN. Do
 not paste it into public channels. Requests prove possession of the secret

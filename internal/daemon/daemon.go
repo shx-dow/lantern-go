@@ -2,7 +2,11 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -410,6 +414,14 @@ func (d *Daemon) RemoteFiles(ctx context.Context, peerID, dir string) ([]lantern
 	return d.ln.RemoteFiles(ctx, peerID, dir)
 }
 
+// PushResult describes a completed push and the digests that prove it.
+type PushResult struct {
+	Entry       lantern.Entry
+	Bytes       int64
+	SHA256      string
+	LocalSHA256 string
+}
+
 // ReadFile pulls a byte range from a paired device. It is the read path an
 // agent uses to "get me xyz from the laptop" without a share code.
 func (d *Daemon) ReadFile(ctx context.Context, ref, path string, offset, length int64) (lantern.ReadResult, error) {
@@ -425,4 +437,69 @@ func (d *Daemon) StatFile(ctx context.Context, ref, path string) (lantern.Entry,
 		return lantern.Entry{}, fmt.Errorf("node not ready")
 	}
 	return d.ln.StatRemote(ctx, ref, path)
+}
+
+// RequestError marks a problem with the caller's own input — a bad path, a
+// directory, an oversize file — as opposed to a failure reaching or being
+// refused by the remote. The HTTP layer maps it to 400 rather than 502.
+type RequestError struct{ Err error }
+
+func (e *RequestError) Error() string { return e.Err.Error() }
+func (e *RequestError) Unwrap() error { return e.Err }
+
+func badRequest(format string, args ...any) error {
+	return &RequestError{Err: fmt.Errorf(format, args...)}
+}
+
+// PushFile copies a local file onto a paired device. Bytes move p2p, never
+// through the daemon's HTTP surface, and the copy is verified against the
+// remote's reported digest before the transfer is called a success.
+//
+// The source is validated before any transport work, so a caller error is
+// reported as such rather than as a failure to reach the remote.
+//
+// remotePath defaults to the source file's base name.
+func (d *Daemon) PushFile(ctx context.Context, ref, path, remotePath string, overwrite bool) (PushResult, error) {
+	if strings.TrimSpace(path) == "" {
+		return PushResult{}, badRequest("path must not be empty")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return PushResult{}, badRequest("read source: %w", err)
+	}
+	if info.IsDir() {
+		return PushResult{}, badRequest("path is a directory: %s (directories push as an archive, which is not implemented yet)", path)
+	}
+	if info.Size() > p2p.DefaultMaxWriteBytes {
+		return PushResult{}, badRequest("file is %d bytes, over the %d byte push limit", info.Size(), p2p.DefaultMaxWriteBytes)
+	}
+	if d.ln == nil {
+		return PushResult{}, fmt.Errorf("node not ready")
+	}
+	if strings.TrimSpace(remotePath) == "" {
+		remotePath = filepath.Base(path)
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return PushResult{}, err
+	}
+	// Digest what we are about to send so a corrupted copy cannot be
+	// reported as delivered.
+	local := sha256.Sum256(content)
+
+	res, err := d.ln.PushRemote(ctx, ref, remotePath, content, overwrite)
+	if err != nil {
+		return PushResult{}, err
+	}
+	localDigest := hex.EncodeToString(local[:])
+	if res.SHA256 != "" && res.SHA256 != localDigest {
+		return PushResult{}, fmt.Errorf("digest mismatch: sent %s, remote reported %s", localDigest, res.SHA256)
+	}
+	return PushResult{
+		Entry:       res.Entry,
+		Bytes:       res.Bytes,
+		SHA256:      res.SHA256,
+		LocalSHA256: localDigest,
+	}, nil
 }
