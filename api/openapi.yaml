@@ -8,10 +8,14 @@ info:
     the desktop GUI, SDKs, and any future MCP shim.
 
     Design rules:
-    - File bytes NEVER flow through this API. Clients exchange share
-      codes and fetch content out-of-band over the p2p data plane.
-      (Exception: POST /v1/uploads accepts browser drop-zone bytes
-      and stores them daemon-side for subsequent sharing.)
+    - File bytes do not flow through this API on the transfer path.
+      Clients exchange share codes and move content out-of-band over
+      the p2p data plane. (Exception: POST /v1/uploads accepts browser
+      drop-zone bytes and stores them daemon-side for sharing.)
+    - GET /v1/peers/{id}/read IS an exception to the rule above, and
+      deliberately so: it is the agent-native read path, capped at 8 MiB
+      per call and scoped to the remote's shared_dirs. Large payloads
+      belong on the share-code transfer path, not through a JSON body.
     - Transfer IDs ARE share codes (`Session.ID()`), so one identifier
       addresses a share, its fetch, and its history entry.
     - Progress is streamed over SSE (`GET /v1/events`); unary polling
@@ -327,10 +331,129 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /v1/devices:
+    get:
+      summary: List paired devices
+      description: |-
+        Paired devices with their aliases and live connection state, so a
+        caller can target one by name ("laptop") instead of a peer ID.
+        Aliases are assigned at pairing time and are expected to be unique
+        per daemon; duplicates are the caller's problem to resolve.
+      responses:
+        '200':
+          description: Paired devices.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DeviceInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Pairing is not configured on this daemon.
+  /v1/peers/{id}/read:
+    get:
+      summary: Read a byte range from a paired device
+      description: |-
+        Reads path from a paired device over /lantern/fs/1.0.0, resolving
+        the remote peer only within its shared_dirs. This is the
+        agent-native read path: no share code, no staging copy, no
+        transfer session.
+
+        Content is returned as text when it is clean UTF-8 and base64
+        otherwise; the `encoding` field says which. Binary payloads are
+        not decoded for the caller.
+
+        Reads are capped at 8 MiB per call (default 256 KiB). When the
+        response is partial, `warning` names the offset to resume from.
+        The remote's shared roots are a hard boundary: paths outside them,
+        including via symlink, are refused.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Device alias or peer ID.
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Absolute path on the remote device.
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            default: 0
+        - name: length
+          in: query
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            maximum: 8388608
+          description: Bytes to return. 0 means the protocol default.
+      responses:
+        '200':
+          description: The requested byte range.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          description: The remote refused the read or was unreachable.
+  /v1/peers/{id}/stat:
+    get:
+      summary: Stat a path on a paired device
+      description: Metadata for one path on a paired device, confined to the remote's shared_dirs.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Device alias or peer ID.
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The path's metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [device, entry]
+                properties:
+                  device:
+                    type: string
+                  entry:
+                    $ref: '#/components/schemas/FileEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          description: The remote refused the stat or was unreachable.
   /v1/uploads:
     post:
       summary: Store a browser upload for sharing
-      description: |-        Accepts one multipart `file` (max 1 GiB), stores it under
+      description: |-
+        Accepts one multipart `file` (max 1 GiB), stores it under
         `<data-dir>/uploads/` with a random prefix, and returns the
         daemon-side path to pass to POST /v1/shares. Powers the /ui
         drop zone, which cannot see local paths directly.
@@ -562,6 +685,56 @@ components:
           format: date-time
         is_dir:
           type: boolean
+    DeviceInfo:
+      type: object
+      required: [peer_id, online, known_addresses]
+      properties:
+        peer_id:
+          type: string
+        alias:
+          type: string
+          description: Human name assigned at pairing; accepted anywhere a device is addressed.
+        added_at:
+          type: string
+          format: date-time
+        online:
+          type: boolean
+        known_addresses:
+          type: integer
+          description: Cached addresses for this peer. 0 means it must be discovered on the network before use.
+    ReadResponse:
+      type: object
+      required: [device, path, offset, length, total, eof, encoding, content]
+      properties:
+        device:
+          type: string
+          description: Resolved peer ID of the device read from.
+        path:
+          type: string
+        offset:
+          type: integer
+          format: int64
+        length:
+          type: integer
+          format: int64
+          description: Bytes actually returned.
+        total:
+          type: integer
+          format: int64
+          description: Size of the whole file on the remote.
+        eof:
+          type: boolean
+        encoding:
+          type: string
+          enum: [utf-8, base64]
+        content:
+          type: string
+          description: File bytes, decoded per `encoding`.
+        entry:
+          $ref: '#/components/schemas/FileEntry'
+        warning:
+          type: string
+          description: Present on a partial read; names the offset to continue from.
     EventDTO:
       type: object
       required: [type, id]

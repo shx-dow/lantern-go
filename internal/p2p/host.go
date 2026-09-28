@@ -50,6 +50,8 @@ type Node struct {
 	listOnce    sync.Once
 	listRoots   []string
 	listTrusted func(peerID string) bool
+
+	fsOnce sync.Once
 }
 
 // NewNode brings up a TCP+QUIC host with relay, hole punching, DHT in
