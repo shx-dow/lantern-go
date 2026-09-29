@@ -9,10 +9,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/shx-dow/lantern-go/internal/daemon"
+	"github.com/shx-dow/lantern-go/internal/p2p"
 	"github.com/shx-dow/lantern-go/internal/tray"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
@@ -46,6 +48,9 @@ func main() {
 		relayF     = flag.String("relay", "", "comma-separated static relay multiaddrs for NAT traversal (default config relay_addrs)")
 		trayFlag   = flag.Bool("tray", false, "opt-in tray icon (GUI is frozen; headless is the default)")
 		noTrayFlag = flag.Bool("no-tray", false, "disable the tray icon (redundant now, kept for compat)")
+		allowWrite = flag.Bool("allow-writes", false, "let paired devices write files into shared-dirs (default: this device is read-only)")
+		writableF  = flag.String("writable-dirs", "", "comma-separated dirs paired devices may write to (default: same as --shared-dirs)")
+		maxWriteF  = flag.Int64("max-write-bytes", -1, "largest single file a paired device may push here (0 = 512 MiB, -1 = default)")
 	)
 	flag.Parse()
 
@@ -93,6 +98,28 @@ func main() {
 		node.SetListAccess(roots, func(id string) bool { return trust != nil && trust.Trusted(id) })
 		node.RegisterListHandler()
 		node.RegisterFSHandler()
+
+		// Writes are opt-in. Without --allow-writes this device serves
+		// reads and refuses every write, so pairing a device is never by
+		// itself enough to change anything here.
+		if *allowWrite {
+			writable := roots
+			if s := strings.TrimSpace(*writableF); s != "" {
+				writable = daemon.SplitCSV(s)
+			}
+			var maxWrite int64 = p2p.DefaultMaxWriteBytes
+			if *maxWriteF > 0 {
+				maxWrite = *maxWriteF
+			}
+			node.SetWritePolicy(&p2p.WritePolicy{
+				Mode:     p2p.WriteSharedRoots,
+				Roots:    writable,
+				MaxBytes: maxWrite,
+			})
+			log.Printf("writes enabled for paired devices, limited to %v", writable)
+		} else {
+			log.Printf("writes are disabled; pass --allow-writes to let paired devices write here")
+		}
 	}
 
 	addrs := make([]string, 0)

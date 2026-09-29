@@ -2,8 +2,11 @@ package daemon
 
 import (
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -130,6 +133,73 @@ func (h *Handler) getRemoteStat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"device": ref, "entry": entry})
+}
+
+type pushRequest struct {
+	// To is the destination alias or peer ID.
+	To string `json:"to"`
+	// Path is the local file to send.
+	Path string `json:"path"`
+	// RemotePath is the destination on the target device. Defaults to the
+	// source base name.
+	RemotePath string `json:"remote_path,omitempty"`
+	// Overwrite allows replacing an existing file on the target.
+	Overwrite bool `json:"overwrite,omitempty"`
+}
+
+type pushResponse struct {
+	Device      string         `json:"device"`
+	RemotePath  string         `json:"remote_path"`
+	Bytes       int64          `json:"bytes"`
+	SHA256      string         `json:"sha256"`
+	LocalSHA256 string         `json:"local_sha256"`
+	Entry       *lantern.Entry `json:"entry,omitempty"`
+}
+
+// postPush sends a local file to a paired device. Only paths and metadata
+// cross this API; the bytes move p2p, so pushing a large file costs the same
+// request as pushing a small one.
+func (h *Handler) postPush(w http.ResponseWriter, r *http.Request) {
+	var req pushRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
+		return
+	}
+	if strings.TrimSpace(req.Path) == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("path is required"))
+		return
+	}
+	ref, err := h.resolveRef(req.To)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	res, err := h.daemon.PushFile(r.Context(), ref, req.Path, req.RemotePath, req.Overwrite)
+	if err != nil {
+		// A problem with the caller's own input is a 400; anything the
+		// remote refused or could not reach is a 502.
+		var bad *RequestError
+		if errors.As(err, &bad) {
+			writeError(w, http.StatusBadRequest, bad)
+			return
+		}
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	remotePath := req.RemotePath
+	if remotePath == "" {
+		remotePath = filepath.Base(req.Path)
+	}
+	entry := res.Entry
+	writeJSON(w, http.StatusOK, pushResponse{
+		Device:      ref,
+		RemotePath:  remotePath,
+		Bytes:       res.Bytes,
+		SHA256:      res.SHA256,
+		LocalSHA256: res.LocalSHA256,
+		Entry:       &entry,
+	})
 }
 
 func queryInt(r *http.Request, key string, def int64) (int64, error) {

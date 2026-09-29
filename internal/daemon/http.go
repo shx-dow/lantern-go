@@ -55,6 +55,7 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/peers/{id}/files", h.getRemoteFiles)
 	mux.HandleFunc("GET /v1/peers/{id}/read", h.getRemoteRead)
 	mux.HandleFunc("GET /v1/peers/{id}/stat", h.getRemoteStat)
+	mux.HandleFunc("POST /v1/pushes", h.postPush)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

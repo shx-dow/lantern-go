@@ -449,6 +449,61 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '502':
           description: The remote refused the stat or was unreachable.
+  /v1/pushes:
+    post:
+      summary: Send a local file to a paired device
+      description: |-
+        Copies a local file onto a paired device. The sending device dials
+        the receiver and writes directly, so an agent holding a file can
+        place it without the receiver having to ask for it.
+
+        Only paths and metadata cross this API; the bytes move p2p, so
+        pushing a large file costs the same request as a small one.
+
+        Whether the write lands is entirely the receiving device's decision.
+        It refuses unless it was started with writes enabled, and its
+        writable roots bound the destination. A bare `remote_path` is
+        resolved by the receiver against its first writable root; an
+        absolute path is honoured as given but must still fall inside a
+        writable root. Existing files are never replaced unless
+        `overwrite` is set.
+
+        `sha256` is the digest the receiver computed over what it stored
+        and `local_sha256` the digest of what was sent. The daemon compares
+        them and reports a mismatch rather than a success.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to, path]
+              properties:
+                to:
+                  type: string
+                  description: Destination device alias or peer ID.
+                path:
+                  type: string
+                  description: Local file to send. Directories are refused.
+                remote_path:
+                  type: string
+                  description: Destination on the target device. Defaults to the source base name.
+                overwrite:
+                  type: boolean
+                  default: false
+      responses:
+        '200':
+          description: The file was stored and its digest verified.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PushResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          description: The remote refused the write, was unreachable, or returned a mismatched digest.
   /v1/uploads:
     post:
       summary: Store a browser upload for sharing
@@ -735,6 +790,26 @@ components:
         warning:
           type: string
           description: Present on a partial read; names the offset to continue from.
+    PushResponse:
+      type: object
+      required: [device, remote_path, bytes, sha256, local_sha256]
+      properties:
+        device:
+          type: string
+          description: Resolved peer ID of the device written to.
+        remote_path:
+          type: string
+        bytes:
+          type: integer
+          format: int64
+        sha256:
+          type: string
+          description: Digest the receiver computed over the stored bytes.
+        local_sha256:
+          type: string
+          description: Digest of the bytes that were sent. Equal to sha256 on success.
+        entry:
+          $ref: '#/components/schemas/FileEntry'
     EventDTO:
       type: object
       required: [type, id]

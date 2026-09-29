@@ -84,6 +84,12 @@ func tools() []toolDef {
 			"device": str("Device alias or peer ID"),
 			"path":   str("Absolute path on that device"),
 		}, "device", "path")},
+		{"push", "Send a local file to a paired device. Fails if the target refuses writes or the file exists (see overwrite).", obj(map[string]any{
+			"to":          str("Destination device alias (e.g. nas) or peer ID"),
+			"path":        str("Local file to send"),
+			"remote_path": str("Destination path on that device (default: the file's base name)"),
+			"overwrite":   str("Replace the file if it already exists (default false)"),
+		}, "to", "path")},
 	}
 }
 
@@ -232,6 +238,27 @@ func callTool(c *daemonClient, name string, args map[string]any) (any, error) {
 		q := url.Values{}
 		q.Set("path", path)
 		return c.Do(http.MethodGet, "/v1/peers/"+url.PathEscape(dev)+"/stat?"+q.Encode(), nil)
+	case "push":
+		to, path := str("to"), str("path")
+		if to == "" {
+			return nil, fmt.Errorf("to is required (use devices to list aliases)")
+		}
+		if path == "" {
+			return nil, fmt.Errorf("path is required")
+		}
+		body := map[string]any{"to": to, "path": path}
+		if rp := str("remote_path"); rp != "" {
+			body["remote_path"] = rp
+		}
+		overwrite := false
+		switch v := args["overwrite"].(type) {
+		case bool:
+			overwrite = v
+		case string:
+			overwrite = v == "true" || v == "1" || v == "yes"
+		}
+		body["overwrite"] = overwrite
+		return c.Do(http.MethodPost, "/v1/pushes", body)
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
