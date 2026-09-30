@@ -85,6 +85,21 @@ type Lantern struct {
 	closeOnce      sync.Once
 	closeErr       error
 	closed         bool
+
+	// knownAddrs supplies last-known addresses for a peer ID. It is a
+	// fallback for when the network has not announced a peer recently, so a
+	// restart can still reach a paired device straight away. Optional: when
+	// nil, only live connections and fresh announcements are used.
+	knownAddrs func(peerID string) []string
+}
+
+// WithKnownAddrs supplies cached addresses used when discovery has not
+// announced a peer recently. It exists so the daemon can lend its trust
+// store's address cache to the session layer without that layer knowing
+// anything about pairing.
+func (l *Lantern) WithKnownAddrs(f func(peerID string) []string) *Lantern {
+	l.knownAddrs = f
+	return l
 }
 
 // Event buffer sizes: broadcasts tolerate slow consumers by dropping

@@ -3,6 +3,7 @@ package lantern
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -148,5 +149,79 @@ func TestEmitDoesNotBlockOnSlowSubscriber(t *testing.T) {
 		_ = e
 	case <-time.After(5 * time.Second):
 		t.Fatal("fast subscriber received nothing")
+	}
+}
+
+// A peer the network has not announced must still be dialable from the
+// cached addresses, so a restart can reach a paired device immediately.
+func TestResolvePeerUsesCachedAddrs(t *testing.T) {
+	ln, err := New(Config{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	other, err := New(Config{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { other.Close() })
+
+	// Learn the peer's addresses, then forget them from the peerstore so the
+	// only remaining source is the cache.
+	target := other.Node().Host.ID().String()
+	addrs := make([]string, 0)
+	for _, a := range other.Node().Host.Addrs() {
+		addrs = append(addrs, a.String())
+	}
+	ln.WithKnownAddrs(func(string) []string { return addrs })
+	ln.Node().Host.Peerstore().ClearAddrs(other.Node().Host.ID())
+
+	pi, err := ln.resolvePeer(target)
+	if err != nil {
+		t.Fatalf("resolvePeer should fall back to cached addresses: %v", err)
+	}
+	if len(pi.Addrs) == 0 {
+		t.Fatal("resolved peer has no addresses to dial")
+	}
+	if pi.ID != other.Node().Host.ID() {
+		t.Fatal("resolved the wrong peer")
+	}
+}
+
+func TestResolvePeerFailsCleanlyWhenUnknown(t *testing.T) {
+	ln, err := New(Config{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	// A real, well-formed peer ID that this node knows nothing about, so the
+	// failure is "not reachable" rather than "unparseable".
+	other, err := New(Config{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { other.Close() })
+	ln.WithKnownAddrs(func(string) []string { return nil })
+
+	_, err = ln.resolvePeer(other.Node().Host.ID().String())
+	if err == nil {
+		t.Fatal("expected an error for a peer that is not on the network")
+	}
+	// The message has to tell an agent what to do about it.
+	if !strings.Contains(err.Error(), "network") {
+		t.Fatalf("error should be actionable, got: %v", err)
+	}
+}
+
+func TestResolvePeerRejectsGarbage(t *testing.T) {
+	ln, err := New(Config{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	if _, err := ln.resolvePeer("not-a-peer-id"); err == nil {
+		t.Fatal("expected a decode error")
 	}
 }

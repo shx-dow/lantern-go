@@ -718,6 +718,21 @@ components:
         added_at:
           type: string
           format: date-time
+        addrs:
+          type: array
+          description: |-
+            Last addresses this device was reached at, used to reach it again
+            immediately after a restart instead of waiting for the network to
+            announce it. A cache, not a promise: entries may be stale, and
+            bounded to a small number per device. Loopback and unspecified
+            addresses are never stored, since they are meaningless on another
+            machine.
+          items:
+            type: string
+        seen_at:
+          type: string
+          format: date-time
+          description: When Addrs was last refreshed. Absent if the device has not been reached yet.
     TrustRequest:
       type: object
       required: [peer_id]

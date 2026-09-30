@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/shx-dow/lantern-go/internal/p2p"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
@@ -185,6 +186,55 @@ func (d *Daemon) Fetch(code, outDir string) (*Record, error) {
 	d.mu.Unlock()
 	go d.watch(session, rec.ID)
 	return rec, nil
+}
+
+// RememberPeer notes where a paired device is, so a later restart can reach
+// it without waiting for the network to announce it. Only paired devices are
+// recorded. A failure to save is not worth interrupting a transfer for, so
+// the error is returned for the caller to ignore.
+func (d *Daemon) RememberPeer(peerID string) {
+	if d.Trust == nil || d.ln == nil {
+		return
+	}
+	node := d.ln.Node()
+	if node == nil || node.Host == nil {
+		return
+	}
+	id, err := peer.Decode(peerID)
+	if err != nil {
+		return
+	}
+	addrs := node.Host.Peerstore().Addrs(id)
+	if len(addrs) == 0 {
+		return
+	}
+	strs := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		strs = append(strs, a.String())
+	}
+	_ = d.Trust.UpdateAddrs(peerID, strs)
+}
+
+// PeerAddrs returns the cached addresses recorded for a peer, or nil.
+func (d *Daemon) PeerAddrs(peerID string) []string {
+	if d.Trust == nil {
+		return nil
+	}
+	for _, e := range d.Trust.List() {
+		if e.PeerID == peerID {
+			return e.Addrs
+		}
+	}
+	return nil
+}
+
+// peerIDOf normalises a device reference to a peer ID string, or returns
+// the reference unchanged when it is not one.
+func peerIDOf(ref string) string {
+	if id, err := peer.Decode(strings.TrimSpace(ref)); err == nil {
+		return id.String()
+	}
+	return ref
 }
 
 // node returns the underlying p2p node, or nil before it is set up.
@@ -428,7 +478,13 @@ func (d *Daemon) ReadFile(ctx context.Context, ref, path string, offset, length 
 	if d.ln == nil {
 		return lantern.ReadResult{}, fmt.Errorf("node not ready")
 	}
-	return d.ln.ReadRemote(ctx, ref, path, offset, length)
+	res, err := d.ln.ReadRemote(ctx, ref, path, offset, length)
+	if err == nil {
+		// The read proved the peer was reachable, so whatever addresses it
+		// came in on are worth keeping.
+		d.RememberPeer(peerIDOf(ref))
+	}
+	return res, err
 }
 
 // StatFile returns metadata for one path on a paired device.
