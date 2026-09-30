@@ -154,19 +154,36 @@ func (n *Node) setupMDNS() {
 	}
 }
 
+// SeenAddressTTL bounds how long an address learned from a network
+// announcement is trusted without being seen again. It is short on
+// purpose: a sighting is cheap to repeat, and a stale address wastes a dial
+// that then has to time out.
+const SeenAddressTTL = 10 * time.Minute
+
 type mdnsDiscovery struct {
 	node *Node
 }
 
+// HandlePeerFound records where a peer is; it does not connect to it.
+//
+// Connecting to every peer that announces itself made the number of
+// connections grow with the square of the number of Lantern devices on the
+// network — about 3 MB each, so hundreds of megabytes at twenty devices.
+// It also meant a stranger running Lantern on the same Wi-Fi got a
+// connection from us whether or not we had ever paired with them.
+//
+// Instead the address is cached for SeenAddressTTL, which is enough for
+// resolvePeer to dial on demand, and the connection only happens when
+// something is actually asked for. Recurring announcements keep the entry
+// fresh for as long as the device is on the network.
 func (m *mdnsDiscovery) HandlePeerFound(pi peer.AddrInfo) {
 	if pi.ID == m.node.Host.ID() {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(m.node.ctx, 5*time.Second)
-		defer cancel()
-		_ = m.node.Host.Connect(ctx, pi)
-	}()
+	if len(pi.Addrs) == 0 {
+		return
+	}
+	m.node.Host.Peerstore().AddAddrs(pi.ID, pi.Addrs, SeenAddressTTL)
 }
 
 // Close cancels discovery, then closes the DHT and host, joining errors.

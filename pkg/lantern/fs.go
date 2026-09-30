@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 	"github.com/shx-dow/lantern-go/internal/p2p"
 )
 
@@ -21,9 +22,10 @@ type ReadResult struct {
 }
 
 // resolvePeer turns a peer reference into a dialable address. It prefers a
-// live connection, then the peerstore, so a warm call is instant and a cold
-// one still dials instead of failing outright. Callers that need a strict
-// "must already be connected" check should look at Peers instead.
+// live connection, then addresses learned from network discovery, then
+// addresses the caller supplies as a last resort. It never fails merely
+// because the peer is not connected yet: connecting is cheap and the
+// alternative is refusing work we could do.
 func (l *Lantern) resolvePeer(ref string) (peer.AddrInfo, error) {
 	if l.node == nil || l.node.Host == nil {
 		return peer.AddrInfo{}, fmt.Errorf("node not ready")
@@ -41,7 +43,20 @@ func (l *Lantern) resolvePeer(ref string) (peer.AddrInfo, error) {
 	if addrs := host.Peerstore().Addrs(id); len(addrs) > 0 {
 		return peer.AddrInfo{ID: id, Addrs: addrs}, nil
 	}
-	return peer.AddrInfo{}, fmt.Errorf("peer %s is not known; pair it or bring it online first", id)
+	if l.knownAddrs != nil {
+		if addrs := l.knownAddrs(id.String()); len(addrs) > 0 {
+			ma := make([]multiaddr.Multiaddr, 0, len(addrs))
+			for _, a := range addrs {
+				if m, err := multiaddr.NewMultiaddr(a); err == nil {
+					ma = append(ma, m)
+				}
+			}
+			if len(ma) > 0 {
+				return peer.AddrInfo{ID: id, Addrs: ma}, nil
+			}
+		}
+	}
+	return peer.AddrInfo{}, fmt.Errorf("peer %s is not on this network yet; pair it, or make sure it is switched on", id)
 }
 
 // ReadRemote pulls offset..offset+length from path on a paired device. A

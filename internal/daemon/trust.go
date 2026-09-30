@@ -8,15 +8,93 @@ import (
 	"sync"
 	"time"
 
+	"github.com/multiformats/go-multiaddr"
+	"github.com/multiformats/go-multiaddr/net"
+
 	"github.com/shx-dow/lantern-go/internal/storage"
 )
 
 // TrustEntry is one paired device: its stable libp2p peer ID plus a human
 // alias. The peer ID survives restarts via the persisted identity key.
+//
+// Addrs are the last addresses this device was seen at, with SeenAt saying
+// when. They are a cache, not a promise: they let a restart reach a paired
+// device immediately instead of waiting for the network to announce it
+// again. Anything recorded here may be stale, so a dial is still expected
+// to fail and be retried by discovery.
 type TrustEntry struct {
-	PeerID  string `json:"peer_id"`
-	Alias   string `json:"alias,omitempty"`
-	AddedAt string `json:"added_at"`
+	PeerID  string   `json:"peer_id"`
+	Alias   string   `json:"alias,omitempty"`
+	AddedAt string   `json:"added_at"`
+	Addrs   []string `json:"addrs,omitempty"`
+	SeenAt  string   `json:"seen_at,omitempty"`
+}
+
+// MaxTrackedAddrs bounds how many addresses one peer keeps. A device on a
+// normal network offers a handful; the bound stops a peer that advertises
+// many (or changes them often) from growing the trust file without limit.
+const MaxTrackedAddrs = 8
+
+// UpdateAddrs records where a peer was last seen. It never fails a
+// transfer: a peerstore problem is not worth interrupting a request for,
+// so a save failure is returned but callers may ignore it. Addresses that
+// are loopback are dropped, since they are meaningless on another machine.
+func (s *TrustStore) UpdateAddrs(peerID string, addrs []string) error {
+	clean := usableAddrs(addrs)
+	if len(clean) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.byID[peerID]
+	if !ok {
+		// Not a paired device; do not start tracking strangers.
+		return nil
+	}
+	merged := make([]string, 0, MaxTrackedAddrs)
+	// Filter the combined list, not just the new addresses, so an entry
+	// stored before this rule existed is cleaned up on the next update.
+	for _, a := range usableAddrs(append(append([]string(nil), e.Addrs...), clean...)) {
+		if len(merged) >= MaxTrackedAddrs {
+			break
+		}
+		if !contains(merged, a) {
+			merged = append(merged, a)
+		}
+	}
+	e.Addrs = merged
+	e.SeenAt = time.Now().UTC().Format(time.RFC3339)
+	s.byID[peerID] = e
+	return s.saveLocked()
+}
+
+// usableAddrs keeps addresses worth dialling on another machine.
+func usableAddrs(addrs []string) []string {
+	var out []string
+	for _, a := range addrs {
+		if a == "" {
+			continue
+		}
+		ma, err := multiaddr.NewMultiaddr(a)
+		if err != nil {
+			continue
+		}
+		// Loopback and unspecified addresses never help across machines.
+		if ip, err := manet.ToIP(ma); err == nil && (ip.IsLoopback() || ip.IsUnspecified()) {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // TrustStore persists paired devices in <dataDir>/trusted_peers.json.

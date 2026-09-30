@@ -30,10 +30,15 @@ Push is **off by default**. A device refuses every write unless it is started
 with `--allow-writes`, and its writable roots bound where content can land.
 Pairing a device is never by itself enough to change anything on it.
 
-Known gaps: connections are not held open between calls, so the first
-request after a restart re-discovers the peer; push is single-file, and
-directories still need the share-code path; `fetch` is a share-code transfer
-rather than being unified onto the read path; sync is unimplemented. The
+**Connections are made on demand.** A device records where it hears other
+devices, but does not connect to them just for announcing themselves.
+Connections happen when the agent asks for something, and are otherwise
+absent. This keeps a device light on memory and CPU, and means a stranger
+running Lantern on the same Wi-Fi is never connected to.
+
+Known gaps: directory push is not implemented, so folders still need the
+share-code path; `fetch` is a share-code transfer rather than being unified
+onto the read path; sync is unimplemented; there are no access modes. The
 desktop shell is frozen; headless is the default.
 
 ## Run it
@@ -124,8 +129,9 @@ go vet ./...
 
 The two-host transfer tests in `internal/p2p` exercise fresh and resumed
 multi-chunk transfers. The `internal/p2p` fs tests cover reads, ranged reads,
-the read cap, and refusal of path and symlink escapes. Protocol framing,
-crypto, storage, and session tests cover their respective interfaces.
+the read cap, and refusal of path and symlink escapes; the write tests cover
+the push safety properties. Protocol framing, crypto, storage, and session
+tests cover their respective interfaces.
 
 `api/openapi.yaml` is the contract for the daemon API. It is not validated by
 CI, so treat changes to it as review-worthy.

@@ -91,6 +91,10 @@ func main() {
 		log.Fatalf("trust store: %v", err)
 	} else {
 		d.Trust = trust
+		// Let the session layer borrow the trust store's address cache, so a
+		// restart can reach a paired device before the network has announced
+		// it again.
+		ln.WithKnownAddrs(d.PeerAddrs)
 	}
 	if node := ln.Node(); node != nil && node.Host != nil {
 		roots := d.SharedDirs
