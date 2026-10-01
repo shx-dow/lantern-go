@@ -39,16 +39,31 @@ running Lantern on the same Wi-Fi is never connected to.
 Known gaps: directory push is not implemented, so folders still need the
 share-code path; `fetch` is a share-code transfer rather than being unified
 onto the read path; sync is unimplemented; there are no access modes. The
-desktop shell is frozen; headless is the default.
+desktop shell has been removed, so the tree is pure Go and cross-compiles for
+every target we ship.
 
 ## Run it
+
+There is one binary. `lantern daemon` runs the background service, `lantern
+mcp` is the agent shim, and the rest are commands.
+
+```sh
+go build ./cmd/lantern          # or: CGO_ENABLED=0 go build -ldflags "-s -w" -o lantern ./cmd/lantern
+```
+
+Check what you built:
+
+```sh
+lantern version                 # version, commit, build date, toolchain, platform
+lantern help daemon             # every daemon flag
+```
 
 Pair two devices, then read from one by name. The alias given at pairing time
 is what you address:
 
 ```sh
 # on both devices
-go run ./cmd/lanternd --shared-dirs ~/Share --device-name laptop
+lantern daemon --shared-dirs ~/Share --device-name laptop
 
 # pair them, each side naming the other
 lantern --daemon discover
@@ -71,7 +86,7 @@ Pushing to a paired device that accepts writes:
 
 ```sh
 # on the receiving device, opt in
-go run ./cmd/lanternd --shared-dirs ~/inbox --writable-dirs ~/inbox --allow-writes
+lantern daemon --shared-dirs ~/inbox --writable-dirs ~/inbox --allow-writes
 
 # from the sending device
 curl -s -X POST -H "Authorization: Bearer $LANTERN_DAEMON_TOKEN" \
@@ -90,9 +105,8 @@ paths and metadata cross this API; the bytes move peer-to-peer.
 The share-code path, for unpaired peers and for moving directories:
 
 ```sh
-go run ./cmd/lantern
-go run ./cmd/lantern send ./path/to/file-or-dir
-go run ./cmd/lantern receive <share-code> [output-directory]
+lantern send ./path/to/file-or-dir
+lantern receive <share-code> [output-directory]
 ```
 
 The sender prints a 128-bit share code. The receiver needs that code and must
@@ -106,22 +120,38 @@ lantern --daemon files
 lantern --daemon remote-files <peer-id>
 ```
 
-MCP shim (stdio, proxies the daemon API):
+MCP shim for agents, over stdio. It proxies the daemon API and holds no
+transfer logic of its own:
 
 ```sh
-go run ./cmd/lantern-mcp
+lantern mcp
 ```
 
-To run a relay locally:
+Wire it into an MCP client as one command:
 
-```sh
-go run ./cmd/lantern-relay 4001
+```json
+{
+  "mcpServers": {
+    "lantern": {
+      "command": "lantern",
+      "args": ["mcp"],
+      "env": {
+        "LANTERND_URL": "http://127.0.0.1:43782",
+        "LANTERN_DAEMON_TOKEN": "<the token in your data dir>"
+      }
+    }
+  }
+}
 ```
+
+The version the agent sees in `serverInfo` is the same one `lantern version`
+prints.
 
 ## Development
 
 ```sh
 gofmt -w .
+go mod tidy
 go test ./...
 go test -race ./...
 go vet ./...

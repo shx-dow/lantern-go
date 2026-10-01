@@ -1,11 +1,11 @@
 openapi: 3.0.3
 info:
-  title: lanternd API
+  title: lanternd API  (served by `lantern daemon`)
   version: 1.0.0
   description: |-
-    Localhost HTTP API for lanternd, the Lantern transfer daemon.
-    Single source of truth shared by the CLI (`lantern --daemon`),
-    the desktop GUI, SDKs, and any future MCP shim.
+    Localhost HTTP API for the Lantern daemon, run as `lantern daemon`.
+    Single source of truth shared by the CLI (`lantern --daemon`), the MCP
+    shim (`lantern mcp`), and the SDKs.
 
     Design rules:
     - File bytes do not flow through this API on the transfer path.

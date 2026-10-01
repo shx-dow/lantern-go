@@ -1,31 +1,33 @@
-// Command lantern-mcp is a thin MCP stdio shim over lanternd's localhost
-// v1 API (api/openapi.yaml). No transfer logic lives here: every tool
-// proxies to the daemon, so the shim cannot drift from the CLI or SDKs.
+// Package mcpserver is a thin MCP stdio shim over lanternd's localhost v1
+// API (api/openapi.yaml). No transfer logic lives here: every tool proxies to
+// the daemon, so the shim cannot drift from the CLI or SDKs.
 //
-// Wire it into an MCP client with:
+// It runs as `lantern mcp`. Wire it into an MCP client with:
 //
-//	{"mcpServers": {"lantern": {"command": "lantern-mcp"}}}
+//	{"mcpServers": {"lantern": {"command": "lantern", "args": ["mcp"]}}}
 //
 // Env: LANTERND_URL (default http://127.0.0.1:43782),
 // LANTERN_DAEMON_TOKEN (or LANTERND_TOKEN).
-package main
+package mcpserver
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 
+	"github.com/shx-dow/lantern-go/internal/version"
 	"github.com/shx-dow/lantern-go/pkg/lanternclient"
 )
 
 const (
-	mcpVersion    = "2024-11-05"
-	serverVersion = "0.1.0"
+	// mcpVersion is the Model Context Protocol revision this shim speaks.
+	mcpVersion = "2024-11-05"
 )
 
 type rpcRequest struct {
@@ -292,7 +294,10 @@ func (s *server) handle(req rpcRequest) {
 		s.respond(req.ID, map[string]any{
 			"protocolVersion": mcpVersion,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "lantern-mcp", "version": serverVersion},
+			// The version reported to the host must be the same one
+			// `lantern version` prints, or an agent and a human disagree
+			// about which build they are talking to.
+			"serverInfo": map[string]any{"name": "lantern", "version": version.Get().Version},
 		})
 	case "notifications/initialized", "notifications/cancelled":
 		return
@@ -335,12 +340,15 @@ func (s *server) handle(req rpcRequest) {
 	}
 }
 
-func main() {
-	s := &server{dc: newDaemonClient(), out: bufio.NewWriter(os.Stdout)}
-	in := bufio.NewScanner(os.Stdin)
-	in.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	for in.Scan() {
-		line := strings.TrimSpace(in.Text())
+// Serve runs the JSON-RPC loop over in and out until the input is exhausted
+// or ctx is cancelled. It is exported and parameterised so the shim can be
+// driven from a test or from another program rather than only as a process.
+func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
+	s := &server{dc: newDaemonClient(), out: bufio.NewWriter(out)}
+	scan := bufio.NewScanner(in)
+	scan.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	for scan.Scan() {
+		line := strings.TrimSpace(scan.Text())
 		if line == "" {
 			continue
 		}
@@ -348,6 +356,12 @@ func main() {
 		if err := json.Unmarshal([]byte(line), &req); err != nil {
 			continue
 		}
+		// A cancelled context means the host went away mid-call; stop reading
+		// rather than blocking on a stdin that will never deliver more.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		s.handle(req)
 	}
+	return scan.Err()
 }

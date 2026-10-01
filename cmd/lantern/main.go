@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -15,7 +16,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shx-dow/lantern-go/internal/daemonapp"
 	"github.com/shx-dow/lantern-go/internal/format"
+	"github.com/shx-dow/lantern-go/internal/mcpserver"
+	"github.com/shx-dow/lantern-go/internal/version"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 	"github.com/shx-dow/lantern-go/pkg/lanternclient"
 )
@@ -35,6 +39,46 @@ func init() {
 
 const defaultDaemonURL = "http://127.0.0.1:43782"
 
+// ownedSubcommands are handled here rather than by parseArgs, because each
+// carries its own flags and its own output contract.
+var ownedSubcommands = map[string]bool{
+	"daemon":  true,
+	"mcp":     true,
+	"version": true,
+}
+
+// subcommand returns args[0] when it names one of ownedSubcommands, and ""
+// otherwise.
+//
+// Only the first argument is considered, on purpose. parseArgs gives every
+// existing CLI flag a value in a separate argument, so honouring global flags
+// before a subcommand would mean tracking which ones take a value. Since none
+// of them do, the rule is simply that a subcommand comes first — which also
+// removes any ambiguity about a flag's value happening to be spelled
+// "daemon".
+func subcommand(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	if ownedSubcommands[args[0]] {
+		return args[0]
+	}
+	return ""
+}
+
+// runOrExit exits non-zero on failure, keeping the exit codes in one place.
+func runOrExit(err error) {
+	if err == nil {
+		return
+	}
+	// A cancelled context is the operator pressing Ctrl-C, not a fault.
+	if errors.Is(err, context.Canceled) {
+		os.Exit(130)
+	}
+	fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	os.Exit(1)
+}
+
 type cliOptions struct {
 	jsonOut     bool
 	port        int
@@ -48,7 +92,27 @@ type cliOptions struct {
 }
 
 func main() {
-	opts, err := parseArgs(os.Args[1:])
+	args := os.Args[1:]
+
+	// Subcommands that own their own argument grammar run before the CLI
+	// parser sees them, so `lantern daemon --lan` does not have to be
+	// spelled in a way parseArgs understands.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	switch subcommand(args) {
+	case "daemon":
+		runOrExit(daemonapp.Run(ctx, args[1:], os.Stderr))
+		return
+	case "mcp":
+		runOrExit(mcpserver.Serve(ctx, os.Stdin, os.Stdout))
+		return
+	case "version":
+		fmt.Println(version.Get())
+		return
+	}
+
+	opts, err := parseArgs(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		usage()
@@ -60,13 +124,13 @@ func main() {
 		return
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	cliCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	go handleSignal(cancel, opts.jsonOut)
 
 	if opts.daemon {
-		runDaemonCommand(ctx, opts)
+		runDaemonCommand(cliCtx, opts)
 		return
 	}
 
@@ -78,9 +142,9 @@ func main() {
 
 	switch opts.command {
 	case "send":
-		runSend(ctx, ln, opts)
+		runSend(cliCtx, ln, opts)
 	case "receive":
-		runReceive(ctx, ln, opts)
+		runReceive(cliCtx, ln, opts)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", opts.command)
 		usage()
