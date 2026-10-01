@@ -66,6 +66,17 @@ func subcommand(args []string) string {
 	return ""
 }
 
+// usageFor returns the help text for a subcommand, or "" when the CLI owns it.
+func usageFor(name string) string {
+	switch name {
+	case "daemon":
+		return daemonapp.Usage
+	case "mcp":
+		return mcpserver.Usage
+	}
+	return ""
+}
+
 // runOrExit exits non-zero on failure, keeping the exit codes in one place.
 func runOrExit(err error) {
 	if err == nil {
@@ -110,6 +121,16 @@ func main() {
 	case "version":
 		fmt.Println(version.Get())
 		return
+	}
+
+	// `lantern help daemon` and `lantern help mcp` route to the subcommand's
+	// own help rather than the CLI's, so every command has one place that
+	// describes it.
+	if len(args) == 2 && args[0] == "help" {
+		if text := usageFor(args[1]); text != "" {
+			fmt.Fprint(os.Stderr, text)
+			return
+		}
 	}
 
 	opts, err := parseArgs(args)

@@ -365,3 +365,30 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	}
 	return scan.Err()
 }
+
+// Usage is the agent shim's help text, also shown by `lantern help mcp`.
+const Usage = `lantern mcp
+
+Runs the MCP stdio server, the bridge between an agent and the daemon. It
+holds no transfer logic: every tool proxies the daemon's local API, so it
+cannot drift from the CLI or the SDKs.
+
+Point it at a running daemon:
+
+  LANTERND_URL           daemon base URL (default http://127.0.0.1:43782)
+  LANTERN_DAEMON_TOKEN   daemon bearer token (or LANTERND_TOKEN)
+  LANTERND_TOKEN         same
+
+Register it with an MCP client as one command:
+
+  {"mcpServers": {"lantern": {"command": "lantern", "args": ["mcp"]}}}
+
+Tools:
+  devices                      paired devices and whether they are online
+  read                         read a file from a paired device
+  stat                         size and modification time for a path
+  push                         send a local file to a paired device
+  share, fetch, transfers, transfer, history, cancel
+  trust_list, trust_add, trust_remove
+  files, remote_files, status, discover
+`

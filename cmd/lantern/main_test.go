@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/shx-dow/lantern-go/internal/daemon"
@@ -46,5 +47,19 @@ func TestUIIsEmbedded(t *testing.T) {
 	}
 	if contentType == "" {
 		t.Fatal("embedded UI page has no content type")
+	}
+}
+
+func TestHelpRoutesToSubcommandHelp(t *testing.T) {
+	// Every command must have help that actually describes it. These are
+	// checked for content rather than exact text, so help stays editable.
+	if !strings.Contains(usageFor("daemon"), "--allow-writes") {
+		t.Error("daemon help should document the write opt-in")
+	}
+	if usageFor("daemon") == "" {
+		t.Error("lantern help daemon produced nothing")
+	}
+	if !strings.Contains(usageFor("mcp"), "LANTERND_URL") {
+		t.Error("mcp help should document the environment it reads")
 	}
 }
