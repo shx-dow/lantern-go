@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -161,7 +160,7 @@ type pushResponse struct {
 // request as pushing a small one.
 func (h *Handler) postPush(w http.ResponseWriter, r *http.Request) {
 	var req pushRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
 		return
 	}

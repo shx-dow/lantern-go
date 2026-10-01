@@ -81,3 +81,69 @@ func TestListRemoteRejectsBreakout(t *testing.T) {
 		t.Fatal("expected breakout rejection")
 	}
 }
+
+func TestPathWithin(t *testing.T) {
+	cases := []struct {
+		path, root string
+		want       bool
+		why        string
+	}{
+		{"/srv/root", "/srv/root", true, "the root itself"},
+		{"/srv/root/a.txt", "/srv/root", true, "a child"},
+		{"/srv/root/deep/a.txt", "/srv/root", true, "a grandchild"},
+		{"/srv/rooted/a.txt", "/srv/root", false, "a sibling with a shared prefix"},
+		{"/srv/root2", "/srv/root", false, "a similar name"},
+		{"/srv", "/srv/root", false, "a parent"},
+		{"/etc/passwd", "/srv/root", false, "an unrelated path"},
+		{"/srv/root", "/srv/root/deeper", false, "the other way round"},
+		{"/", "/", true, "filesystem root"},
+	}
+	for _, c := range cases {
+		if got := pathWithin(c.path, c.root); got != c.want {
+			t.Errorf("pathWithin(%q, %q) = %v, want %v (%s)", c.path, c.root, got, c.want, c.why)
+		}
+	}
+}
+
+// The separator is what separates a child from a merely similar sibling, so
+// this must hold regardless of how the host compares casing.
+func TestPathWithinRejectsPrefixSiblingRegardlessOfCase(t *testing.T) {
+	if !pathWithin("/srv/root/a", "/srv/root") {
+		t.Fatal("a genuine child was rejected")
+	}
+	if pathWithin("/srv/rooted", "/srv/root") {
+		t.Fatal("a sibling directory sharing a prefix was accepted")
+	}
+	if pathWithin("/SRV/ROOTED/x", "/srv/root") {
+		t.Fatal("a case-shifted sibling directory was accepted")
+	}
+}
+
+// A shared root of the filesystem root must work. Appending a separator to a
+// root that already ends in one produces "//", which no path begins with, so
+// this used to make an operator who deliberately shared "/" find nothing
+// readable at all.
+func TestPathWithinFilesystemRoot(t *testing.T) {
+	sep := string(os.PathSeparator)
+	if !pathWithin(sep+"etc", sep) {
+		t.Error("a path beneath the filesystem root must be inside it")
+	}
+	if !pathWithin(sep, sep) {
+		t.Error("the filesystem root must contain itself")
+	}
+	if pathWithin("relative", sep) {
+		t.Error("a relative path must not be inside the filesystem root")
+	}
+}
+
+// A root that already ends in a separator, as a config file may well supply,
+// must behave the same as one that does not.
+func TestPathWithinTrailingSeparator(t *testing.T) {
+	sep := string(os.PathSeparator)
+	if !pathWithin(sep+"srv"+sep+"root"+sep+"a.txt", sep+"srv"+sep+"root"+sep) {
+		t.Error("a child of a root with a trailing separator must be inside it")
+	}
+	if pathWithin(sep+"srv"+sep+"rooted", sep+"srv"+sep+"root"+sep) {
+		t.Error("a sibling of a root with a trailing separator must not be inside it")
+	}
+}

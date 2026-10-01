@@ -58,6 +58,17 @@ lantern version                 # version, commit, build date, toolchain, platfo
 lantern help daemon             # every daemon flag
 ```
 
+The daemon keeps its identity, its pairings, and its token in a per-user
+directory that survives a reboot — `~/.local/share/lantern` on Linux,
+`~/Library/Application Support/lantern` on macOS, `%LOCALAPPDATA%\lantern`
+on Windows. It prints where on startup:
+
+```
+lantern daemon listening on http://127.0.0.1:43782/ui (lan_only=true)
+  identity and pairings: /home/you/.local/share/lantern
+  daemon token:          /home/you/.local/share/lantern/.lanternd-token
+```
+
 Pair two devices, then read from one by name. The alias given at pairing time
 is what you address:
 
@@ -165,6 +176,9 @@ tests cover their respective interfaces.
 
 `api/openapi.yaml` is the contract for the daemon API. It is not validated by
 CI, so treat changes to it as review-worthy.
+
+JSON request bodies are capped at 64 KiB. Every request in the API is a small
+document of paths and flags, so this only ever refuses a mistake.
 
 ## Security notes
 

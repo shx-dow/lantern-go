@@ -17,6 +17,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	"github.com/multiformats/go-multiaddr"
+	"github.com/shx-dow/lantern-go/internal/paths"
 	"github.com/shx-dow/lantern-go/internal/storage"
 )
 
@@ -63,7 +64,7 @@ func NewNode(port int, bootstrapPeers []string, key crypto.PrivKey, dataDir stri
 	ctx, cancel := context.WithCancel(context.Background())
 	localDir := dataDir
 	if localDir == "" {
-		localDir = os.TempDir()
+		localDir = paths.Data()
 	}
 	if err := os.MkdirAll(localDir, storage.PrivateDirPerm); err != nil {
 		cancel()

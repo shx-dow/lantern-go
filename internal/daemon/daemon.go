@@ -118,6 +118,9 @@ func NormalizeCode(code string) string {
 // Cancel is called, ttl elapses, or the daemon closes, independent of the
 // HTTP request. A ttl of zero means no expiry.
 func (d *Daemon) Share(path string, ttl time.Duration) (*Record, error) {
+	if d.ln == nil {
+		return nil, fmt.Errorf("node not ready")
+	}
 	if strings.TrimSpace(path) == "" {
 		return nil, fmt.Errorf("path must not be empty")
 	}
@@ -156,6 +159,9 @@ func (d *Daemon) Share(path string, ttl time.Duration) (*Record, error) {
 
 // Fetch pulls code into outDir (".." defaults to ".") and tracks it.
 func (d *Daemon) Fetch(code, outDir string) (*Record, error) {
+	if d.ln == nil {
+		return nil, fmt.Errorf("node not ready")
+	}
 	code = NormalizeCode(code)
 	if code == "" {
 		return nil, fmt.Errorf("code must not be empty")
@@ -193,10 +199,10 @@ func (d *Daemon) Fetch(code, outDir string) (*Record, error) {
 // recorded. A failure to save is not worth interrupting a transfer for, so
 // the error is returned for the caller to ignore.
 func (d *Daemon) RememberPeer(peerID string) {
-	if d.Trust == nil || d.ln == nil {
+	if d.Trust == nil {
 		return
 	}
-	node := d.ln.Node()
+	node := d.node()
 	if node == nil || node.Host == nil {
 		return
 	}
@@ -438,7 +444,7 @@ type PeerInfo struct {
 // Peers lists currently connected peers (excluding self) with their known
 // addresses. It reflects live connections, not DHT history.
 func (d *Daemon) Peers() []PeerInfo {
-	node := d.ln.Node()
+	node := d.node()
 	if node == nil || node.Host == nil {
 		return nil
 	}

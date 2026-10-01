@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/shx-dow/lantern-go/internal/paths"
 )
 
 // ConfigFile holds lanternd file configuration. Flags always override
@@ -21,18 +23,11 @@ type ConfigFile struct {
 	DefaultTTLSeconds int64    `json:"default_ttl_seconds,omitempty"`
 }
 
-// DefaultConfigPath returns $XDG_CONFIG_HOME/lantern/lanternd.json,
-// falling back to ~/.config/lantern/lanternd.json.
+// DefaultConfigPath returns the platform-appropriate config file path:
+// %APPDATA% on Windows, ~/Library/Application Support on macOS, and
+// $XDG_CONFIG_HOME or ~/.config elsewhere.
 func DefaultConfigPath() string {
-	base := os.Getenv("XDG_CONFIG_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		base = filepath.Join(home, ".config")
-	}
-	return filepath.Join(base, "lantern", "lanternd.json")
+	return filepath.Join(paths.Config(), "lanternd.json")
 }
 
 // LoadConfigFile reads path, returning zero ConfigFile when path is empty

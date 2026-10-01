@@ -11,6 +11,7 @@ import (
 	"github.com/multiformats/go-multiaddr"
 	"github.com/multiformats/go-multiaddr/net"
 
+	"github.com/shx-dow/lantern-go/internal/paths"
 	"github.com/shx-dow/lantern-go/internal/storage"
 )
 
@@ -107,7 +108,8 @@ type TrustStore struct {
 // NewTrustStore loads path (missing file = empty store).
 func NewTrustStore(dataDir string) (*TrustStore, error) {
 	if dataDir == "" {
-		dataDir = os.TempDir()
+		// Pairing records must survive a reboot; see paths.Data.
+		dataDir = paths.Data()
 	}
 	if err := os.MkdirAll(dataDir, storage.PrivateDirPerm); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)

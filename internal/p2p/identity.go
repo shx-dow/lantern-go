@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/shx-dow/lantern-go/internal/paths"
 	"github.com/shx-dow/lantern-go/internal/storage"
 )
 
@@ -19,7 +20,10 @@ const identityFileName = "lantern-identity.key"
 // persisting a fresh Ed25519 key when none exists.
 func LoadOrCreatePrivKey(dir string) (crypto.PrivKey, error) {
 	if dir == "" {
-		dir = os.TempDir()
+		// Never fall back to a temporary directory: the identity key is the
+		// device's only identity, and a reboot that clears it would silently
+		// invalidate every pairing this device has.
+		dir = paths.Data()
 	}
 	if err := os.MkdirAll(dir, storage.PrivateDirPerm); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)

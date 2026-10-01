@@ -22,6 +22,7 @@ import (
 
 	"github.com/shx-dow/lantern-go/internal/daemon"
 	"github.com/shx-dow/lantern-go/internal/p2p"
+	"github.com/shx-dow/lantern-go/internal/paths"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
 
@@ -37,7 +38,8 @@ passed, so pairing a device is never by itself enough to change anything here.
 Flags:
   --addr string               localhost HTTP listen address (default 127.0.0.1:43782)
   --p2p-port int              libp2p listen port (0 = random)
-  --data-dir string           state directory (default OS temp)
+  --data-dir string           identity, pairings, and token live here
+                              (default: per-user data dir, never a temp dir)
   --device-name string        human name for this device (default hostname)
   --shared-dirs string        comma-separated dirs exposed to paired devices
   --writable-dirs string      comma-separated dirs paired devices may write to
@@ -76,7 +78,7 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 	var (
 		addr       = fs.String("addr", "", "localhost HTTP listen address (default from config file or 127.0.0.1:43782)")
 		p2pPort    = fs.Int("p2p-port", -1, "libp2p listen port (0 = random, -1 = config default)")
-		dataDir    = fs.String("data-dir", "", "local advertisement directory (default OS temp)")
+		dataDir    = fs.String("data-dir", "", "state directory for identity, pairings, and token (default: per-user data dir)")
 		lan        = fs.Bool("lan", true, "LAN-only mode: no public DHT bootstraps, mDNS plus local adverts")
 		lanNeg     = fs.Bool("no-lan", false, "disable LAN-only mode (global DHT)")
 		configPath = fs.String("config", "", "config file path (default $XDG_CONFIG_HOME/lantern/lanternd.json)")
@@ -115,6 +117,17 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 	listenAddr, port, dir := r.Addr, r.P2PPort, r.DataDir
 	lanOnly, ttl := r.LANOnly, r.DefaultTTL
 	name := r.DeviceName
+
+	// Resolve the state directory once, here, rather than letting each
+	// call site fall back on its own. Everything below then works on the same
+	// resolved path, and the path can be shown to the operator instead of
+	// being an empty string they have to guess at.
+	if strings.TrimSpace(dir) == "" {
+		dir = paths.Data()
+	}
+	if _, err := paths.EnsureData(); err != nil {
+		return fmt.Errorf("state directory: %w", err)
+	}
 
 	ln, err := lantern.New(lantern.Config{Port: port, DataDir: dir, Bootstrap: r.BootstrapPeers, Relay: r.RelayAddrs})
 	if err != nil {
@@ -204,6 +217,10 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 	serveErr := make(chan error, 1)
 	go func() {
 		fmt.Fprintf(stderr, "lantern daemon listening on http://%s/ui (lan_only=%v)\n", listenAddr, lanOnly)
+		fmt.Fprintf(stderr, "  identity and pairings: %s\n", dir)
+		// An agent client needs this token and nothing else reveals it, so
+		// say where it is rather than making people search the filesystem.
+		fmt.Fprintf(stderr, "  daemon token:          %s\n", daemon.TokenPath(dir))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serveErr <- err
 			return

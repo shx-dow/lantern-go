@@ -64,6 +64,17 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// maxJSONBody bounds a JSON request body. Every request in this API is a small
+// document of paths, aliases, and flags, so 64 KiB is generous; without a
+// bound, a single oversized field would be buffered into memory in full.
+const maxJSONBody = 64 * 1024
+
+// readJSONBody reads one bounded JSON request body into dst.
+func readJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
+	return json.NewDecoder(r.Body).Decode(dst)
+}
+
 func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }
@@ -75,7 +86,7 @@ type shareRequest struct {
 
 func (h *Handler) postShares(w http.ResponseWriter, r *http.Request) {
 	var req shareRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
 		return
 	}
@@ -107,7 +118,7 @@ type fetchRequest struct {
 
 func (h *Handler) postFetches(w http.ResponseWriter, r *http.Request) {
 	var req fetchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
 		return
 	}
@@ -239,7 +250,7 @@ func (h *Handler) postTrust(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req trustRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
 		return
 	}

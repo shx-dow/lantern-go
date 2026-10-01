@@ -9,10 +9,23 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/shx-dow/lantern-go/internal/paths"
 )
 
-// tokenFileName is the owner-only file holding the daemon bearer token.
-const tokenFileName = ".lanternd-token"
+// TokenFileName is the owner-only file holding the daemon bearer token. It is
+// exported so the daemon can tell the operator where to find it: an agent
+// client needs this token, and nothing else reveals it.
+const TokenFileName = ".lanternd-token"
+
+// TokenPath returns the file the daemon's bearer token is read from or
+// written to for a given data directory.
+func TokenPath(dir string) string {
+	if strings.TrimSpace(dir) == "" {
+		dir = paths.Data()
+	}
+	return filepath.Join(dir, TokenFileName)
+}
 
 // GenerateToken mints a 256-bit hex bearer token.
 func GenerateToken() (string, error) {
@@ -31,9 +44,9 @@ func LoadOrCreateToken(dir, explicit string) (string, error) {
 		return strings.TrimSpace(explicit), nil
 	}
 	if dir == "" {
-		dir = os.TempDir()
+		dir = paths.Data()
 	}
-	path := filepath.Join(dir, tokenFileName)
+	path := TokenPath(dir)
 	if data, err := os.ReadFile(path); err == nil {
 		if tok := strings.TrimSpace(string(data)); tok != "" {
 			return tok, nil

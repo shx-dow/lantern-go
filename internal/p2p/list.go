@@ -237,9 +237,43 @@ func resolveWithinRoots(roots []string, path string) (string, error) {
 			// Unresolvable root (missing dir): compare against abs path.
 			rres = rabs
 		}
-		if resolved == rres || strings.HasPrefix(resolved, rres+string(os.PathSeparator)) {
+		if pathWithin(resolved, rres) {
 			return resolved, nil
 		}
 	}
 	return "", fmt.Errorf("path %q is outside shared dirs", path)
+}
+
+// pathWithin reports whether path is root itself or sits beneath it.
+//
+// The comparison is case-insensitive on Windows and macOS, because their
+// filesystems are. Relying on EvalSymlinks to normalise the casing of both
+// sides works today, but EvalSymlinks is documented as unreliable on Windows
+// and this is a security boundary: it must hold on its own terms rather than
+// because of a side effect somewhere else.
+func pathWithin(path, root string) bool {
+	if equalPath(path, root) {
+		return true
+	}
+	sep := string(os.PathSeparator)
+	// A filesystem root already ends in the separator. Appending another
+	// would build "//", which no path begins with, and an operator who
+	// deliberately shares "/" would find nothing readable at all.
+	if strings.HasSuffix(root, sep) {
+		return len(path) > len(root) && equalPath(path[:len(root)], root)
+	}
+	if len(path) <= len(root)+len(sep) {
+		return false
+	}
+	// Compare the root plus a separator, so /srv/rooted cannot match the
+	// root /srv/root just because they share a prefix.
+	return equalPath(path[:len(root)+len(sep)], root+sep)
+}
+
+// equalPath compares two paths under the rules of the host filesystem.
+func equalPath(a, b string) bool {
+	if caseInsensitiveFS {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }

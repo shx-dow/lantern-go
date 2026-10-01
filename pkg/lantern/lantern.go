@@ -10,6 +10,7 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/shx-dow/lantern-go/internal/p2p"
+	"github.com/shx-dow/lantern-go/internal/paths"
 	"github.com/shx-dow/lantern-go/internal/storage"
 )
 
@@ -176,7 +177,9 @@ func (s *Session) finish(state TransferState) {
 // (or created in) the data dir, so the peer ID is stable across restarts.
 func New(cfg Config) (*Lantern, error) {
 	if cfg.DataDir == "" {
-		cfg.DataDir = os.TempDir()
+		// Persistent by default. A temporary directory here would mint a new
+		// identity on every reboot and silently unpair the device.
+		cfg.DataDir = paths.Data()
 	}
 
 	key, err := p2p.LoadOrCreatePrivKey(cfg.DataDir)
