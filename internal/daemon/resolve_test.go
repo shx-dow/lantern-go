@@ -70,6 +70,22 @@ func TestResolveExplicitBootstrapBeatsLANOnly(t *testing.T) {
 	}
 }
 
+func TestResolvePeerFlagBeatsFile(t *testing.T) {
+	base := Flags{P2PPort: -1, DefaultTTL: -1, LAN: true}
+	if r := Resolve(ConfigFile{}, base); len(r.PeerAddrs) != 0 {
+		t.Fatalf("default peer addrs = %v", r.PeerAddrs)
+	}
+	file := ConfigFile{PeerAddrs: []string{"/ip4/1.2.3.4/tcp/4001/p2p/QmX"}}
+	if r := Resolve(file, base); len(r.PeerAddrs) != 1 {
+		t.Fatalf("file peer addrs lost: %+v", r.PeerAddrs)
+	}
+	f := base
+	f.Peer = "/ip4/9.9.9.9/tcp/4001/p2p/QmZ, /ip4/8.8.8.8/tcp/4001/p2p/QmW"
+	if r := Resolve(file, f); len(r.PeerAddrs) != 2 || r.PeerAddrs[0] != "/ip4/9.9.9.9/tcp/4001/p2p/QmZ" {
+		t.Fatalf("flag peer addrs did not win: %+v", r.PeerAddrs)
+	}
+}
+
 func TestSplitCSV(t *testing.T) {
 	got := SplitCSV(" /a ,,/b , ")
 	if len(got) != 2 || got[0] != "/a" || got[1] != "/b" {

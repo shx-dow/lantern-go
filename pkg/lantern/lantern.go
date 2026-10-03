@@ -23,6 +23,12 @@ type Config struct {
 	// Relay holds static relay/circuit multiaddrs dialed after boot for
 	// NAT traversal. Empty means no static relays.
 	Relay []string
+	// StaticPeers holds full peer multiaddrs (each ending in /p2p/<peer-id>)
+	// recorded in the peerstore with a permanent TTL. They are dialed on
+	// demand by resolvePeer, so devices that discovery cannot introduce —
+	// across a WSL2 NAT, Docker bridge, or multicast-blocking Wi-Fi — can
+	// still reach each other. Empty means discovery only.
+	StaticPeers []string
 }
 
 // ListEntry is one file or directory in a local or remote listing.
@@ -194,6 +200,9 @@ func New(cfg Config) (*Lantern, error) {
 		dialCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		node.ConnectStaticRelays(dialCtx, cfg.Relay)
 		cancel()
+	}
+	if len(cfg.StaticPeers) > 0 {
+		node.AddStaticPeers(cfg.StaticPeers)
 	}
 
 	l := &Lantern{

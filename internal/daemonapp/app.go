@@ -24,6 +24,8 @@ import (
 	"github.com/shx-dow/lantern-go/internal/p2p"
 	"github.com/shx-dow/lantern-go/internal/paths"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
+
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 // Usage is the daemon's help text, also shown by `lantern help daemon`.
@@ -50,6 +52,9 @@ Flags:
   --no-lan                    use the global DHT instead
   --bootstrap string          comma-separated bootstrap multiaddrs
   --relay string              comma-separated static relay multiaddrs
+  --peer string               comma-separated full peer multiaddrs (/p2p/<id>)
+                              for devices discovery cannot introduce (WSL2,
+                              Docker, multicast-blocking networks)
   --token string              bearer token (default $LANTERND_TOKEN, else persisted)
   --default-ttl int           default share lifetime in seconds (0 = no expiry)
   --config string             config file (default $XDG_CONFIG_HOME/lantern/lanternd.json)
@@ -88,6 +93,7 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 		sharedDirs = fs.String("shared-dirs", "", "comma-separated dirs exposed via GET /v1/files (default config shared_dirs)")
 		bootstrapF = fs.String("bootstrap", "", "comma-separated bootstrap multiaddrs (default config bootstrap_peers; 'none' = LAN-only)")
 		relayF     = fs.String("relay", "", "comma-separated static relay multiaddrs for NAT traversal (default config relay_addrs)")
+		peerF      = fs.String("peer", "", "comma-separated full peer multiaddrs ending in /p2p/<peer-id> (default config peer_addrs)")
 		allowWrite = fs.Bool("allow-writes", false, "let paired devices write files into shared-dirs (default: this device is read-only)")
 		writableF  = fs.String("writable-dirs", "", "comma-separated dirs paired devices may write to (default: same as --shared-dirs)")
 		maxWriteF  = fs.Int64("max-write-bytes", -1, "largest single file a paired device may push here (0 = 512 MiB, -1 = default)")
@@ -110,7 +116,7 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 	r := daemon.Resolve(cfg, daemon.Flags{
 		Addr: *addr, P2PPort: *p2pPort, DataDir: *dataDir,
 		DeviceName: *deviceName, SharedDirs: *sharedDirs,
-		Bootstrap: *bootstrapF, Relay: *relayF, Token: *tokenFlag,
+		Bootstrap: *bootstrapF, Relay: *relayF, Peer: *peerF, Token: *tokenFlag,
 		DefaultTTL: *defaultTTL, LAN: *lan, LANNeg: *lanNeg,
 		LANSet: flagSet(fs, "lan"),
 	})
@@ -129,7 +135,7 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 		return fmt.Errorf("state directory: %w", err)
 	}
 
-	ln, err := lantern.New(lantern.Config{Port: port, DataDir: dir, Bootstrap: r.BootstrapPeers, Relay: r.RelayAddrs})
+	ln, err := lantern.New(lantern.Config{Port: port, DataDir: dir, Bootstrap: r.BootstrapPeers, Relay: r.RelayAddrs, StaticPeers: r.PeerAddrs})
 	if err != nil {
 		return fmt.Errorf("init p2p: %w", err)
 	}
@@ -151,6 +157,28 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 	// restart can reach a paired device before the network has announced it
 	// again.
 	ln.WithKnownAddrs(d.PeerAddrs)
+
+	// Static peers (--peer) are dialed in the background with retries: the
+	// other side is routinely not up yet when this daemon starts. Seeding
+	// the trust cache too means a restart reaches them without the flag.
+	if len(r.PeerAddrs) > 0 {
+		if node := ln.Node(); node != nil && node.Host != nil {
+			// lantern.New already recorded these in the peerstore; parse
+			// again here for the dial list and the trust cache.
+			static := node.AddStaticPeers(r.PeerAddrs)
+			if len(static) == 0 {
+				logger.Printf("no valid --peer addresses (want full multiaddrs ending in /p2p/<peer-id>)")
+			}
+			for _, ai := range static {
+				strs := make([]string, 0, len(ai.Addrs))
+				for _, a := range ai.Addrs {
+					strs = append(strs, a.String())
+				}
+				_ = trust.UpdateAddrs(ai.ID.String(), strs)
+			}
+			go dialStaticPeers(ctx, logger, node, static)
+		}
+	}
 
 	if node := ln.Node(); node != nil && node.Host != nil {
 		roots := d.SharedDirs
@@ -241,6 +269,47 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 		logger.Printf("shutdown: %v", err)
 	}
 	return nil
+}
+
+// dialStaticPeers connects to --peer addresses, retrying every 20s until
+// each is reached or ctx ends. A peer dialed once is dropped from the
+// retry list; identify then teaches both sides the return path, so one
+// direction configured is enough for both to talk.
+func dialStaticPeers(ctx context.Context, logger *log.Logger, node *p2p.Node, static []peer.AddrInfo) {
+	pending := append([]peer.AddrInfo(nil), static...)
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	rounds := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		if len(pending) == 0 {
+			return
+		}
+		rounds++
+		var next []peer.AddrInfo
+		for _, ai := range pending {
+			dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := node.Host.Connect(dialCtx, ai)
+			cancel()
+			if err != nil {
+				if rounds == 1 {
+					logger.Printf("static peer %s not reachable yet, will retry: %v", ai.ID, err)
+				}
+				next = append(next, ai)
+			} else {
+				logger.Printf("static peer connected: %s", ai.ID)
+			}
+		}
+		pending = next
+		if len(pending) == 0 {
+			return
+		}
+		timer.Reset(20 * time.Second)
+	}
 }
 
 // flagSet reports whether name was given explicitly, so a config file can

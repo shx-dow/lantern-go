@@ -19,6 +19,7 @@ type ConfigFile struct {
 	SharedDirs        []string `json:"shared_dirs,omitempty"`
 	BootstrapPeers    []string `json:"bootstrap_peers,omitempty"`
 	RelayAddrs        []string `json:"relay_addrs,omitempty"`
+	PeerAddrs         []string `json:"peer_addrs,omitempty"`
 	LANOnly           *bool    `json:"lan_only,omitempty"`
 	DefaultTTLSeconds int64    `json:"default_ttl_seconds,omitempty"`
 }

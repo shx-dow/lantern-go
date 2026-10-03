@@ -19,6 +19,7 @@ type Flags struct {
 	SharedDirs string
 	Bootstrap  string
 	Relay      string
+	Peer       string
 	Token      string
 	DefaultTTL int64
 	LAN        bool
@@ -38,6 +39,7 @@ type Resolved struct {
 	SharedDirs     []string
 	BootstrapPeers []string
 	RelayAddrs     []string
+	PeerAddrs      []string
 	LANOnly        bool
 	DefaultTTL     time.Duration
 	TokenSeed      string
@@ -80,6 +82,11 @@ func Resolve(file ConfigFile, f Flags) Resolved {
 		r.RelayAddrs = SplitCSV(f.Relay)
 	} else {
 		r.RelayAddrs = file.RelayAddrs
+	}
+	if strings.TrimSpace(f.Peer) != "" {
+		r.PeerAddrs = SplitCSV(f.Peer)
+	} else {
+		r.PeerAddrs = file.PeerAddrs
 	}
 
 	r.SharedDirs = file.SharedDirs

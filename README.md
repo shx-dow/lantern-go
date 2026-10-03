@@ -93,6 +93,20 @@ comes back as text when it is clean UTF-8 and base64 otherwise, with
 default); a partial read returns a `warning` naming the offset to resume from.
 `GET /v1/peers/{id}/stat` returns size and mtime without the bytes.
 
+When discovery cannot introduce two devices — across a WSL2 NAT, a Docker
+bridge, or Wi-Fi that blocks multicast — point each daemon at the other with
+`--peer` (full multiaddrs ending in `/p2p/<peer-id>`, comma-separated, or
+`peer_addrs` in the config file). The address is kept permanently and dialed
+on demand, with a retry every 20s until the other side appears, and a working
+address is saved into the trust store so restarts keep working:
+
+```sh
+# on the windows box, naming the wsl box (use its status peer ID,
+# and the host's vEthernet address, reachable from inside WSL)
+lantern daemon --shared-dirs C:\Users\pc\Share --device-name windows --no-lan \
+  --peer /ip4/172.27.236.57/tcp/42587/p2p/12D3KooWDEwzFKVu6kM2atQLgDE1PhyfACEc9uwqtzh2zQmv1iWE
+```
+
 Pushing to a paired device that accepts writes:
 
 ```sh

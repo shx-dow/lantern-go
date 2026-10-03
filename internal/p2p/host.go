@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	"github.com/multiformats/go-multiaddr"
 	"github.com/shx-dow/lantern-go/internal/paths"
@@ -208,6 +210,33 @@ func GenerateCode() (string, error) {
 		return "", fmt.Errorf("generate code: %w", err)
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// AddStaticPeers records operator-configured peer addresses (the --peer
+// flag) in the peerstore with a permanent TTL, and returns the ones that
+// parsed. Each entry must be a full multiaddr ending in /p2p/<peer-id>;
+// anything else is skipped.
+//
+// Unlike mDNS sightings, these come from the operator and are never expired,
+// so resolvePeer can dial them on demand even on networks where discovery
+// cannot cross (WSL2 NAT, Docker, corporate Wi-Fi that blocks multicast).
+// Recording never connects: like HandlePeerFound, the connection happens
+// only when something is actually asked for, or via the daemon's dial retry.
+func (n *Node) AddStaticPeers(addrs []string) []peer.AddrInfo {
+	var out []peer.AddrInfo
+	for _, a := range addrs {
+		ma, err := multiaddr.NewMultiaddr(strings.TrimSpace(a))
+		if err != nil {
+			continue
+		}
+		ai, err := peer.AddrInfoFromP2pAddr(ma)
+		if err != nil {
+			continue
+		}
+		n.Host.Peerstore().AddAddrs(ai.ID, ai.Addrs, peerstore.PermanentAddrTTL)
+		out = append(out, *ai)
+	}
+	return out
 }
 
 // ConnectStaticRelays dials relay/bootstrap multiaddrs so nodes behind NAT
