@@ -93,18 +93,33 @@ comes back as text when it is clean UTF-8 and base64 otherwise, with
 default); a partial read returns a `warning` naming the offset to resume from.
 `GET /v1/peers/{id}/stat` returns size and mtime without the bytes.
 
+`GET /v1/devices` is the starting point: paired devices with aliases and an
+`online` flag. `online` is point-in-time — it reports a live connection, so
+`false` means not currently connected, not necessarily down. Asking for
+something dials on demand, which is how an idle-but-reachable peer flips to
+`true`.
+
 When discovery cannot introduce two devices — across a WSL2 NAT, a Docker
 bridge, or Wi-Fi that blocks multicast — point each daemon at the other with
 `--peer` (full multiaddrs ending in `/p2p/<peer-id>`, comma-separated, or
 `peer_addrs` in the config file). The address is kept permanently and dialed
 on demand, with a retry every 20s until the other side appears, and a working
-address is saved into the trust store so restarts keep working:
+address is saved into the trust store so restarts keep working.
+
+Pin `--p2p-port` on both sides: the default is a random port, which makes a
+configured `--peer` address go stale on every restart. One direction
+configured is enough (identify teaches both sides the return path), but
+configure both so either side can start first:
 
 ```sh
-# on the windows box, naming the wsl box (use its status peer ID,
+# on the wsl box (substitute the windows peer ID from its status output,
 # and the host's vEthernet address, reachable from inside WSL)
-lantern daemon --shared-dirs C:\Users\pc\Share --device-name windows --no-lan \
-  --peer /ip4/172.27.236.57/tcp/42587/p2p/12D3KooWDEwzFKVu6kM2atQLgDE1PhyfACEc9uwqtzh2zQmv1iWE
+lantern daemon --addr 127.0.0.1:43792 --p2p-port 41001 --shared-dirs ~/Share --device-name wsl --no-lan \
+  --peer /ip4/172.27.224.1/tcp/41002/p2p/<windows-peer-id>
+
+# on the windows box, mirrored (substitute the wsl peer ID and WSL IP)
+lantern.exe daemon --addr 127.0.0.1:43782 --p2p-port 41002 --shared-dirs $HOME\Share --device-name windows --no-lan `
+  --peer /ip4/172.27.236.57/tcp/41001/p2p/<wsl-peer-id>
 ```
 
 Pushing to a paired device that accepts writes:
@@ -152,13 +167,16 @@ transfer logic of its own:
 lantern mcp
 ```
 
-Wire it into an MCP client as one command:
+Wire it into an MCP client as one command. Use the absolute binary path —
+bare `"lantern"` fails in clients that don't inherit your shell's `$PATH`
+(this bit us with Codex). Point `LANTERND_URL` at the local daemon's actual
+`--addr` (the WSL daemon in the example above is `:43792`, not the default):
 
 ```json
 {
   "mcpServers": {
     "lantern": {
-      "command": "lantern",
+      "command": "/home/you/lantern-go/lantern",
       "args": ["mcp"],
       "env": {
         "LANTERND_URL": "http://127.0.0.1:43782",
@@ -168,6 +186,21 @@ Wire it into an MCP client as one command:
   }
 }
 ```
+
+Codex (`~/.codex/config.toml`) uses TOML instead of JSON:
+
+```toml
+[mcp_servers.lantern]
+command = "/home/you/lantern-go/lantern"
+args = ["mcp"]
+
+[mcp_servers.lantern.env]
+LANTERND_URL = "http://127.0.0.1:43792"
+LANTERN_DAEMON_TOKEN = "<the token in your data dir>"
+```
+
+Restart the client after editing — MCP servers load at startup. Then ask it
+something real: `devices` first, then a `read`, then a `push`.
 
 The version the agent sees in `serverInfo` is the same one `lantern version`
 prints.
