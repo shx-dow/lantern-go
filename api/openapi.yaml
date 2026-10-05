@@ -339,6 +339,22 @@ paths:
         caller can target one by name ("laptop") instead of a peer ID.
         Aliases are assigned at pairing time and are expected to be unique
         per daemon; duplicates are the caller's problem to resolve.
+
+        `online` is point-in-time: it reports a live connection, so `false`
+        means not currently connected, not necessarily down.
+
+        Pass `probe=1` to also dial each device and report `reachable`. Probing
+        is opt-in because it opens connections, which Lantern otherwise defers
+        until something is actually requested; an operator debugging
+        reachability asks for that cost once.
+      parameters:
+        - name: probe
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Dial each device and report reachability.
       responses:
         '200':
           description: Paired devices.
@@ -769,9 +785,16 @@ components:
           format: date-time
         online:
           type: boolean
+          description: A connection is currently open. Point-in-time; false does not mean the device is down.
         known_addresses:
           type: integer
           description: Cached addresses for this peer. 0 means it must be discovered on the network before use.
+        reachable:
+          type: boolean
+          description: Present only when the listing was probed. A dial succeeded, so a request would work now.
+        error:
+          type: string
+          description: Present only when probed and the dial failed; why the device could not be reached.
     ReadResponse:
       type: object
       required: [device, path, offset, length, total, eof, encoding, content]

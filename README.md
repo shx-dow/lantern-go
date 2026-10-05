@@ -51,10 +51,11 @@ mcp` is the agent shim, and the rest are commands.
 go build ./cmd/lantern          # or: CGO_ENABLED=0 go build -ldflags "-s -w" -o lantern ./cmd/lantern
 ```
 
-Check what you built:
+Check what you built, and that it works:
 
 ```sh
 lantern version                 # version, commit, build date, toolchain, platform
+lantern doctor                  # diagnose the setup; prints a fix per problem
 lantern help daemon             # every daemon flag
 ```
 
@@ -97,7 +98,9 @@ default); a partial read returns a `warning` naming the offset to resume from.
 `online` flag. `online` is point-in-time — it reports a live connection, so
 `false` means not currently connected, not necessarily down. Asking for
 something dials on demand, which is how an idle-but-reachable peer flips to
-`true`.
+`true`. Add `?probe=1` to dial each device and get `reachable` plus the reason
+for any failure; `lantern doctor --probe-peers` and the MCP `devices` tool's
+`probe` argument both do this.
 
 When discovery cannot introduce two devices — across a WSL2 NAT, a Docker
 bridge, or Wi-Fi that blocks multicast — point each daemon at the other with
@@ -152,6 +155,29 @@ lantern receive <share-code> [output-directory]
 The sender prints a 128-bit share code. The receiver needs that code and must
 be able to discover or connect to the sender through mDNS, the DHT, or a
 configured libp2p route.
+
+## When something is not working
+
+`lantern doctor` checks a setup and prints the command that fixes each problem.
+Every check is read-only. Run it before anything else — the failures it exists
+for are silent ones, and they look identical from the outside:
+
+```sh
+lantern doctor                    # or: lantern --daemon-url http://127.0.0.1:43792 doctor
+lantern doctor --probe-peers      # also dial each paired device
+lantern doctor --json             # for agents
+```
+
+It reports on the daemon and its token (a 401 and a refused connection are
+different problems with different fixes), whether any advertised address is
+actually dialable from another machine, whether the libp2p port is pinned,
+whether multicast leaves this host, and every paired device's reachability. It
+exits non-zero when a check fails, so it works as a CI or script gate.
+
+Two results are deliberately warnings rather than failures: an mDNS check that
+hears nothing, and an idle paired device. Neither means the setup is broken —
+Lantern dials on demand, and `--peer` or the DHT route around a blocked
+multicast path.
 
 Persistent daemon, also used to serve shared dirs for remote listing:
 

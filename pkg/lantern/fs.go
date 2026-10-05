@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
@@ -82,6 +83,25 @@ func (l *Lantern) ReadRemote(ctx context.Context, ref, path string, offset, leng
 	}
 	return ReadResult{Entry: head, Data: data, Offset: offset, EOF: eof}, nil
 }
+
+// ProbePeer reports whether a paired device can be reached right now, by
+// dialing it. Unlike a read it transfers nothing, so it is safe to call for
+// every pair on demand, and it is bounded so one unreachable peer cannot hang
+// the caller.
+func (l *Lantern) ProbePeer(ctx context.Context, ref string) error {
+	pi, err := l.resolvePeer(ref)
+	if err != nil {
+		return err
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, probeDialTimeout)
+	defer cancel()
+	return l.node.Host.Connect(dialCtx, pi)
+}
+
+// probeDialTimeout bounds a reachability probe. Ten seconds is long enough to
+// open a connection over the DHT or a relay, short enough that doctor stays
+// responsive when a peer is genuinely gone.
+const probeDialTimeout = 10 * time.Second
 
 // StatRemote returns metadata for one path on a paired device.
 func (l *Lantern) StatRemote(ctx context.Context, ref, path string) (Entry, error) {

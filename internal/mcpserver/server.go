@@ -75,7 +75,7 @@ func tools() []toolDef {
 		{"trust_remove", "Unpair a device", obj(map[string]any{"peer_id": str("Peer ID to unpair")}, "peer_id")},
 		{"files", "List local shared-dir files", obj(map[string]any{"dir": str("Subdirectory (omit for roots)")})},
 		{"remote_files", "List files on a connected peer", obj(map[string]any{"peer_id": str("Connected peer ID"), "dir": str("Subdirectory (omit for roots)")}, "peer_id")},
-		{"devices", "List paired devices with online status and aliases. Start here when the user names a device.", obj(map[string]any{})},
+		{"devices", "List paired devices with aliases and status. Start here when the user names a device. Probe=true dials each one to test real reachability; by default 'online' only means a connection is open right now, so an idle device looks offline.", obj(map[string]any{"probe": num("Dial each device and report reachability (default false)")})},
 		{"read", "Read a file from a paired device. Device may be an alias or a peer ID. Text comes back as text, binary as base64.", obj(map[string]any{
 			"device": str("Device alias (e.g. laptop) or peer ID"),
 			"path":   str("Absolute path on that device"),
@@ -214,7 +214,11 @@ func callTool(c *daemonClient, name string, args map[string]any) (any, error) {
 		}
 		return c.Do(http.MethodGet, path, nil)
 	case "devices":
-		return c.Do(http.MethodGet, "/v1/devices", nil)
+		path := "/v1/devices"
+		if args["probe"] != nil && isTruthyArg(args["probe"]) {
+			path += "?probe=1"
+		}
+		return c.Do(http.MethodGet, path, nil)
 	case "read":
 		dev, path := str("device"), str("path")
 		if dev == "" {
@@ -264,6 +268,23 @@ func callTool(c *daemonClient, name string, args map[string]any) (any, error) {
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
+}
+
+// isTruthyArg reads a boolean-ish tool argument. Tools are called by models,
+// which send "true" as a string as often as a bool, so both are accepted.
+func isTruthyArg(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "1", "true", "yes":
+			return true
+		}
+	case float64:
+		return t != 0
+	}
+	return false
 }
 
 type server struct {
@@ -384,7 +405,8 @@ Register it with an MCP client as one command:
   {"mcpServers": {"lantern": {"command": "lantern", "args": ["mcp"]}}}
 
 Tools:
-  devices                      paired devices and whether they are online
+  devices                      paired devices with aliases and status
+                               (probe=true dials each for real reachability)
   read                         read a file from a paired device
   stat                         size and modification time for a path
   push                         send a local file to a paired device

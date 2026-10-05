@@ -43,6 +43,7 @@ const defaultDaemonURL = "http://127.0.0.1:43782"
 // carries its own flags and its own output contract.
 var ownedSubcommands = map[string]bool{
 	"daemon":  true,
+	"doctor":  true,
 	"mcp":     true,
 	"version": true,
 }
@@ -71,6 +72,8 @@ func usageFor(name string) string {
 	switch name {
 	case "daemon":
 		return daemonapp.Usage
+	case "doctor":
+		return doctorUsage
 	case "mcp":
 		return mcpserver.Usage
 	}
@@ -86,6 +89,11 @@ func runOrExit(err error) {
 	if errors.Is(err, context.Canceled) {
 		os.Exit(130)
 	}
+	// A command that already printed its own diagnosis exits non-zero
+	// without a second message saying "error: ".
+	if errors.Is(err, errSilent) {
+		os.Exit(1)
+	}
 	fmt.Fprintf(os.Stderr, "error: %v\n", err)
 	os.Exit(1)
 }
@@ -98,6 +106,7 @@ type cliOptions struct {
 	daemon      bool
 	daemonURL   string
 	daemonToken string
+	probePeers  bool
 	command     string
 	positional  []string
 }
@@ -117,6 +126,9 @@ func main() {
 		return
 	case "mcp":
 		runOrExit(mcpserver.Serve(ctx, os.Stdin, os.Stdout))
+		return
+	case "doctor":
+		runOrExit(runDoctor(ctx, args[1:], os.Stdout))
 		return
 	case "version":
 		fmt.Println(version.Get())
@@ -142,6 +154,13 @@ func main() {
 
 	if opts.command == "" || opts.command == "help" || opts.command == "-h" || opts.command == "--help" {
 		usage()
+		return
+	}
+	// doctor is a subcommand, but it also understands --daemon/--daemon-url
+	// and --json, so it is routed here rather than in the switch above: the
+	// flags are parsed by the CLI, and the run needs the parsed values.
+	if opts.command == "doctor" {
+		runOrExit(runDoctorFlags(ctx, opts, os.Stdout))
 		return
 	}
 
@@ -246,6 +265,10 @@ func parseArgs(args []string) (cliOptions, error) {
 			opts.dataDir = args[i]
 		case strings.HasPrefix(a, "--data-dir="):
 			opts.dataDir = strings.TrimPrefix(a, "--data-dir=")
+		case a == "--probe-peers":
+			opts.probePeers = true
+		case strings.HasPrefix(a, "--probe-peers="):
+			opts.probePeers = strings.TrimPrefix(a, "--probe-peers=") != "false"
 		case a == "-h" || a == "--help":
 			if opts.command == "" {
 				opts.command = "help"
@@ -294,6 +317,8 @@ func usage() {
     trust remove <peer-id>       unpair a device (needs --daemon)
     files [dir]                  list shared-dir files (needs --daemon)
     remote-files <peer-id> [dir] list files on a connected peer (needs --daemon)
+    doctor                       diagnose a setup and print the fix for each problem
+                                (lantern doctor --probe-peers for real reachability)
 
 flags:
   --json            machine-readable JSONL on stdout (agents/MCP/GUI)

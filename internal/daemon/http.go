@@ -18,6 +18,7 @@ type Handler struct {
 	deviceName string
 	defaultTTL time.Duration
 	uploadDir  string
+	p2pPort    int
 }
 
 // NewHandler builds HTTP routes around d. peerID/addrs describe this node
@@ -25,6 +26,14 @@ type Handler struct {
 // uploadDir roots browser uploads (defaults to the OS temp dir).
 func NewHandler(d *Daemon, peerID string, addrs []string, lanOnly bool, defaultTTL time.Duration, uploadDir string) *Handler {
 	return &Handler{daemon: d, peerID: peerID, addrs: addrs, lanOnly: lanOnly, defaultTTL: defaultTTL, uploadDir: uploadDir}
+}
+
+// WithP2PPort sets the libp2p listen port reported by GET /v1/status. Zero
+// means the port was left random, which doctor surfaces as a warning because
+// it invalidates any --peer address recorded on another device.
+func (h *Handler) WithP2PPort(port int) *Handler {
+	h.p2pPort = port
+	return h
 }
 
 // WithDeviceName sets the human alias reported by GET /v1/status.
@@ -167,6 +176,11 @@ func (h *Handler) getStatus(w http.ResponseWriter, _ *http.Request) {
 		"addrs":       h.addrs,
 		"lan_only":    h.lanOnly,
 		"device_name": h.deviceName,
+		// p2p_port is 0 when the daemon was started without a fixed
+		// --p2p-port, which means the listen port changes on every restart
+		// and any --peer address recorded elsewhere goes stale. Reporting it
+		// is what lets `lantern doctor` say so instead of guessing.
+		"p2p_port": h.p2pPort,
 	})
 }
 

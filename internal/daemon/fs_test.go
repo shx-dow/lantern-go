@@ -156,4 +156,34 @@ func TestDevicesResponseShape(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "online") {
 		t.Fatal("device list should report online state")
 	}
+	// Reachability is opt-in, so an unprobed listing must not claim it.
+	if body.Devices[0].Reachable != nil {
+		t.Fatalf("unprobed listing reported reachability: %v", *body.Devices[0].Reachable)
+	}
+}
+
+// ?probe=1 is the only way to ask for reachability, and an unreachable peer
+// must say so with the reason rather than being silently listed as fine.
+func TestDevicesProbeReportsReachability(t *testing.T) {
+	h := newTrustHandler(t, TrustEntry{PeerID: "12D3KooWUnreachable", Alias: "off"})
+	rec := httptest.NewRecorder()
+	h.getDevices(rec, httptest.NewRequest(http.MethodGet, "/v1/devices?probe=1", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+	var body struct {
+		Devices []deviceInfo `json:"devices"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Devices) != 1 || body.Devices[0].Reachable == nil {
+		t.Fatalf("probed listing must report reachability: %+v", body.Devices)
+	}
+	if *body.Devices[0].Reachable {
+		t.Fatal("a peer that cannot be resolved must not be reported reachable")
+	}
+	if body.Devices[0].Error == "" {
+		t.Fatal("an unreachable peer must say why")
+	}
 }

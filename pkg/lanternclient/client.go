@@ -12,8 +12,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/shx-dow/lantern-go/internal/paths"
 )
 
 // DefaultURL is the default lanternd listen address.
@@ -33,12 +36,14 @@ type Record struct {
 	PeerID   string `json:"peer_id"`
 }
 
-// Status mirrors GET /v1/status.
+// Status mirrors GET /v1/status. P2PPort is 0 when the daemon was started
+// without a fixed --p2p-port, meaning its listen port changes every restart.
 type Status struct {
 	PeerID     string   `json:"peer_id"`
 	DeviceName string   `json:"device_name"`
 	Addrs      []string `json:"addrs"`
 	LANOnly    bool     `json:"lan_only"`
+	P2PPort    int      `json:"p2p_port"`
 }
 
 // PeerInfo mirrors one connected peer.
@@ -53,6 +58,36 @@ type TrustEntry struct {
 	PeerID  string `json:"peer_id"`
 	Alias   string `json:"alias"`
 	AddedAt string `json:"added_at"`
+}
+
+// Device is one paired device with the details an agent needs to decide
+// whether to reach for it. Online is point-in-time: a live connection,
+// not a promise that the next dial succeeds.
+//
+// Reachable is only present when the listing was probed (?probe=1). Probing
+// dials each peer, which is deliberately opt-in: Lantern does not connect to
+// devices just to announce itself.
+type Device struct {
+	PeerID         string `json:"peer_id"`
+	Alias          string `json:"alias"`
+	AddedAt        string `json:"added_at"`
+	Online         bool   `json:"online"`
+	KnownAddresses int    `json:"known_addresses"`
+	Reachable      *bool  `json:"reachable,omitempty"`
+	Error          string `json:"error,omitempty"`
+}
+
+// APIError is a non-2xx response from the daemon. It carries the status code
+// so callers can tell "wrong token" (401) from "refused or unreachable"
+// (502), which are different problems with different fixes.
+type APIError struct {
+	Code    int
+	Path    string
+	Message string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("daemon: %s (status %d)", e.Message, e.Code)
 }
 
 // FileEntry is one local or remote file listing entry.
@@ -71,12 +106,19 @@ type Client struct {
 	stream *http.Client
 }
 
+// DefaultTimeout bounds a normal API call. A peer probe can outlast it, so
+// probes use ProbeTimeout instead.
+const (
+	DefaultTimeout = 30 * time.Second
+	ProbeTimeout   = 12 * time.Second
+)
+
 // New builds a client for base with token.
 func New(base, token string) *Client {
 	return &Client{
 		base:   strings.TrimSuffix(base, "/"),
 		token:  token,
-		api:    &http.Client{Timeout: 30 * time.Second},
+		api:    &http.Client{Timeout: DefaultTimeout},
 		stream: &http.Client{Timeout: 0},
 	}
 }
@@ -86,6 +128,20 @@ func New(base, token string) *Client {
 func NewFromEnv() *Client {
 	base := strings.TrimSuffix(firstNonEmpty(os.Getenv("LANTERND_URL"), DefaultURL), "/")
 	return New(base, firstNonEmpty(os.Getenv("LANTERN_DAEMON_TOKEN"), os.Getenv("LANTERND_TOKEN")))
+}
+
+// BaseURL reports the daemon address this client talks to.
+func (c *Client) BaseURL() string { return c.base }
+
+// TokenFile is the name the daemon persists its bearer token under.
+const TokenFile = ".lanternd-token"
+
+// TokenPath is where the daemon persists its bearer token in the default
+// per-user data dir, so a tool can name the exact file an operator should
+// read rather than describing it. A daemon started with --data-dir keeps its
+// token there instead.
+func TokenPath() string {
+	return filepath.Join(paths.Data(), TokenFile)
 }
 
 func firstNonEmpty(v ...string) string {
@@ -106,15 +162,13 @@ func (c *Client) setAuth(req *http.Request) {
 func apiError(path string, resp *http.Response) error {
 	var m map[string]string
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+	msg := resp.Status
 	if err := json.Unmarshal(body, &m); err == nil && m["error"] != "" {
-		return fmt.Errorf("daemon: %s (status %d)", m["error"], resp.StatusCode)
+		msg = m["error"]
+	} else if trimmed := strings.TrimSpace(string(body)); trimmed != "" {
+		msg = trimmed
 	}
-	msg := strings.TrimSpace(string(body))
-	if msg == "" {
-		msg = resp.Status
-	}
-	_ = path
-	return fmt.Errorf("daemon: %s (status %d)", msg, resp.StatusCode)
+	return &APIError{Code: resp.StatusCode, Path: path, Message: msg}
 }
 
 func (c *Client) roundTrip(method, path string, body any, out any, ok ...int) error {
@@ -300,6 +354,24 @@ func (c *Client) Files(dir string) ([]FileEntry, error) {
 		Files []FileEntry `json:"files"`
 	}
 	return out.Files, c.roundTrip(http.MethodGet, path, nil, &out)
+}
+
+// Devices lists paired devices. probe asks the daemon to dial each one and
+// report reachability, which is slower and opens connections that Lantern
+// otherwise defers, so it is opt-in.
+func (c *Client) Devices(probe bool) ([]Device, error) {
+	path := "/v1/devices"
+	if probe {
+		path += "?probe=1"
+	}
+	var out struct {
+		Devices []Device `json:"devices"`
+	}
+	err := c.roundTrip(http.MethodGet, path, nil, &out)
+	if out.Devices == nil {
+		out.Devices = []Device{}
+	}
+	return out.Devices, err
 }
 
 // RemoteFiles lists files on a connected peer.

@@ -493,6 +493,17 @@ func (d *Daemon) ReadFile(ctx context.Context, ref, path string, offset, length 
 	return res, err
 }
 
+// ProbeDevice reports whether a paired device is reachable right now, without
+// moving bytes. It is the reachability half of GET /v1/devices: `online` is a
+// live connection that may be long idle, while a probe dials on demand and so
+// answers the question an operator is actually asking.
+func (d *Daemon) ProbeDevice(ctx context.Context, ref string) error {
+	if d.ln == nil {
+		return fmt.Errorf("node not ready")
+	}
+	return d.ln.ProbePeer(ctx, peerIDOf(ref))
+}
+
 // StatFile returns metadata for one path on a paired device.
 func (d *Daemon) StatFile(ctx context.Context, ref, path string) (lantern.Entry, error) {
 	if d.ln == nil {

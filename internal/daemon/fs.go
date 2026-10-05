@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -215,21 +216,59 @@ func queryInt(r *http.Request, key string, def int64) (int64, error) {
 
 // deviceInfo is one paired device with the details an agent needs to
 // decide whether to reach for it.
+//
+// Reachable is only set when the caller asked to probe. `online` is a live
+// connection, which says nothing about a peer that is merely idle, so
+// ?probe=1 dials each device and reports whether a request would work now.
 type deviceInfo struct {
 	PeerID    string `json:"peer_id"`
 	Alias     string `json:"alias,omitempty"`
 	AddedAt   string `json:"added_at,omitempty"`
 	Online    bool   `json:"online"`
 	Addresses int    `json:"known_addresses"`
+	Reachable *bool  `json:"reachable,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 // getDevices lists paired devices and whether each is currently connected,
 // so an agent can pick a live target instead of guessing.
-func (h *Handler) getDevices(w http.ResponseWriter, _ *http.Request) {
+//
+// Probing is opt-in via ?probe=1 because it opens connections: Lantern
+// deliberately does not connect to a device merely to learn whether it is
+// there. An operator debugging reachability asks for that cost once.
+func (h *Handler) getDevices(w http.ResponseWriter, r *http.Request) {
 	if h.daemon.Trust == nil {
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("pairing is not configured on this daemon"))
 		return
 	}
+	probe := isTruthy(r.URL.Query().Get("probe"))
+	entries := h.daemon.Trust.List()
+
+	// Probe concurrently: each dial is bounded, but serialising them would
+	// make N unreachable peers take N times the timeout.
+	type probeResult struct {
+		ok    bool
+		error string
+	}
+	results := make([]probeResult, len(entries))
+	var wg sync.WaitGroup
+	for i, e := range entries {
+		wg.Add(1)
+		go func(i int, ref string) {
+			defer wg.Done()
+			err := h.daemon.ProbeDevice(r.Context(), ref)
+			ok := err == nil
+			msg := ""
+			if err != nil {
+				msg = err.Error()
+			}
+			results[i] = probeResult{ok: ok, error: msg}
+		}(i, e.PeerID)
+	}
+	if probe {
+		wg.Wait()
+	}
+
 	connected := map[string]bool{}
 	if node := h.daemon.node(); node != nil && node.Host != nil {
 		for _, p := range node.Host.Network().Peers() {
@@ -237,21 +276,37 @@ func (h *Handler) getDevices(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 	node := h.daemon.node()
-	out := make([]deviceInfo, 0)
-	for _, e := range h.daemon.Trust.List() {
+	out := make([]deviceInfo, 0, len(entries))
+	for i, e := range entries {
 		addrs := 0
 		if node != nil && node.Host != nil {
 			if id, err := peer.Decode(e.PeerID); err == nil {
 				addrs = len(node.Host.Peerstore().Addrs(id))
 			}
 		}
-		out = append(out, deviceInfo{
+		info := deviceInfo{
 			PeerID:    e.PeerID,
 			Alias:     e.Alias,
 			AddedAt:   e.AddedAt,
 			Online:    connected[e.PeerID],
 			Addresses: addrs,
-		})
+		}
+		if probe {
+			ok := results[i].ok
+			info.Reachable = &ok
+			info.Error = results[i].error
+		}
+		out = append(out, info)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"devices": out})
+}
+
+// isTruthy reads a query flag. Only an explicit affirmative counts, so a
+// stray empty value cannot silently switch on an expensive code path.
+func isTruthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
 }

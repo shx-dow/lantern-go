@@ -220,7 +220,13 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 	}
 
 	mux := http.NewServeMux()
-	daemon.NewHandler(d, peerID, addrs, lanOnly, ttl, dir).WithDeviceName(name).Routes(mux)
+	// port is the resolved --p2p-port: 0 means random, and reporting that is
+	// what lets `lantern doctor` warn that --peer addresses go stale on
+	// restart rather than leaving it to be discovered the hard way.
+	daemon.NewHandler(d, peerID, addrs, lanOnly, ttl, dir).
+		WithDeviceName(name).
+		WithP2PPort(port).
+		Routes(mux)
 
 	// The UI page is public (it holds no secrets; API calls carry the token
 	// from browser storage). Everything under /v1/ stays authed.
