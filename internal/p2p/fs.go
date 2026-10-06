@@ -43,6 +43,11 @@ const (
 	// travels request-first: the request frame is followed by ContentLen
 	// raw bytes on the stream.
 	OpWrite Op = "write"
+	// OpResolveShare asks which local path, if any, is advertised under a
+	// share code. It is how a fetch from a paired device becomes a read
+	// instead of a transfer: the receiver holds the code, and only the sender
+	// knows the path.
+	OpResolveShare Op = "resolve-share"
 )
 
 // Read length policy. A zero length means "to the end of file, capped";
@@ -67,6 +72,8 @@ type FSRequest struct {
 	Length     int64  `json:"length,omitempty"`
 	Overwrite  bool   `json:"overwrite,omitempty"`
 	ContentLen int64  `json:"content_len,omitempty"`
+	// Code is the share code for OpResolveShare; the other ops ignore it.
+	Code string `json:"code,omitempty"`
 }
 
 // FSEntry describes one path: a file or a directory.
@@ -91,7 +98,12 @@ type FSResponse struct {
 	// Ready is set in the pre-content acknowledgement of an OpWrite, once
 	// policy, overwrite, and the size cap have all been satisfied. The
 	// sender waits for it before sending any content.
-	Ready bool   `json:"ready,omitempty"`
+	Ready bool `json:"ready,omitempty"`
+	// Path is set by OpResolveShare when the code resolves to a file this peer
+	// will serve over the read path. An empty Path with no Error means the
+	// code is not resolvable that way, which is the receiver's cue to use the
+	// transfer path instead.
+	Path  string `json:"path,omitempty"`
 	Error string `json:"error,omitempty"`
 }
 
@@ -137,11 +149,125 @@ func (n *Node) serveFS(s network.Stream) {
 		_ = protocol.WriteMetadata(s, n.fsList(roots, req.Path))
 	case OpRead:
 		n.fsRead(s, roots, req)
+	case OpResolveShare:
+		n.fsResolveShare(s, remote, req)
 	case OpWrite:
 		n.fsWrite(s, remote, req)
 	default:
 		_ = protocol.WriteMetadata(s, fail(fmt.Sprintf("unknown op %q", req.Op)))
 	}
+}
+
+// SharedFile is what a peer reports when a share code resolves to a file it
+// is willing to serve over the read path. SHA256 is the hash the sender
+// computed when the share was registered, so the receiver can verify the bytes
+// it reads against the sender's own record of them.
+type SharedFile struct {
+	Path   string
+	Name   string
+	Size   int64
+	SHA256 string
+}
+
+// fsResolveShare answers "which path is this code?" for a paired peer.
+//
+// The answer is withheld unless the file sits inside the shared roots this
+// peer is allowed to read. That matters beyond tidiness: a path outside those
+// roots would otherwise disclose the existence and location of a file the peer
+// has no right to know about, and would tell a stranger which of their guessed
+// codes are live.
+//
+// Silence is not an error. A code that is unadvertised, already consumed, or
+// outside the roots all produce an empty answer, which tells the receiver to
+// fall back to the transfer path — still correct for unpaired peers.
+func (n *Node) fsResolveShare(s network.Stream, remote string, req FSRequest) {
+	roots := n.rootsFor(remote)
+	if len(roots) == 0 {
+		_ = protocol.WriteMetadata(s, fail("not paired for read access"))
+		return
+	}
+	info := n.resolveShare(req.Code, roots)
+	if info == nil {
+		_ = protocol.WriteMetadata(s, FSResponse{})
+		return
+	}
+	_ = protocol.WriteMetadata(s, FSResponse{
+		Path:   info.Path,
+		Entry:  &FSEntry{Name: info.Name, Size: info.Size},
+		SHA256: info.SHA256,
+	})
+}
+
+// resolveShare maps code to a path inside roots, or nil. Containment is decided
+// by resolveWithinRoots, the same resolver the read path uses, so a share
+// cannot be resolved to somewhere a read would refuse.
+func (n *Node) resolveShare(code string, roots []string) *SharedFile {
+	n.mu.Lock()
+	state := n.shares[code]
+	n.mu.Unlock()
+	if state == nil {
+		return nil
+	}
+	resolved, err := resolveWithinRoots(roots, state.filePath)
+	if err != nil {
+		return nil
+	}
+	fi, err := os.Stat(resolved)
+	if err != nil || fi.IsDir() {
+		return nil
+	}
+	return &SharedFile{Path: resolved, Name: fi.Name(), Size: fi.Size(), SHA256: state.fileHash}
+}
+
+// ResolveShare asks pi which path, if any, code names on that peer. ok is false
+// when the code does not resolve over the read path, which is not an error: it
+// is the signal to use the transfer path.
+func (n *Node) ResolveShare(ctx context.Context, pi peer.AddrInfo, code string) (info *SharedFile, err error) {
+	ctx, cancel := context.WithTimeout(ctx, fsiOTimeout)
+	defer cancel()
+
+	if err := n.Host.Connect(ctx, pi); err != nil {
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+	s, err := n.Host.NewStream(ctx, pi.ID, FSProtocolID)
+	if err != nil {
+		return nil, fmt.Errorf("open stream: %w", err)
+	}
+	defer s.Close()
+	if err := s.SetDeadline(time.Now().Add(fsiOTimeout)); err != nil {
+		return nil, err
+	}
+	if err := protocol.WriteMetadata(s, FSRequest{Op: OpResolveShare, Code: code}); err != nil {
+		return nil, fmt.Errorf("send request: %w", err)
+	}
+	var resp FSResponse
+	if err := protocol.ReadMetadata(s, &resp); err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if resp.Error != "" {
+		// An older peer does not know this op. That is not a failure of the
+		// fetch, only of this shortcut, so it is reported as "not resolvable".
+		return nil, nil
+	}
+	if resp.Path == "" {
+		return nil, nil
+	}
+	out := &SharedFile{
+		Path:   resp.Path,
+		SHA256: resp.SHA256,
+		Name:   filepath.Base(resp.Path),
+	}
+	// The size matters: the fetch uses it to detect a truncated read and to
+	// write valid resume state, and a zero here would silently invalidate
+	// every checkpoint.
+	if resp.Entry != nil {
+		out.Name = resp.Entry.Name
+		out.Size = resp.Entry.Size
+	}
+	if out.Name == "" {
+		out.Name = filepath.Base(resp.Path)
+	}
+	return out, nil
 }
 
 func entryFor(fi os.FileInfo) *FSEntry {

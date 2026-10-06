@@ -453,6 +453,175 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 	return nil
 }
 
+// fetchChunkBytes is how much of a file one read-path call pulls. It sits well
+// under the read cap: a read opens a stream per call, so a larger chunk means
+// fewer streams, but too large a chunk stalls an interactive reader behind a
+// big transfer.
+const fetchChunkBytes = 4 * 1024 * 1024
+
+// FetchFS pulls the file behind code from a paired peer over the read path,
+// resuming any partial download and verifying the result against the hash the
+// sender computed when it registered the share.
+//
+// This is the work receiveFile does, sourced from the fs protocol instead of the
+// transfer protocol, so a fetch from a paired device uses one protocol rather
+// than two. Resume, progress, and the final full-file hash all carry over,
+// because losing them would be a regression the caller never asked for.
+func (n *Node) FetchFS(ctx context.Context, pi peer.AddrInfo, code string, outputDir string, progress chan<- TransferProgress) error {
+	info, err := n.ResolveShare(ctx, pi, code)
+	if err != nil {
+		return fmt.Errorf("resolve share: %w", err)
+	}
+	if info == nil {
+		return fmt.Errorf("share %s is not served over the read path", code)
+	}
+	if err := storage.CheckFileName(info.Name); err != nil {
+		return fmt.Errorf("peer sent invalid file name: %w", err)
+	}
+
+	// A resume whose file name no longer matches is a different file sharing
+	// the same code, so it is discarded rather than mixed in.
+	resume, hasResume, err := storage.LoadResume(outputDir, code)
+	if err != nil {
+		return fmt.Errorf("check resume: %w", err)
+	}
+	var outPath string
+	var offset int64
+	if hasResume && filepath.Base(resume.FileName) == info.Name {
+		outPath, err = storage.PartialPath(outputDir, code, resume.FileName)
+		if err != nil {
+			return fmt.Errorf("resume path: %w", err)
+		}
+		offset = resume.Offset
+	}
+
+	if err := os.MkdirAll(outputDir, storage.PublicDirPerm); err != nil {
+		return fmt.Errorf("create output dir: %w", err)
+	}
+	if outPath == "" {
+		outPath, err = storage.PartialPath(outputDir, code, info.Name)
+		if err != nil {
+			return fmt.Errorf("output path: %w", err)
+		}
+	}
+
+	flags := os.O_RDWR | os.O_CREATE
+	if offset == 0 {
+		flags |= os.O_TRUNC
+	}
+	out, err := os.OpenFile(outPath, flags, storage.PublicFilePerm)
+	if err != nil {
+		return fmt.Errorf("open output file: %w", err)
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = out.Close()
+		}
+	}()
+
+	// Hash what a previous attempt already wrote, so the final digest covers
+	// the whole file rather than only this run's bytes.
+	h := sha256.New()
+	var received int64
+	if offset > 0 {
+		fi, err := out.Stat()
+		if err != nil {
+			return fmt.Errorf("stat output file: %w", err)
+		}
+		if offset > fi.Size() {
+			return fmt.Errorf("resume offset %d is past the end of the output (%d bytes)", offset, fi.Size())
+		}
+		if err := out.Truncate(offset); err != nil {
+			return fmt.Errorf("truncate partial output: %w", err)
+		}
+		if _, err := out.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("seek output for hash: %w", err)
+		}
+		if _, err := io.CopyN(h, out, offset); err != nil {
+			return fmt.Errorf("hash resumed output: %w", err)
+		}
+		received = offset
+		if _, err := out.Seek(offset, io.SeekStart); err != nil {
+			return fmt.Errorf("restore output position: %w", err)
+		}
+	}
+
+	saveCheckpoint := func() error {
+		return storage.SaveResume(outputDir, storage.ResumeState{
+			Code: code, FileName: info.Name, FileSize: info.Size, Offset: received,
+		})
+	}
+	if err := saveCheckpoint(); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(err, saveCheckpoint())
+		}
+		_, entry, data, eof, err := n.ReadFS(ctx, pi, FSRequest{
+			Op: OpRead, Path: info.Path, Offset: received, Length: fetchChunkBytes,
+		})
+		if err != nil {
+			return errors.Join(fmt.Errorf("read from peer: %w", err), saveCheckpoint())
+		}
+		if len(data) == 0 {
+			break
+		}
+		if _, err := h.Write(data); err != nil {
+			return errors.Join(fmt.Errorf("hash: %w", err), saveCheckpoint())
+		}
+		if err := protocol.WriteFull(out, data); err != nil {
+			return errors.Join(fmt.Errorf("write file: %w", err), saveCheckpoint())
+		}
+		received += int64(len(data))
+		progress <- TransferProgress{FileName: info.Name, Bytes: received, Total: sizeOf(entry, received)}
+
+		// The peer's own size is authoritative, not the chunk length: the read
+		// caps what it returns, so a short read does not mean the end.
+		if eof {
+			break
+		}
+	}
+
+	if info.Size > 0 && received != info.Size {
+		return errors.Join(
+			fmt.Errorf("unexpected end of fetch at %d of %d bytes", received, info.Size),
+			saveCheckpoint())
+	}
+
+	// Verify against the sender's own hash, so a corrupted read is reported as
+	// a failure rather than landing on disk as a completed file.
+	if info.SHA256 != "" {
+		got := fmt.Sprintf("%x", h.Sum(nil))
+		if got != info.SHA256 {
+			return fmt.Errorf("hash mismatch: expected %s, got %s", info.SHA256, got)
+		}
+	}
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("close output file: %w", err)
+	}
+	closed = true
+	if err := os.Rename(outPath, filepath.Join(outputDir, info.Name)); err != nil {
+		return fmt.Errorf("finalize output file: %w", err)
+	}
+	if err := storage.ClearResume(outputDir, code); err != nil {
+		return fmt.Errorf("clear resume state: %w", err)
+	}
+	progress <- TransferProgress{FileName: info.Name, Bytes: received, Total: received, Done: true}
+	return nil
+}
+
+// sizeOf reports the peer's idea of the total, falling back to the bytes already
+// received when the entry is missing.
+func sizeOf(entry *FSEntry, received int64) int64 {
+	if entry == nil || entry.Size <= 0 {
+		return received
+	}
+	return entry.Size
+}
+
 func hashFile(file *os.File) ([]byte, error) {
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return nil, err

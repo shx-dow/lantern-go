@@ -19,7 +19,9 @@ Two ways to move bytes, and they are not equivalent:
   the nas".
 - **Share-code transfer** (the original path). Still the only way to hand a
   file to an unpaired peer, and the only way to move a directory. Folders
-  share as `<name>.zip`.
+  share as `<name>.zip`. A code from a *paired* device is fetched over the read
+  path instead, so this path is what remains after the read path takes what it
+  can.
 
 Plus **push**: the sending device dials the receiver and writes directly, so
 an agent holding a file can place it on another device without the receiver
@@ -37,10 +39,9 @@ absent. This keeps a device light on memory and CPU, and means a stranger
 running Lantern on the same Wi-Fi is never connected to.
 
 Known gaps: directory push is not implemented, so folders still need the
-share-code path; `fetch` is a share-code transfer rather than being unified
-onto the read path; sync is unimplemented; the `WriteAnywhere` write mode is
-still reachable from Go but not from any flag. The desktop shell has been
-removed, so the tree is pure Go and cross-compiles for every target we ship.
+share-code path; sync is unimplemented; the `WriteAnywhere` write mode is still
+reachable from Go but not from any flag. The desktop shell has been removed, so
+the tree is pure Go and cross-compiles for every target we ship.
 
 ## Run it
 
@@ -155,6 +156,16 @@ lantern receive <share-code> [output-directory]
 The sender prints a 128-bit share code. The receiver needs that code and must
 be able to discover or connect to the sender through mDNS, the DHT, or a
 configured libp2p route.
+
+**A code is an address, not a second protocol.** When you receive a code from a
+device you are paired with, the file is fetched over the read path: the sender
+is asked which path the code names, and if that path is inside its shared dirs
+the bytes come from `/lantern/fs/1.0.0` with no transfer session. The sender
+decides — it is the only party that knows the path, and the only one that can
+say whether the pair may read it. Anything else falls back to the transfer
+protocol, so codes still work for unpaired peers and for files outside a shared
+dir. Both paths verify the file against a hash the sender computed, and both
+resume a partial download.
 
 ## When something is not working
 
