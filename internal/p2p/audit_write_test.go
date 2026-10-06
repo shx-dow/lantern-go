@@ -472,8 +472,8 @@ func TestAuditUnpairedPeerCannotProbeWriteConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { provider.Close() })
-	provider.SetListAccess([]string{root}, func(string) bool { return false })
-	provider.SetWritePolicy(writePolicy(root, 1024))
+	provider.SetReadAccess(nil)
+	provider.SetWriteAccess(grantEveryone(writePolicy(root, 1024)))
 	provider.RegisterFSHandler()
 
 	requester, err := NewNode(0, []string{"none"}, nil, t.TempDir())

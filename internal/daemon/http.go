@@ -58,6 +58,7 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/events", h.getEvents)
 	mux.HandleFunc("GET /v1/trust", h.getTrust)
 	mux.HandleFunc("POST /v1/trust", h.postTrust)
+	mux.HandleFunc("PATCH /v1/trust/{id}", h.patchTrust)
 	mux.HandleFunc("DELETE /v1/trust/{id}", h.deleteTrust)
 	mux.HandleFunc("GET /v1/files", h.getFiles)
 	mux.HandleFunc("GET /v1/devices", h.getDevices)
@@ -239,6 +240,12 @@ func mustGet(h *Handler, id string) Record {
 type trustRequest struct {
 	PeerID string `json:"peer_id"`
 	Alias  string `json:"alias,omitempty"`
+	// Tier is the standing capability the pairing confers. Absent means
+	// DefaultTier, which is read-only: pairing alone never grants a write.
+	Tier AccessTier `json:"tier,omitempty"`
+	// WritableRoots confines this device to a subset of this daemon's
+	// writable dirs. It can only narrow them, never widen them.
+	WritableRoots []string `json:"writable_roots,omitempty"`
 }
 
 func (h *Handler) trustStore() (*TrustStore, error) {
@@ -257,6 +264,54 @@ func (h *Handler) getTrust(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"trusted": store.List()})
 }
 
+// PATCH /v1/trust/{id} changes an existing pairing without re-adding it, so
+// granting or revoking a tier is one call and cannot clobber the alias or the
+// cached addresses.
+func (h *Handler) patchTrust(w http.ResponseWriter, r *http.Request) {
+	store, err := h.trustStore()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	peerID, err := h.resolveTrustRef(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var req trustRequest
+	if err := readJSONBody(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
+		return
+	}
+
+	entry, found := store.Get(peerID)
+	if !found {
+		writeError(w, http.StatusNotFound, fmt.Errorf("peer not found"))
+		return
+	}
+	// Only the fields present in the request change. An absent tier or root
+	// list leaves the existing one alone, so a caller cannot revoke a tier by
+	// forgetting to resend it.
+	if req.Tier != "" {
+		entry, err = store.SetTier(peerID, string(req.Tier))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	if req.WritableRoots != nil {
+		entry, err = store.SetWritableRoots(peerID, req.WritableRoots, h.daemon.WritableRoots)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	if req.Alias != "" {
+		entry.Alias = strings.TrimSpace(req.Alias)
+	}
+	writeJSON(w, http.StatusOK, entry)
+}
+
 func (h *Handler) postTrust(w http.ResponseWriter, r *http.Request) {
 	store, err := h.trustStore()
 	if err != nil {
@@ -268,7 +323,13 @@ func (h *Handler) postTrust(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
 		return
 	}
-	entry, err := store.Add(strings.TrimSpace(req.PeerID), strings.TrimSpace(req.Alias))
+	entry, err := store.Add(TrustSpec{
+		PeerID:        strings.TrimSpace(req.PeerID),
+		Alias:         strings.TrimSpace(req.Alias),
+		Tier:          string(req.Tier),
+		WritableRoots: req.WritableRoots,
+		DeviceRoots:   h.daemon.WritableRoots,
+	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -282,11 +343,40 @@ func (h *Handler) deleteTrust(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	if !store.Remove(r.PathValue("id")) {
+	peerID, err := h.resolveTrustRef(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !store.Remove(peerID) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("peer not found"))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// resolveTrustRef maps an alias or a peer ID to the stored peer ID. A ref that
+// matches neither is returned unchanged so the store reports "not found" rather
+// than this helper inventing an error about the wrong thing.
+func (h *Handler) resolveTrustRef(ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", fmt.Errorf("device must not be empty")
+	}
+	if h.daemon.Trust == nil {
+		return ref, nil
+	}
+	for _, e := range h.daemon.Trust.List() {
+		if e.PeerID == ref {
+			return e.PeerID, nil
+		}
+	}
+	for _, e := range h.daemon.Trust.List() {
+		if e.Alias != "" && strings.EqualFold(e.Alias, ref) {
+			return e.PeerID, nil
+		}
+	}
+	return ref, nil
 }
 
 func (h *Handler) getFiles(w http.ResponseWriter, r *http.Request) {

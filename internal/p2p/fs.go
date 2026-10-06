@@ -110,12 +110,14 @@ func (n *Node) serveFS(s network.Stream) {
 	defer s.Close()
 	remote := s.Conn().RemotePeer().String()
 
-	n.mu.Lock()
-	roots := append([]string(nil), n.listRoots...)
-	check := n.listTrusted
-	n.mu.Unlock()
-	if check == nil || !check(remote) {
-		_ = protocol.WriteMetadata(s, fail("not paired"))
+	// Reads are bounded per peer as well as per device: an empty root list
+	// means this peer may read nothing, which is what a device paired at
+	// TierNone gets. Refusing here rather than in the HTTP layer matters,
+	// because this stream handler is reachable by any paired peer, not only
+	// by a local API caller.
+	roots := n.rootsFor(remote)
+	if len(roots) == 0 {
+		_ = protocol.WriteMetadata(s, fail("not paired for read access"))
 		return
 	}
 
@@ -136,7 +138,7 @@ func (n *Node) serveFS(s network.Stream) {
 	case OpRead:
 		n.fsRead(s, roots, req)
 	case OpWrite:
-		n.fsWrite(s, req)
+		n.fsWrite(s, remote, req)
 	default:
 		_ = protocol.WriteMetadata(s, fail(fmt.Sprintf("unknown op %q", req.Op)))
 	}
@@ -303,7 +305,10 @@ func resolveWritePath(pol WritePolicy, path string) (string, error) {
 
 	resolvedParent, err := resolveNewParent(roots, parent)
 	if err != nil {
-		return "", err
+		// Name the roots, because with per-peer narrowing they are usually a
+		// subset and the generic "outside shared dirs" reads like the device
+		// is misconfigured rather than the peer being confined.
+		return "", fmt.Errorf("%w; this peer may write only in: %s", err, strings.Join(roots, ", "))
 	}
 	dst := filepath.Join(resolvedParent, base)
 	if fi, err := os.Lstat(dst); err == nil && fi.Mode()&os.ModeSymlink != 0 {
@@ -410,15 +415,19 @@ func resolveNewParent(roots []string, parent string) (string, error) {
 // written to a sibling temp file and renamed into place, so a reader never
 // observes a half-written destination and a failed transfer leaves the
 // previous contents intact.
-func (n *Node) fsWrite(s network.Stream, req FSRequest) {
-	pol := n.policy()
+func (n *Node) fsWrite(s network.Stream, remote string, req FSRequest) {
+	pol, err := n.grantWrite(remote)
+	if err != nil {
+		_ = protocol.WriteMetadata(s, fail(err.Error()))
+		return
+	}
 	// Refuse before reading any content, and tell the sender so it does not
 	// push a payload that was never going to be stored.
 	reject := func(msg string) {
 		_ = protocol.WriteMetadata(s, fail(msg))
 	}
 
-	resolved, err := resolveWritePath(pol, req.Path)
+	resolved, err := resolveWritePath(*pol, req.Path)
 	if err != nil {
 		reject(err.Error())
 		return
@@ -469,7 +478,7 @@ func (n *Node) fsWrite(s network.Stream, req FSRequest) {
 	}
 	// Re-verify containment now that the parents exist: creating them was a
 	// window in which an ancestor could have been swapped for a symlink.
-	if recheck, err := resolveWritePath(pol, req.Path); err != nil || recheck != resolved {
+	if recheck, err := resolveWritePath(*pol, req.Path); err != nil || recheck != resolved {
 		reject(fmt.Sprintf("destination changed underneath the write; refusing (%v)", err))
 		return
 	}

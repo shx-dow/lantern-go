@@ -15,7 +15,7 @@ func newPairedStore(t *testing.T, peerID string) (*TrustStore, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Add(peerID, "laptop"); err != nil {
+	if _, err := s.Add(TrustSpec{PeerID: peerID, Alias: "laptop"}); err != nil {
 		t.Fatal(err)
 	}
 	return s, dir

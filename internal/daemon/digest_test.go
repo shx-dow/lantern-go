@@ -212,7 +212,7 @@ func lyingReceiverDaemon(t *testing.T, reportedDigest, content string) (*Daemon,
 		t.Fatal(err)
 	}
 	peerID := node.Host.ID().String()
-	if _, err := store.Add(peerID, "laptop"); err != nil {
+	if _, err := store.Add(TrustSpec{PeerID: peerID, Alias: "laptop"}); err != nil {
 		t.Fatal(err)
 	}
 	var addrs []string

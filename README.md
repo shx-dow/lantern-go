@@ -38,9 +38,9 @@ running Lantern on the same Wi-Fi is never connected to.
 
 Known gaps: directory push is not implemented, so folders still need the
 share-code path; `fetch` is a share-code transfer rather than being unified
-onto the read path; sync is unimplemented; there are no access modes. The
-desktop shell has been removed, so the tree is pure Go and cross-compiles for
-every target we ship.
+onto the read path; sync is unimplemented; the `WriteAnywhere` write mode is
+still reachable from Go but not from any flag. The desktop shell has been
+removed, so the tree is pure Go and cross-compiles for every target we ship.
 
 ## Run it
 
@@ -266,15 +266,42 @@ pairing is removed. Shared roots are a hard boundary — paths outside them,
 including via symlink, are refused — and `lantern --daemon trust remove
 <peer-id>` revokes access immediately.
 
-**A paired device can write into a device's `--writable-dirs` only if that
-device was started with `--allow-writes`.** Without it, every write is refused
-and the reason is reported. When writes are enabled they are still bounded:
-destinations must resolve inside a writable root, an existing file is never
-replaced without an explicit overwrite, a write is staged to a temp file and
-renamed into place so a reader never sees a half-written file, and the sender
-compares digests before calling it delivered. There is no per-peer write
-policy yet — enabling writes trusts every paired device equally, and there
-are no access tiers (supervised / auto / full) on either path.
+**Pairing is not capability.** What a paired device may do is chosen
+deliberately, per device, and survives a reboot:
+
+```sh
+lantern trust add <peer-id> [alias]              # paired at tier read
+lantern trust add <peer-id> nas --tier read-write # and it may write here
+lantern trust tier <alias> read                   # revoke its writes
+lantern trust tier <alias> none                  # paired, but nothing works
+lantern trust roots <alias> ~/inbox               # it may write only there
+lantern trust list                               # shows each device's tier
+```
+
+Three tiers, ordered: `none` (paired, grants nothing), `read` (reads inside
+`--shared-dirs`), and `read-write` (also writes inside `--writable-dirs`). A
+newly paired device gets `read`, so pairing a device never hands it the ability
+to change this one. A pairing written before tiers existed loads as `read`
+rather than silently gaining write access.
+
+`trust roots` may only **narrow** a device's writable set: a root outside
+`--writable-dirs` is rejected, so a pairing record cannot name its way past the
+operator's bound even if edited by hand. Per-peer policy is enforced in the
+libp2p stream handler, not just at the HTTP layer, so a peer cannot bypass it by
+dialling directly.
+
+**A paired device can write only if this device was started with
+`--allow-writes` *and* the device is at tier `read-write`.** Both gates must
+pass. When writes are enabled they are still bounded: destinations must resolve
+inside a writable root, an existing file is never replaced without an explicit
+overwrite, a write is staged to a temp file and renamed into place so a reader
+never sees a half-written file, permissions are inherited from the directory the
+file lands in rather than widened, and the sender compares digests before
+calling it delivered.
+
+**Upgrading:** devices paired before tiers existed read as `read`. If you relied
+on a paired device pushing files here, raise it with
+`lantern trust tier <alias> read-write`.
 
 Writes are the half of this product that most deserves an audit before
 anyone points it at a real machine. Reads are encrypted and authenticated by

@@ -61,6 +61,9 @@ func tools() []toolDef {
 	}
 	str := func(desc string) map[string]any { return map[string]any{"type": "string", "description": desc} }
 	num := func(desc string) map[string]any { return map[string]any{"type": "number", "description": desc} }
+	arr := func(desc string) map[string]any {
+		return map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": desc}
+	}
 	return []toolDef{
 		{"share", "Advertise a local file and return its share code", obj(map[string]any{"path": str("Local file path to share"), "ttl_seconds": num("Auto-cancel after N seconds (0 = daemon default)")}, "path")},
 		{"fetch", "Fetch a share code into out_dir", obj(map[string]any{"code": str("Share code"), "out_dir": str("Destination directory (default .)")}, "code")},
@@ -70,9 +73,19 @@ func tools() []toolDef {
 		{"transfer", "Get one transfer snapshot", obj(map[string]any{"id": str("Transfer ID (= share code)")}, "id")},
 		{"history", "Recent terminal transfers", obj(map[string]any{})},
 		{"cancel", "Cancel/revoke a transfer", obj(map[string]any{"id": str("Transfer ID (= share code)")}, "id")},
-		{"trust_list", "List paired devices", obj(map[string]any{})},
-		{"trust_add", "Pair a device", obj(map[string]any{"peer_id": str("Peer ID to pair"), "alias": str("Human alias")}, "peer_id")},
-		{"trust_remove", "Unpair a device", obj(map[string]any{"peer_id": str("Peer ID to unpair")}, "peer_id")},
+		{"trust_list", "List paired devices with the tier each one holds. The tier is what the pairing actually allows: none, read, or read-write.", obj(map[string]any{})},
+		{"trust_add", "Pair a device. Defaults to tier read, which cannot write; ask for read-write only when the user wants that device to place files here. writable_roots may only narrow this device's writable dirs, never widen them.", obj(map[string]any{
+			"peer_id":        str("Peer ID to pair"),
+			"alias":          str("Human alias"),
+			"tier":           str("none | read | read-write (default read)"),
+			"writable_roots": arr("Restrict this device to these dirs (must be inside this device's writable dirs)"),
+		}, "peer_id")},
+		{"trust_set", "Change what an already-paired device may do, without re-adding it. Fields left unset keep their current value.", obj(map[string]any{
+			"device":         str("Device alias or peer ID"),
+			"tier":           str("none | read | read-write"),
+			"writable_roots": arr("Restrict this device to these dirs; empty clears the restriction"),
+		}, "device")},
+		{"trust_remove", "Unpair a device", obj(map[string]any{"peer_id": str("Peer ID or alias to unpair")}, "peer_id")},
 		{"files", "List local shared-dir files", obj(map[string]any{"dir": str("Subdirectory (omit for roots)")})},
 		{"remote_files", "List files on a connected peer", obj(map[string]any{"peer_id": str("Connected peer ID"), "dir": str("Subdirectory (omit for roots)")}, "peer_id")},
 		{"devices", "List paired devices with aliases and status. Start here when the user names a device. Probe=true dials each one to test real reachability; by default 'online' only means a connection is open right now, so an idle device looks offline.", obj(map[string]any{"probe": num("Dial each device and report reachability (default false)")})},
@@ -185,7 +198,30 @@ func callTool(c *daemonClient, name string, args map[string]any) (any, error) {
 		if str("peer_id") == "" {
 			return nil, fmt.Errorf("peer_id is required")
 		}
-		return c.Do(http.MethodPost, "/v1/trust", map[string]any{"peer_id": str("peer_id"), "alias": str("alias")})
+		body := map[string]any{"peer_id": str("peer_id"), "alias": str("alias")}
+		if t := str("tier"); t != "" {
+			body["tier"] = t
+		}
+		if roots, ok := stringList(args["writable_roots"]); ok {
+			body["writable_roots"] = roots
+		}
+		return c.Do(http.MethodPost, "/v1/trust", body)
+	case "trust_set":
+		dev := str("device")
+		if dev == "" {
+			return nil, fmt.Errorf("device is required (use trust_list to see aliases)")
+		}
+		body := map[string]any{}
+		if t := str("tier"); t != "" {
+			body["tier"] = t
+		}
+		if roots, ok := stringList(args["writable_roots"]); ok {
+			body["writable_roots"] = roots
+		}
+		if len(body) == 0 {
+			return nil, fmt.Errorf("nothing to change: pass tier and/or writable_roots")
+		}
+		return c.Do(http.MethodPatch, "/v1/trust/"+url.PathEscape(dev), body)
 	case "trust_remove":
 		if str("peer_id") == "" {
 			return nil, fmt.Errorf("peer_id is required")
@@ -268,6 +304,23 @@ func callTool(c *daemonClient, name string, args map[string]any) (any, error) {
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
+}
+
+// stringList reads an optional array-of-strings argument. The second result
+// distinguishes "absent" from "present but empty", which matters: clearing a
+// restriction sends an empty list, while leaving it alone sends nothing.
+func stringList(v any) ([]string, bool) {
+	items, ok := v.([]any)
+	if !ok {
+		return nil, false
+	}
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		if s, ok := it.(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	return out, true
 }
 
 // isTruthyArg reads a boolean-ish tool argument. Tools are called by models,
@@ -411,6 +464,6 @@ Tools:
   stat                         size and modification time for a path
   push                         send a local file to a paired device
   share, fetch, transfers, transfer, history, cancel
-  trust_list, trust_add, trust_remove
+  trust_list, trust_add, trust_set, trust_remove
   files, remote_files, status, discover
 `

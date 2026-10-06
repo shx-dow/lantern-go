@@ -86,10 +86,21 @@ type Daemon struct {
 	records map[string]*Record
 	history []Record
 
-	// Trust holds paired device peer IDs; nil means pairing disabled.
+	// Trust holds paired devices and their tiers; nil means pairing disabled.
 	Trust *TrustStore
-	// SharedDirs roots local file discovery (GET /v1/files).
+	// SharedDirs roots local file discovery (GET /v1/files) and the reads a
+	// paired device with read access may perform.
 	SharedDirs []string
+	// WritableRoots bounds where any paired device may write. It is the
+	// operator's hard bound: a per-peer writable root may only narrow it.
+	// Empty means no writes are possible regardless of tiers.
+	WritableRoots []string
+	// WritesEnabled mirrors --allow-writes. It is separate from
+	// WritableRoots so a device can be configured with an inbox and still
+	// refuse every write until the operator opts in.
+	WritesEnabled bool
+	// MaxWriteBytes caps one push. Zero means p2p.DefaultMaxWriteBytes.
+	MaxWriteBytes int64
 
 	subsMu  sync.Mutex
 	subs    map[uint64]chan EventDTO

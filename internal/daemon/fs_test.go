@@ -16,7 +16,7 @@ func newTrustHandler(t *testing.T, entries ...TrustEntry) *Handler {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if _, err := store.Add(e.PeerID, e.Alias); err != nil {
+		if _, err := store.Add(TrustSpec{PeerID: e.PeerID, Alias: e.Alias}); err != nil {
 			t.Fatal(err)
 		}
 	}

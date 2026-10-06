@@ -2,6 +2,7 @@ package p2p
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,16 +44,33 @@ const (
 	listIOTimeout  = 15 * time.Second
 )
 
-// SetListAccess configures the read-only roots served by the list handler
-// and the pairing gate. A nil isTrusted denies everyone.
+// ReadRoots resolves the shared roots one peer may read. It is consulted on
+// every read and every listing, so what a peer can reach may differ per peer
+// and change without a restart.
 //
-// Writing is gated separately by SetWritePolicy so a node can serve reads
-// while refusing writes; see that function for why the default is closed.
-func (n *Node) SetListAccess(roots []string, isTrusted func(peerID string) bool) {
+// Returning an empty list refuses the peer. That is how a device paired but
+// granted no read access is expressed, and it is why this returns roots rather
+// than a bool: "may read" and "may read these" are not the same question.
+//
+// A nil resolver denies everyone.
+func (n *Node) SetReadAccess(resolve ReadRoots) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.listRoots = append([]string(nil), roots...)
-	n.listTrusted = isTrusted
+	n.readRoots = resolve
+}
+
+// ReadRoots resolves the shared roots one peer may read.
+type ReadRoots func(peerID string) []string
+
+// rootsFor is the single read gate for both the fs and the list handlers.
+func (n *Node) rootsFor(peerID string) []string {
+	n.mu.Lock()
+	resolve := n.readRoots
+	n.mu.Unlock()
+	if resolve == nil {
+		return nil
+	}
+	return resolve(peerID)
 }
 
 // WritePolicy decides whether a paired peer may write, and where.
@@ -85,29 +103,49 @@ const (
 // DefaultMaxWriteBytes caps one push when a policy does not set its own.
 const DefaultMaxWriteBytes = 512 * 1024 * 1024
 
-// SetWritePolicy enables or restricts the write side of the fs protocol.
-// Pass nil (or a WriteDenied policy) to refuse all writes, which is what a
-// node that never calls this serves.
-func (n *Node) SetWritePolicy(p *WritePolicy) {
+// WriteGrant resolves what one peer may write on this device. It is consulted
+// on every OpWrite, so the answer may differ per peer and may change without a
+// restart.
+//
+// Returning an error refuses the write and reports that message to the sender.
+// Returning a nil policy also refuses, so a grant that only handles the peers
+// it knows about denies everyone else.
+type WriteGrant func(peerID string) (*WritePolicy, error)
+
+// SetWriteAccess installs the per-peer write decision.
+//
+// A node that never calls this serves no writes at all, which is the default
+// and the only safe one. There is deliberately no setter for a single
+// node-wide policy that grants everyone: that shape is what made one careless
+// pairing as good as a deliberate one.
+func (n *Node) SetWriteAccess(grant WriteGrant) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if p == nil {
-		n.writePolicy = nil
-		return
-	}
-	cp := *p
-	cp.Roots = append([]string(nil), p.Roots...)
-	n.writePolicy = &cp
+	n.writeGrant = grant
 }
 
-func (n *Node) policy() WritePolicy {
+// grantWrite resolves the write policy for peerID. The default refuses every
+// write, so a node without an explicit grant is read-only.
+func (n *Node) grantWrite(peerID string) (*WritePolicy, error) {
 	n.mu.Lock()
-	defer n.mu.Unlock()
-	if n.writePolicy == nil {
-		return WritePolicy{Mode: WriteDenied}
+	grant := n.writeGrant
+	n.mu.Unlock()
+	if grant == nil {
+		return nil, ErrWritesNotPermitted
 	}
-	return *n.writePolicy
+	pol, err := grant(peerID)
+	if err != nil {
+		return nil, err
+	}
+	if pol == nil {
+		return nil, ErrWritesNotPermitted
+	}
+	return pol, nil
 }
+
+// ErrWritesNotPermitted is the refusal for a device that has not enabled
+// writes at all. Agents and tests match on this wording, so it is stable.
+var ErrWritesNotPermitted = errors.New("writes are not permitted on this device; it must be started with write access enabled")
 
 // RegisterListHandler installs the list stream handler (idempotent).
 func (n *Node) RegisterListHandler() {
@@ -120,12 +158,9 @@ func (n *Node) serveList(s network.Stream) {
 	defer s.Close()
 	remote := s.Conn().RemotePeer().String()
 
-	n.mu.Lock()
-	roots := append([]string(nil), n.listRoots...)
-	check := n.listTrusted
-	n.mu.Unlock()
-	if check == nil || !check(remote) {
-		_ = protocol.WriteMetadata(s, ListResponse{Error: "not paired"})
+	roots := n.rootsFor(remote)
+	if len(roots) == 0 {
+		_ = protocol.WriteMetadata(s, ListResponse{Error: "not paired for read access"})
 		return
 	}
 
