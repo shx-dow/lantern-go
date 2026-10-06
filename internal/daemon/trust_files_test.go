@@ -15,7 +15,7 @@ func TestTrustStoreRoundTrip(t *testing.T) {
 	if got := s.List(); len(got) != 0 {
 		t.Fatalf("expected empty store, got %v", got)
 	}
-	e, err := s.Add("peer-abc", "laptop")
+	e, err := s.Add(TrustSpec{PeerID: "peer-abc", Alias: "laptop"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestTrustStoreRoundTrip(t *testing.T) {
 	if !s.Remove("peer-abc") || s.Remove("peer-abc") {
 		t.Fatal("remove semantics wrong")
 	}
-	if _, err := s.Add("", "x"); err == nil {
+	if _, err := s.Add(TrustSpec{PeerID: "", Alias: "x"}); err == nil {
 		t.Fatal("expected error for empty peer ID")
 	}
 }

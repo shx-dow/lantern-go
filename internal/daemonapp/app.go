@@ -180,32 +180,39 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 		}
 	}
 
+	// The daemon owns both halves of the access decision: the trust store says
+	// what each paired device may do, and these fields say what this device
+	// offers. The transport asks, per request.
+	d.WritableRoots = d.SharedDirs
+	if s := strings.TrimSpace(*writableF); s != "" {
+		d.WritableRoots = daemon.SplitCSV(s)
+	}
+	d.WritesEnabled = *allowWrite
+	d.MaxWriteBytes = *maxWriteF
+
 	if node := ln.Node(); node != nil && node.Host != nil {
-		roots := d.SharedDirs
-		node.SetListAccess(roots, func(id string) bool { return trust.Trusted(id) })
+		// Reads and writes are gated per peer, not by pairing alone. A device
+		// paired at tier "none" stays paired and gets nothing.
+		node.SetReadAccess(d.ReadableRootsFor)
 		node.RegisterListHandler()
 		node.RegisterFSHandler()
 
-		// Writes are opt-in. Without --allow-writes this device serves reads
-		// and refuses every write, so pairing a device is never by itself
-		// enough to change anything here.
+		// Writes are opt-in twice over: this device must allow writes at all,
+		// and the peer must be at read-write. Without --allow-writes the
+		// device serves reads and refuses every write, so pairing a device is
+		// never by itself enough to change anything here.
+		node.SetWriteAccess(d.WritePolicyFor)
 		if *allowWrite {
-			writable := roots
-			if s := strings.TrimSpace(*writableF); s != "" {
-				writable = daemon.SplitCSV(s)
+			var writers []string
+			for _, e := range trust.List() {
+				if e.Tier.CanWrite() {
+					writers = append(writers, aliasOrID(e))
+				}
 			}
-			var maxWrite int64 = p2p.DefaultMaxWriteBytes
-			if *maxWriteF > 0 {
-				maxWrite = *maxWriteF
-			}
-			node.SetWritePolicy(&p2p.WritePolicy{
-				Mode:     p2p.WriteSharedRoots,
-				Roots:    writable,
-				MaxBytes: maxWrite,
-			})
-			logger.Printf("writes enabled for paired devices, limited to %v", writable)
+			logger.Printf("writes enabled, limited to %v; peers at tier %q may write: %s",
+				d.WritableRoots, daemon.TierReadWrite, orNone(writers))
 		} else {
-			logger.Printf("writes are disabled; pass --allow-writes to let paired devices write here")
+			logger.Printf("writes are disabled; pass --allow-writes to let a peer at tier %q write here", daemon.TierReadWrite)
 		}
 	}
 
@@ -275,6 +282,26 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 		logger.Printf("shutdown: %v", err)
 	}
 	return nil
+}
+
+// aliasOrID names a paired device for a log line.
+func aliasOrID(e daemon.TrustEntry) string {
+	if e.Alias != "" {
+		return e.Alias
+	}
+	if len(e.PeerID) > 12 {
+		return e.PeerID[:12] + "..."
+	}
+	return e.PeerID
+}
+
+// orNone renders an empty list as "none" so a startup line reads as a fact
+// rather than as a blank.
+func orNone(names []string) string {
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ", ")
 }
 
 // dialStaticPeers connects to --peer addresses, retrying every 20s until

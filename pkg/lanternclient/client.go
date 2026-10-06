@@ -53,11 +53,15 @@ type PeerInfo struct {
 	Connected bool     `json:"connected"`
 }
 
-// TrustEntry is one paired device.
+// TrustEntry is one paired device and what it is allowed to do. Tier is the
+// standing capability the pairing confers; WritableRoots, when set, confines
+// this device to a subset of the daemon's writable dirs.
 type TrustEntry struct {
-	PeerID  string `json:"peer_id"`
-	Alias   string `json:"alias"`
-	AddedAt string `json:"added_at"`
+	PeerID        string   `json:"peer_id"`
+	Alias         string   `json:"alias"`
+	AddedAt       string   `json:"added_at"`
+	Tier          string   `json:"tier"`
+	WritableRoots []string `json:"writable_roots"`
 }
 
 // Device is one paired device with the details an agent needs to decide
@@ -68,13 +72,15 @@ type TrustEntry struct {
 // dials each peer, which is deliberately opt-in: Lantern does not connect to
 // devices just to announce itself.
 type Device struct {
-	PeerID         string `json:"peer_id"`
-	Alias          string `json:"alias"`
-	AddedAt        string `json:"added_at"`
-	Online         bool   `json:"online"`
-	KnownAddresses int    `json:"known_addresses"`
-	Reachable      *bool  `json:"reachable,omitempty"`
-	Error          string `json:"error,omitempty"`
+	PeerID         string   `json:"peer_id"`
+	Alias          string   `json:"alias"`
+	Tier           string   `json:"tier"`
+	WritableRoots  []string `json:"writable_roots"`
+	AddedAt        string   `json:"added_at"`
+	Online         bool     `json:"online"`
+	KnownAddresses int      `json:"known_addresses"`
+	Reachable      *bool    `json:"reachable,omitempty"`
+	Error          string   `json:"error,omitempty"`
 }
 
 // APIError is a non-2xx response from the daemon. It carries the status code
@@ -333,10 +339,38 @@ func (c *Client) TrustList() ([]TrustEntry, error) {
 	return out.Trusted, c.roundTrip(http.MethodGet, "/v1/trust", nil, &out)
 }
 
-// TrustAdd pairs peerID with an optional alias.
+// TrustAdd pairs peerID with an optional alias, at the default tier.
 func (c *Client) TrustAdd(peerID, alias string) (TrustEntry, error) {
 	var e TrustEntry
 	return e, c.roundTrip(http.MethodPost, "/v1/trust", map[string]any{"peer_id": peerID, "alias": alias}, &e, http.StatusCreated)
+}
+
+// TrustAddSpec pairs a device with the full policy: a tier, and optionally the
+// subset of the daemon's writable dirs it may use. Empty tier and roots mean
+// the daemon's defaults, which are read-only and this device's whole writable
+// set respectively.
+func (c *Client) TrustAddSpec(body map[string]any) (TrustEntry, error) {
+	var e TrustEntry
+	return e, c.roundTrip(http.MethodPost, "/v1/trust", body, &e, http.StatusCreated)
+}
+
+// TrustSetTier changes one paired device's tier without re-adding it, so the
+// alias and cached addresses survive.
+func (c *Client) TrustSetTier(peerID, tier string) (TrustEntry, error) {
+	var e TrustEntry
+	return e, c.roundTrip(http.MethodPatch, "/v1/trust/"+url.PathEscape(peerID),
+		map[string]any{"tier": tier}, &e)
+}
+
+// TrustSetRoots confines one paired device to a subset of the daemon's
+// writable dirs. An empty list clears the restriction.
+func (c *Client) TrustSetRoots(peerID string, roots []string) (TrustEntry, error) {
+	var e TrustEntry
+	if roots == nil {
+		roots = []string{}
+	}
+	return e, c.roundTrip(http.MethodPatch, "/v1/trust/"+url.PathEscape(peerID),
+		map[string]any{"writable_roots": roots}, &e)
 }
 
 // TrustRemove unpairs peerID.

@@ -17,7 +17,12 @@ func testListNode(t *testing.T, root string, trusted map[string]bool) *Node {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { n.Close() })
-	n.SetListAccess([]string{root}, func(id string) bool { return trusted[id] })
+	n.SetReadAccess(func(id string) []string {
+		if trusted[id] {
+			return []string{root}
+		}
+		return nil
+	})
 	n.RegisterListHandler()
 	return n
 }
@@ -35,7 +40,7 @@ func TestListRemoteAllowed(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { requester.Close() })
-	provider.SetListAccess([]string{root}, func(id string) bool { return id == requester.Host.ID().String() })
+	provider.SetReadAccess(allowRootsFor([]string{root}, requester.Host.ID().String()))
 
 	pi := peer.AddrInfo{ID: provider.Host.ID(), Addrs: provider.Host.Addrs()}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -73,7 +78,7 @@ func TestListRemoteRejectsBreakout(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { requester.Close() })
-	provider.SetListAccess([]string{root}, func(string) bool { return true })
+	provider.SetReadAccess(allowAllRoots(root))
 	pi := peer.AddrInfo{ID: provider.Host.ID(), Addrs: provider.Host.Addrs()}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

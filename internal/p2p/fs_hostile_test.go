@@ -15,7 +15,7 @@ func TestHostileGarbageFrame(t *testing.T) {
 	root := t.TempDir()
 	provider := fsHost(t)
 	requester := fsHost(t)
-	provider.SetListAccess([]string{root}, func(string) bool { return true })
+	provider.SetReadAccess(allowAllRoots(root))
 	provider.RegisterFSHandler()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -45,8 +45,8 @@ func TestHostileWriteWithHugeClaimedLength(t *testing.T) {
 	root := t.TempDir()
 	provider := fsHost(t)
 	requester := fsHost(t)
-	provider.SetListAccess([]string{root}, func(string) bool { return true })
-	provider.SetWritePolicy(writePolicy(root, 1024))
+	provider.SetReadAccess(allowAllRoots(root))
+	provider.SetWriteAccess(grantEveryone(writePolicy(root, 1024)))
 	provider.RegisterFSHandler()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -82,7 +82,7 @@ func TestHostileReadNegativeOffset(t *testing.T) {
 	root := t.TempDir()
 	provider := fsHost(t)
 	requester := fsHost(t)
-	provider.SetListAccess([]string{root}, func(string) bool { return true })
+	provider.SetReadAccess(allowAllRoots(root))
 	provider.RegisterFSHandler()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

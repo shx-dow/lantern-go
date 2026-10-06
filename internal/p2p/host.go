@@ -50,12 +50,11 @@ type Node struct {
 	shares      map[string]*shareState
 	handlerOnce sync.Once
 
-	listOnce    sync.Once
-	listRoots   []string
-	listTrusted func(peerID string) bool
+	listOnce  sync.Once
+	readRoots func(peerID string) []string
 
-	fsOnce      sync.Once
-	writePolicy *WritePolicy
+	fsOnce     sync.Once
+	writeGrant WriteGrant
 }
 
 // NewNode brings up a TCP+QUIC host with relay, hole punching, DHT in

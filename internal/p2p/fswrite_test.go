@@ -19,6 +19,17 @@ func writePolicy(root string, max int64) *WritePolicy {
 	return &WritePolicy{Mode: WriteSharedRoots, Roots: []string{root}, MaxBytes: max}
 }
 
+// grantEveryone allows every peer the same policy. It stands in for the
+// "every paired device writes here" case so most fs tests stay about the fs
+// path rather than about per-peer policy; the per-peer behaviour has its own
+// tests in perpeer_test.go.
+func grantEveryone(pol *WritePolicy) WriteGrant {
+	if pol == nil {
+		return nil
+	}
+	return func(string) (*WritePolicy, error) { return pol, nil }
+}
+
 func TestFSWriteStoresFile(t *testing.T) {
 	root := t.TempDir()
 	requester, pi := fsPairWith(t, root, writePolicy(root, 0))
@@ -70,8 +81,8 @@ func TestFSWriteDeniedWhenUnpaired(t *testing.T) {
 	t.Cleanup(func() { provider.Close() })
 	// Paired with nobody, and writes enabled: the pairing gate must still
 	// win, because SetListAccess is what grants access at all.
-	provider.SetListAccess([]string{root}, func(string) bool { return false })
-	provider.SetWritePolicy(writePolicy(root, 0))
+	provider.SetReadAccess(nil)
+	provider.SetWriteAccess(grantEveryone(writePolicy(root, 0)))
 	provider.RegisterFSHandler()
 
 	requester, err := NewNode(0, []string{"none"}, nil, t.TempDir())

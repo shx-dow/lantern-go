@@ -25,7 +25,7 @@ func TestTrustStoreConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			id := fmt.Sprintf("12D3KooWPeer%032d", w)
 			for i := 0; i < rounds; i++ {
-				if _, err := s.Add(id, fmt.Sprintf("dev%d", w)); err != nil {
+				if _, err := s.Add(TrustSpec{PeerID: id, Alias: fmt.Sprintf("dev%d", w)}); err != nil {
 					t.Errorf("add: %v", err)
 					return
 				}

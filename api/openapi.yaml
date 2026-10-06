@@ -245,6 +245,7 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/TrustRequest'
+
       responses:
         '201':
           description: Paired.
@@ -465,6 +466,62 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '502':
           description: The remote refused the stat or was unreachable.
+  /v1/trust/{id}:
+    patch:
+      summary: Change what a paired device may do
+      description: |-
+        Changes an existing pairing without re-adding it, so granting or
+        revoking access cannot clobber the alias or the cached addresses. Only
+        the fields present in the body change; an absent `tier` keeps the
+        current one. Takes an alias as well as a peer ID.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Device alias or peer ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrustRequest'
+      responses:
+        '200':
+          description: The updated pairing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrustEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Not paired.
+    delete:
+      summary: Unpair a device
+      description: |-
+        Revokes every standing capability the pairing conferred, on both the
+        read and the write path, immediately. Takes an alias as well as a peer
+        ID.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Device alias or peer ID.
+      responses:
+        '204':
+          description: Unpaired.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Not paired.
   /v1/pushes:
     post:
       summary: Send a local file to a paired device
@@ -731,6 +788,22 @@ components:
           type: string
         alias:
           type: string
+        tier:
+          type: string
+          enum: [none, read, read-write]
+          description: |-
+            What this pairing actually confers. `none` keeps the device paired
+            while granting nothing; `read` reads inside the daemon's shared
+            dirs; `read-write` also writes inside its writable dirs. A newly
+            paired device gets `read`, so pairing alone never confers a write.
+        writable_roots:
+          type: array
+          items:
+            type: string
+          description: |-
+            Restricts this device to a subset of the daemon's writable dirs.
+            It may only narrow them, never widen them; a root outside them is
+            rejected. Absent means the daemon's whole writable set applies.
         added_at:
           type: string
           format: date-time
@@ -755,8 +828,21 @@ components:
       properties:
         peer_id:
           type: string
+          description: Peer ID, or an alias of an already paired device.
         alias:
           type: string
+        tier:
+          type: string
+          enum: [none, read, read-write]
+          description: Defaults to `read` when absent. Granting `read-write` is the only way a pairing can place files on this device.
+        writable_roots:
+          type: array
+          items:
+            type: string
+          description: |-
+            Restricts this device to a subset of the daemon's writable dirs.
+            Only meaningful with tier `read-write`. Each root must sit inside
+            the daemon's own writable dirs; anything else is a 400.
     FileEntry:
       type: object
       required: [name, size, mod_time, is_dir]
@@ -780,6 +866,15 @@ components:
         alias:
           type: string
           description: Human name assigned at pairing; accepted anywhere a device is addressed.
+        tier:
+          type: string
+          enum: [none, read, read-write]
+          description: What this pairing may do. An agent needs it to tell "not paired" apart from "paired but read-only".
+        writable_roots:
+          type: array
+          items:
+            type: string
+          description: This device's own write restriction, when it has one.
         added_at:
           type: string
           format: date-time

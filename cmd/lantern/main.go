@@ -99,16 +99,18 @@ func runOrExit(err error) {
 }
 
 type cliOptions struct {
-	jsonOut     bool
-	port        int
-	dataDir     string
-	outDir      string
-	daemon      bool
-	daemonURL   string
-	daemonToken string
-	probePeers  bool
-	command     string
-	positional  []string
+	jsonOut       bool
+	port          int
+	dataDir       string
+	outDir        string
+	daemon        bool
+	daemonURL     string
+	daemonToken   string
+	probePeers    bool
+	tier          string
+	writableRoots []string
+	command       string
+	positional    []string
 }
 
 func main() {
@@ -265,6 +267,22 @@ func parseArgs(args []string) (cliOptions, error) {
 			opts.dataDir = args[i]
 		case strings.HasPrefix(a, "--data-dir="):
 			opts.dataDir = strings.TrimPrefix(a, "--data-dir=")
+		case a == "--tier":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("flag --tier needs a value")
+			}
+			i++
+			opts.tier = args[i]
+		case strings.HasPrefix(a, "--tier="):
+			opts.tier = strings.TrimPrefix(a, "--tier=")
+		case a == "--writable-roots" || a == "--roots":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("flag --writable-roots needs a value")
+			}
+			i++
+			opts.writableRoots = splitRoots(args[i])
+		case strings.HasPrefix(a, "--writable-roots="):
+			opts.writableRoots = splitRoots(strings.TrimPrefix(a, "--writable-roots="))
 		case a == "--probe-peers":
 			opts.probePeers = true
 		case strings.HasPrefix(a, "--probe-peers="):
@@ -286,6 +304,34 @@ func parseArgs(args []string) (cliOptions, error) {
 		}
 	}
 	return opts, nil
+}
+
+// splitRoots parses a comma-separated root list, so a shell never has to be
+// trusted with quoting a single directory that contains a space.
+func splitRoots(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// rootSummary renders a peer's writable roots for the list line.
+func rootSummary(roots []string) string {
+	if len(roots) == 0 {
+		return "(this device's writable dirs)"
+	}
+	return strings.Join(roots, ",")
+}
+
+// orNoneList renders an empty list as "none".
+func orNoneList(v []string) string {
+	if len(v) == 0 {
+		return "none (this device's writable dirs)"
+	}
+	return strings.Join(v, ", ")
 }
 
 func normalizeBaseURL(v string) string {
@@ -313,7 +359,9 @@ func usage() {
     peers                        connected peers (needs --daemon)
     discover                     self + connected peers (needs --daemon)
     trust list                   paired devices (needs --daemon)
-    trust add <peer-id> [alias]  pair a device (needs --daemon)
+    trust add <peer-id> [alias]  pair a device, at --tier (default read)
+    trust tier <peer-id|alias> T change what a paired device may do
+    trust roots <peer-id|alias> [dirs...]  confine a device's writes
     trust remove <peer-id>       unpair a device (needs --daemon)
     files [dir]                  list shared-dir files (needs --daemon)
     remote-files <peer-id> [dir] list files on a connected peer (needs --daemon)
@@ -516,25 +564,67 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 				fmt.Println("no paired devices")
 			} else {
 				for _, p := range trusted {
-					fmt.Printf("%s %s\n", p.PeerID, p.Alias)
+					name := p.Alias
+					if name == "" {
+						name = "(no alias)"
+					}
+					fmt.Printf("%s  %-24s  %-10s %s\n", p.PeerID, name, p.Tier, rootSummary(p.WritableRoots))
 				}
 			}
 		case "add":
 			if len(opts.positional) < 2 {
-				fatal(opts.jsonOut, fmt.Errorf("usage: lantern trust add <peer-id> [alias]"))
+				fatal(opts.jsonOut, fmt.Errorf("usage: lantern trust add <peer-id> [alias] [--tier T] [--writable-roots DIRS]"))
 			}
 			alias := ""
 			if len(opts.positional) > 2 {
 				alias = opts.positional[2]
 			}
-			entry, err := c.TrustAdd(opts.positional[1], alias)
+			body := map[string]any{"peer_id": opts.positional[1], "alias": alias}
+			if opts.tier != "" {
+				body["tier"] = opts.tier
+			}
+			if len(opts.writableRoots) > 0 {
+				body["writable_roots"] = opts.writableRoots
+			}
+			entry, err := c.TrustAddSpec(body)
 			if err != nil {
 				fatal(opts.jsonOut, err)
 			}
 			if opts.jsonOut {
 				enc.Encode(entry)
 			} else {
-				fmt.Printf("paired %s\n", entry.PeerID)
+				fmt.Printf("paired %s at tier %s\n", entry.PeerID, entry.Tier)
+				if len(entry.WritableRoots) > 0 {
+					fmt.Printf("  may write only in: %s\n", strings.Join(entry.WritableRoots, ", "))
+				}
+			}
+		case "tier":
+			// Changing a tier must not re-add the pairing: that would reset
+			// its alias and cached addresses.
+			if len(opts.positional) < 3 {
+				fatal(opts.jsonOut, fmt.Errorf("usage: lantern trust tier <peer-id|alias> <tier>"))
+			}
+			entry, err := c.TrustSetTier(opts.positional[1], opts.positional[2])
+			if err != nil {
+				fatal(opts.jsonOut, err)
+			}
+			if opts.jsonOut {
+				enc.Encode(entry)
+			} else {
+				fmt.Printf("%s is now at tier %s\n", entry.PeerID, entry.Tier)
+			}
+		case "roots":
+			if len(opts.positional) < 2 {
+				fatal(opts.jsonOut, fmt.Errorf("usage: lantern trust roots <peer-id|alias> [dirs...] (omit dirs to clear)"))
+			}
+			entry, err := c.TrustSetRoots(opts.positional[1], opts.positional[2:])
+			if err != nil {
+				fatal(opts.jsonOut, err)
+			}
+			if opts.jsonOut {
+				enc.Encode(entry)
+			} else {
+				fmt.Printf("%s writable roots: %s\n", entry.PeerID, orNoneList(entry.WritableRoots))
 			}
 		case "remove", "rm":
 			if len(opts.positional) < 2 {
@@ -549,7 +639,7 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 				fmt.Printf("removed %s\n", opts.positional[1])
 			}
 		default:
-			fatal(opts.jsonOut, fmt.Errorf("usage: lantern trust [list|add|remove]"))
+			fatal(opts.jsonOut, fmt.Errorf("usage: lantern trust [list|add|tier|roots|remove]"))
 		}
 	case "files":
 		dir := ""

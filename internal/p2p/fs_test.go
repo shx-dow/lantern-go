@@ -40,8 +40,8 @@ func fsPairWith(t *testing.T, root string, pol *WritePolicy) (*Node, peer.AddrIn
 	provider := fsHost(t)
 	requester := fsHost(t)
 
-	provider.SetListAccess([]string{root}, func(id string) bool { return id == requester.Host.ID().String() })
-	provider.SetWritePolicy(pol)
+	provider.SetReadAccess(allowRootsFor([]string{root}, requester.Host.ID().String()))
+	provider.SetWriteAccess(grantEveryone(pol))
 	provider.RegisterFSHandler()
 	return requester, peer.AddrInfo{ID: provider.Host.ID(), Addrs: provider.Host.Addrs()}
 }
@@ -181,7 +181,7 @@ func TestFSDeniedWhenUnpaired(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "a.txt"), "hi")
 	provider := fsHost(t)
-	provider.SetListAccess([]string{root}, func(string) bool { return false })
+	provider.SetReadAccess(nil)
 	provider.RegisterFSHandler()
 	requester := fsHost(t)
 
@@ -225,5 +225,24 @@ func TestFSReadSpansChunkBoundary(t *testing.T) {
 	}
 	if !bytes.Equal(data, big[:DefaultReadLength]) {
 		t.Fatalf("large read mismatch: got %d bytes", len(data))
+	}
+}
+
+// allowAllRoots is the test stand-in for "every peer may read these roots".
+func allowAllRoots(roots ...string) ReadRoots {
+	return func(string) []string { return roots }
+}
+
+// allowRootsFor allows only the listed peers, mirroring the old bool gate.
+func allowRootsFor(roots []string, allowed ...string) ReadRoots {
+	set := map[string]bool{}
+	for _, a := range allowed {
+		set[a] = true
+	}
+	return func(id string) []string {
+		if set[id] {
+			return roots
+		}
+		return nil
 	}
 }

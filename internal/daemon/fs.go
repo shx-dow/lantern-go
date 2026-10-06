@@ -221,13 +221,18 @@ func queryInt(r *http.Request, key string, def int64) (int64, error) {
 // connection, which says nothing about a peer that is merely idle, so
 // ?probe=1 dials each device and reports whether a request would work now.
 type deviceInfo struct {
-	PeerID    string `json:"peer_id"`
-	Alias     string `json:"alias,omitempty"`
-	AddedAt   string `json:"added_at,omitempty"`
-	Online    bool   `json:"online"`
-	Addresses int    `json:"known_addresses"`
-	Reachable *bool  `json:"reachable,omitempty"`
-	Error     string `json:"error,omitempty"`
+	PeerID string `json:"peer_id"`
+	Alias  string `json:"alias,omitempty"`
+	// Tier is what this pairing actually confers. An agent needs it to
+	// explain a refusal: "not paired" and "paired but read-only" need
+	// different answers.
+	Tier          string   `json:"tier,omitempty"`
+	WritableRoots []string `json:"writable_roots,omitempty"`
+	AddedAt       string   `json:"added_at,omitempty"`
+	Online        bool     `json:"online"`
+	Addresses     int      `json:"known_addresses"`
+	Reachable     *bool    `json:"reachable,omitempty"`
+	Error         string   `json:"error,omitempty"`
 }
 
 // getDevices lists paired devices and whether each is currently connected,
@@ -285,11 +290,13 @@ func (h *Handler) getDevices(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		info := deviceInfo{
-			PeerID:    e.PeerID,
-			Alias:     e.Alias,
-			AddedAt:   e.AddedAt,
-			Online:    connected[e.PeerID],
-			Addresses: addrs,
+			PeerID:        e.PeerID,
+			Alias:         e.Alias,
+			Tier:          string(e.Tier),
+			WritableRoots: e.WritableRoots,
+			AddedAt:       e.AddedAt,
+			Online:        connected[e.PeerID],
+			Addresses:     addrs,
 		}
 		if probe {
 			ok := results[i].ok
