@@ -312,6 +312,62 @@ func resolveWritePath(pol WritePolicy, path string) (string, error) {
 	return dst, nil
 }
 
+// writePerm holds the modes a push creates: one for missing parent
+// directories, one for the stored file.
+type writePerm struct {
+	dir  os.FileMode
+	file os.FileMode
+}
+
+// inheritedPerm derives the modes for a push destination from the nearest
+// existing ancestor directory of dir.
+//
+// A push never widens access. If the shared root is 0700, created directories
+// are 0700 and the stored file is 0600; if the root is 0755, they are 0755 and
+// 0644. The file mode is the directory mode without the execute bits, which is
+// the usual relationship between a directory and the files inside it.
+//
+// Nothing is forced on. If the nearest ancestor is not owner-writable, the
+// derived directory is not writable either, so the push fails at the create
+// with an ordinary permission error rather than succeeding by widening rights
+// the operator deliberately removed. Owner-read is the only floor, so a file is
+// never created that its own owner cannot read.
+func inheritedPerm(dir string) (writePerm, error) {
+	fi, err := nearestExistingDir(dir)
+	if err != nil {
+		return writePerm{}, err
+	}
+	base := fi.Mode().Perm()
+	return writePerm{
+		dir:  base,
+		file: base&^0o111 | 0o400,
+	}, nil
+}
+
+// nearestExistingDir walks up from dir to the closest ancestor that exists, and
+// returns its FileInfo. It mirrors resolveNewParent's walk, so the permissions
+// come from the same directory that proved containment.
+func nearestExistingDir(dir string) (os.FileInfo, error) {
+	probe := dir
+	for {
+		fi, err := os.Stat(probe)
+		if err == nil {
+			if !fi.IsDir() {
+				return nil, fmt.Errorf("%s is not a directory", probe)
+			}
+			return fi, nil
+		}
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("resolve path: %w", err)
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return nil, fmt.Errorf("no existing ancestor for %q", dir)
+		}
+		probe = parent
+	}
+}
+
 // resolveNewParent resolves a destination directory that may not exist yet.
 // It anchors on the nearest existing ancestor, proves that ancestor sits
 // inside roots, and rejoins the remaining plain names. Callers must
@@ -396,7 +452,18 @@ func (n *Node) fsWrite(s network.Stream, req FSRequest) {
 	}
 
 	dir := filepath.Dir(resolved)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	// A push takes its permissions from the directory it lands in, rather than
+	// hardcoding a mode. An operator who chose 0700 for a shared root must not
+	// get 0755 directories and 0644 files from a paired peer: the root stays
+	// private today, and every push-created path becomes readable the moment
+	// someone relaxes it. MkdirAll only applies the mode to directories it
+	// actually creates, so an existing parent keeps its own.
+	perm, err := inheritedPerm(dir)
+	if err != nil {
+		reject(err.Error())
+		return
+	}
+	if err := os.MkdirAll(dir, perm.dir); err != nil {
 		reject(err.Error())
 		return
 	}
@@ -446,7 +513,7 @@ func (n *Node) fsWrite(s network.Stream, req FSRequest) {
 		_ = protocol.WriteMetadata(s, fail(err.Error()))
 		return
 	}
-	if err := os.Chmod(tmpPath, 0644); err != nil {
+	if err := os.Chmod(tmpPath, perm.file); err != nil {
 		_ = protocol.WriteMetadata(s, fail(err.Error()))
 		return
 	}
