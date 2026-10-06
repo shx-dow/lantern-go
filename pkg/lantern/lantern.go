@@ -98,6 +98,12 @@ type Lantern struct {
 	// restart can still reach a paired device straight away. Optional: when
 	// nil, only live connections and fresh announcements are used.
 	knownAddrs func(peerID string) []string
+
+	// readPathFetches counts fetches that went over the fs read path rather
+	// than the transfer protocol. It is read by tests in this package: the
+	// whole point of the read-path shortcut is invisible from outside, since
+	// both paths deliver the same file.
+	readPathFetches int
 }
 
 // WithKnownAddrs supplies cached addresses used when discovery has not
@@ -210,6 +216,14 @@ func New(cfg Config) (*Lantern, error) {
 		events:      make(chan Event, broadcastBufferSize),
 		subscribers: make(map[uint64]subscription),
 	}
+	// Serve the fs protocol whenever anyone grants read access, not only when
+	// the daemon wires it. Without this a Lantern used in-process would never
+	// answer a read, so a fetch from it would quietly take the transfer path
+	// even though the peer was perfectly willing to serve the file directly.
+	//
+	// It is safe to register unconditionally: the handler serves no roots
+	// until SetReadAccess is called, and it refuses everything until then.
+	node.RegisterFSHandler()
 	return l, nil
 }
 
@@ -378,12 +392,66 @@ func (l *Lantern) receive(ctx context.Context, code string, outputDir string) (*
 	progress := make(chan p2p.TransferProgress, broadcastBufferSize)
 	go l.forwardProgress(ctx, progress, code)
 
+	// A paired sender is asked whether it will serve this code over the read
+	// path. If it will, the bytes come from the fs protocol and the transfer
+	// protocol is never opened, so a fetch between paired devices uses one
+	// protocol rather than two.
+	//
+	// The sender decides, not the receiver: only it knows the path behind a
+	// code, and only it can say whether that path is inside its shared roots.
+	// A refusal here is not an error, it is the transfer path's turn.
+	if err := l.tryFetchViaRead(ctx, pi, code, outputDir, progress); err == nil {
+		return &Peer{ID: pi.ID.String(), Code: code}, nil
+	} else if ctx.Err() != nil {
+		// The caller went away mid-decision. Falling through would open a
+		// transfer that cannot finish.
+		return nil, err
+	}
+
 	l.node.RegisterReceive(ctx, pi, code, outputDir, progress)
 
 	return &Peer{
 		ID:   pi.ID.String(),
 		Code: code,
 	}, nil
+}
+
+// tryFetchViaRead pulls the code's file over the fs read path, reporting whether
+// it took ownership of the transfer. It returns nil when the read path handled
+// the fetch, and an error when the caller should fall back to the transfer path.
+//
+// It runs on the caller's goroutine rather than in the background because the
+// decision itself must be made before anything is announced: a sender that
+// cannot serve the code over the read path has to be asked through the
+// transfer protocol instead, and starting two pulls for one code would leave a
+// partial file and a duplicate advertisement behind.
+func (l *Lantern) tryFetchViaRead(ctx context.Context, pi peer.AddrInfo, code string, outputDir string, progress chan<- p2p.TransferProgress) error {
+	info, err := l.node.ResolveShare(ctx, pi, code)
+	if err != nil || info == nil {
+		// Not resolvable over the read path: an unpaired sender, a code it no
+		// longer advertises, or a file outside its shared roots. All three are
+		// the transfer path's normal case, not failures.
+		return fmt.Errorf("read path unavailable for this share")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		defer close(progress)
+		done <- l.node.FetchFS(ctx, pi, code, outputDir, progress)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			// The read path was committed to. A failure here is a real failure
+			// and must not silently restart as a transfer.
+			return fmt.Errorf("read-path fetch: %w", err)
+		}
+		l.readPathFetches++
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // RemoteFiles lists one level of dir on a connected peer. The remote side
