@@ -561,13 +561,13 @@ func (d *Daemon) PushFile(ctx context.Context, ref, path, remotePath string, ove
 	// reported as delivered.
 	local := sha256.Sum256(content)
 
+	localDigest := hex.EncodeToString(local[:])
 	res, err := d.ln.PushRemote(ctx, ref, remotePath, content, overwrite)
 	if err != nil {
 		return PushResult{}, err
 	}
-	localDigest := hex.EncodeToString(local[:])
-	if res.SHA256 != "" && res.SHA256 != localDigest {
-		return PushResult{}, fmt.Errorf("digest mismatch: sent %s, remote reported %s", localDigest, res.SHA256)
+	if err := verifyRemoteDigest(localDigest, res.SHA256); err != nil {
+		return PushResult{}, err
 	}
 	return PushResult{
 		Entry:       res.Entry,
@@ -575,4 +575,25 @@ func (d *Daemon) PushFile(ctx context.Context, ref, path, remotePath string, ove
 		SHA256:      res.SHA256,
 		LocalSHA256: localDigest,
 	}, nil
+}
+
+// verifyRemoteDigest compares the digest of what we sent against the digest the
+// receiving device says it stored.
+//
+// It fails closed. The receiver both writes the bytes and computes the digest,
+// so it is the party being trusted here: a receiver that reports no digest must
+// not pass as "verified", or it could report any content as delivered while the
+// push response carries an empty sha256. An absent digest means the copy cannot
+// be checked, and that is a failure rather than a pass.
+//
+// The comparison is exact. It does not fold case or trim whitespace, because a
+// digest that differs in any byte is a different digest.
+func verifyRemoteDigest(local, remote string) error {
+	if strings.TrimSpace(remote) == "" {
+		return fmt.Errorf("the receiving device reported no digest, so the copy cannot be verified (sent %s)", local)
+	}
+	if remote != local {
+		return fmt.Errorf("digest mismatch: sent %s, remote reported %s", local, remote)
+	}
+	return nil
 }
