@@ -253,6 +253,10 @@ CI, so treat changes to it as review-worthy.
 JSON request bodies are capped at 64 KiB. Every request in the API is a small
 document of paths and flags, so this only ever refuses a mistake.
 
+Write-path security review: [`docs/write-path-audit.md`](docs/write-path-audit.md)
+records an internal adversarial pass over the push path, its two open findings,
+and the properties that held. Not an independent audit.
+
 ## Security notes
 
 **A paired device can read files inside that device's `--shared-dirs`.** That
