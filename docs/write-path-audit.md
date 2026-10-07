@@ -170,6 +170,15 @@ land inside `uploads/`, with nothing written above it.
   `WriteSharedRoots`. The mode exists in the type and is exercised by tests
   only, so it is dead code with a genuinely dangerous shape. Worth removing, or
   worth refusing to construct outside tests.
+
+  **Resolved.** The mode has been removed (`91d780f`). `WritePolicy.Mode` now
+  admits `WriteDenied` and `WriteSharedRoots` only, so there is no mode that
+  widens a destination beyond the operator's roots. A policy carrying the old
+  `"anywhere"` value fails closed rather than falling through to an
+  unconstrained write, which `TestAuditRemovedWriteModeFailsClosed` asserts.
+  Per-peer write policy (`internal/daemon/access.go`) covers the narrow case
+  the mode was ostensibly for, by narrowing a device's writes rather than by
+  discarding them.
 - **Hardlinks are not detectable as escapes.** A hardlink to a file outside the
   root is a regular file inside it, so path containment cannot catch it. This
   is a filesystem property rather than a Lantern bug, but it means shared roots
