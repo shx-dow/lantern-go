@@ -272,6 +272,10 @@ CI, so treat changes to it as review-worthy.
 JSON request bodies are capped at 64 KiB. Every request in the API is a small
 document of paths and flags, so this only ever refuses a mistake.
 
+The project's vocabulary — what a device, a pairing, a tier, a shared root, a
+share code, a fetch and a push each mean — is in [`CONTEXT.md`](CONTEXT.md).
+Prose and code should use those words.
+
 Write-path security review: [`docs/write-path-audit.md`](docs/write-path-audit.md)
 records an internal adversarial pass over the push path, its two open findings,
 and the properties that held. Not an independent audit.

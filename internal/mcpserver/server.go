@@ -67,7 +67,7 @@ func tools() []toolDef {
 	return []toolDef{
 		{"share", "Advertise a local file and return its share code", obj(map[string]any{"path": str("Local file path to share"), "ttl_seconds": num("Auto-cancel after N seconds (0 = daemon default)")}, "path")},
 		{"fetch", "Fetch a share code into out_dir", obj(map[string]any{"code": str("Share code"), "out_dir": str("Destination directory (default .)")}, "code")},
-		{"status", "Daemon and node status (peer ID, device name, LAN mode)", obj(map[string]any{})},
+		{"status", "Daemon and device status (peer ID, device name, LAN mode)", obj(map[string]any{})},
 		{"discover", "Self status plus connected peers", obj(map[string]any{})},
 		{"transfers", "List live transfers", obj(map[string]any{"kind": str("Filter: share|fetch (omit for all)")})},
 		{"transfer", "Get one transfer snapshot", obj(map[string]any{"id": str("Transfer ID (= share code)")}, "id")},
