@@ -13,6 +13,7 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/shx-dow/lantern-go/internal/p2p"
+	"github.com/shx-dow/lantern-go/internal/storage"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
 
@@ -483,7 +484,10 @@ func (d *Daemon) RemoteFiles(ctx context.Context, peerID, dir string) ([]lantern
 
 // PushResult describes a completed push and the digests that prove it.
 type PushResult struct {
+	// Entry describes the stored file. It is the zero value when Entries is
+	// set, because a directory push reports a tree rather than a file.
 	Entry       lantern.Entry
+	Entries     []lantern.Entry
 	Bytes       int64
 	SHA256      string
 	LocalSHA256 string
@@ -535,9 +539,10 @@ func badRequest(format string, args ...any) error {
 	return &RequestError{Err: fmt.Errorf(format, args...)}
 }
 
-// PushFile copies a local file onto a paired device. Bytes move p2p, never
-// through the daemon's HTTP surface, and the copy is verified against the
-// remote's reported digest before the transfer is called a success.
+// PushFile copies a local file or directory onto a paired device. Bytes move
+// p2p, never through the daemon's HTTP surface, and the copy is verified
+// against the remote's reported digest before the transfer is called a
+// success.
 //
 // The source is validated before any transport work, so a caller error is
 // reported as such rather than as a failure to reach the remote.
@@ -551,17 +556,21 @@ func (d *Daemon) PushFile(ctx context.Context, ref, path, remotePath string, ove
 	if err != nil {
 		return PushResult{}, badRequest("read source: %w", err)
 	}
-	if info.IsDir() {
-		return PushResult{}, badRequest("path is a directory: %s (directories push as an archive, which is not implemented yet)", path)
-	}
-	if info.Size() > p2p.DefaultMaxWriteBytes {
+	// A file's size is known before anything is read, so an oversize source is
+	// refused as the caller's mistake rather than after a transfer is under way.
+	// A directory's size is only known once it is archived, so that check
+	// belongs with the archiving.
+	if !info.IsDir() && info.Size() > p2p.DefaultMaxWriteBytes {
 		return PushResult{}, badRequest("file is %d bytes, over the %d byte push limit", info.Size(), p2p.DefaultMaxWriteBytes)
 	}
 	if d.ln == nil {
 		return PushResult{}, fmt.Errorf("node not ready")
 	}
 	if strings.TrimSpace(remotePath) == "" {
-		remotePath = filepath.Base(path)
+		remotePath = filepath.Base(filepath.Clean(path))
+	}
+	if info.IsDir() {
+		return d.pushDir(ctx, ref, path, remotePath, overwrite)
 	}
 
 	content, err := os.ReadFile(path)
@@ -582,6 +591,50 @@ func (d *Daemon) PushFile(ctx context.Context, ref, path, remotePath string, ove
 	}
 	return PushResult{
 		Entry:       res.Entry,
+		Bytes:       res.Bytes,
+		SHA256:      res.SHA256,
+		LocalSHA256: localDigest,
+	}, nil
+}
+
+// pushDir archives a local directory and sends it as one write, which the
+// receiving device verifies and then expands into a directory.
+//
+// The archive is built in a temporary directory and removed afterwards; nothing
+// is left in the source tree, and a failure part-way through leaves the source
+// untouched. The digest that is verified is the archive's, which is the thing
+// that crossed the wire — the receiver reports the digest of what it received
+// and stored, not of the tree it expanded from it.
+func (d *Daemon) pushDir(ctx context.Context, ref, path, remotePath string, overwrite bool) (PushResult, error) {
+	zipPath, cleanup, err := storage.ZipDirToTemp(path)
+	if err != nil {
+		return PushResult{}, badRequest("archive directory: %w", err)
+	}
+	defer cleanup()
+
+	fi, err := os.Stat(zipPath)
+	if err != nil {
+		return PushResult{}, err
+	}
+	if fi.Size() > p2p.DefaultMaxWriteBytes {
+		return PushResult{}, badRequest("the directory archives to %d bytes, over the %d byte push limit", fi.Size(), p2p.DefaultMaxWriteBytes)
+	}
+	archive, err := os.ReadFile(zipPath)
+	if err != nil {
+		return PushResult{}, err
+	}
+	local := sha256.Sum256(archive)
+	localDigest := hex.EncodeToString(local[:])
+
+	res, err := d.ln.PushDirRemote(ctx, ref, remotePath, archive, overwrite)
+	if err != nil {
+		return PushResult{}, err
+	}
+	if err := verifyRemoteDigest(localDigest, res.SHA256); err != nil {
+		return PushResult{}, err
+	}
+	return PushResult{
+		Entries:     res.Entries,
 		Bytes:       res.Bytes,
 		SHA256:      res.SHA256,
 		LocalSHA256: localDigest,

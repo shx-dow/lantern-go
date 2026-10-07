@@ -524,26 +524,41 @@ paths:
           description: Not paired.
   /v1/pushes:
     post:
-      summary: Send a local file to a paired device
+      summary: Send a local file or directory to a paired device
       description: |-
-        Copies a local file onto a paired device. The sending device dials
-        the receiver and writes directly, so an agent holding a file can
-        place it without the receiver having to ask for it.
+        Copies a local file or directory onto a paired device. The sending
+        device dials the receiver and writes directly, so an agent holding
+        a file can place it without the receiver having to ask for it.
 
         Only paths and metadata cross this API; the bytes move p2p, so
         pushing a large file costs the same request as a small one.
+
+        A directory source is archived into a zip on the sending side and
+        sent as one write. The receiving device verifies the digest first,
+        then expands the archive into a directory it creates itself, inside
+        its writable roots. Symbolic links in an archive are refused, and
+        every entry is checked to resolve inside the destination, so a
+        crafted archive cannot write outside it or plant a link that
+        redirects a later write. Expanding a tree replaces it whole; two
+        pushes never merge.
 
         Whether the write lands is entirely the receiving device's decision.
         It refuses unless it was started with writes enabled, and its
         writable roots bound the destination. A bare `remote_path` is
         resolved by the receiver against its first writable root; an
         absolute path is honoured as given but must still fall inside a
-        writable root. Existing files are never replaced unless
-        `overwrite` is set.
+        writable root. Existing files and directories are never replaced
+        unless `overwrite` is set.
 
         `sha256` is the digest the receiver computed over what it stored
-        and `local_sha256` the digest of what was sent. The daemon compares
-        them and reports a mismatch rather than a success.
+        and `local_sha256` the digest of what was sent. For a directory
+        push the digest is over the archive, which is the thing that
+        crossed the wire; the tree is created from it afterwards. The daemon
+        compares the two digests and reports a mismatch rather than a
+        success.
+
+        A file push returns `entry`. A directory push returns `entries`,
+        the tree the receiver created, and omits `entry`.
       requestBody:
         required: true
         content:
@@ -557,7 +572,7 @@ paths:
                   description: Destination device alias or peer ID.
                 path:
                   type: string
-                  description: Local file to send. Directories are refused.
+                  description: Local file or directory to send. A directory is archived and expanded on the receiver.
                 remote_path:
                   type: string
                   description: Destination on the target device. Defaults to the source base name.
@@ -566,7 +581,7 @@ paths:
                   default: false
       responses:
         '200':
-          description: The file was stored and its digest verified.
+          description: The file was stored, or the directory expanded, and its digest verified.
           content:
             application/json:
               schema:
@@ -959,7 +974,14 @@ components:
           type: string
           description: Digest of the bytes that were sent. Equal to sha256 on success.
         entry:
-          $ref: '#/components/schemas/FileEntry'
+          allOf:
+            - $ref: '#/components/schemas/FileEntry'
+          description: The stored file. Present on a file push; omitted on a directory push.
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileEntry'
+          description: The tree the receiver created. Present on a directory push; omitted on a file push.
     EventDTO:
       type: object
       required: [type, id]

@@ -148,12 +148,13 @@ type pushRequest struct {
 }
 
 type pushResponse struct {
-	Device      string         `json:"device"`
-	RemotePath  string         `json:"remote_path"`
-	Bytes       int64          `json:"bytes"`
-	SHA256      string         `json:"sha256"`
-	LocalSHA256 string         `json:"local_sha256"`
-	Entry       *lantern.Entry `json:"entry,omitempty"`
+	Device      string          `json:"device"`
+	RemotePath  string          `json:"remote_path"`
+	Bytes       int64           `json:"bytes"`
+	SHA256      string          `json:"sha256"`
+	LocalSHA256 string          `json:"local_sha256"`
+	Entry       *lantern.Entry  `json:"entry,omitempty"`
+	Entries     []lantern.Entry `json:"entries,omitempty"`
 }
 
 // postPush sends a local file to a paired device. Only paths and metadata
@@ -189,17 +190,24 @@ func (h *Handler) postPush(w http.ResponseWriter, r *http.Request) {
 	}
 	remotePath := req.RemotePath
 	if remotePath == "" {
-		remotePath = filepath.Base(req.Path)
+		remotePath = filepath.Base(filepath.Clean(req.Path))
 	}
-	entry := res.Entry
-	writeJSON(w, http.StatusOK, pushResponse{
+	resp := pushResponse{
 		Device:      ref,
 		RemotePath:  remotePath,
 		Bytes:       res.Bytes,
 		SHA256:      res.SHA256,
 		LocalSHA256: res.LocalSHA256,
-		Entry:       &entry,
-	})
+		// A directory push reports the tree it created; a file push reports
+		// the file it stored. Sending both would mean one of them is always
+		// absent, and a caller cannot tell which shape it got.
+		Entries: res.Entries,
+	}
+	if len(res.Entries) == 0 {
+		entry := res.Entry
+		resp.Entry = &entry
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func queryInt(r *http.Request, key string, def int64) (int64, error) {
