@@ -10,23 +10,20 @@ or Python SDK.
 
 Under active development, pre-alpha.
 
-Two ways to move bytes, and they are not equivalent:
+Three ways to move bytes. They are not equivalent:
 
-- **Read from a paired device** (`/lantern/fs/1.0.0`, the agent-native path).
-  No share code, no staging copy, no transfer session. The reading device
-  asks; the serving device answers, scoped to its `--shared-dirs`. This is
-  what an agent uses for "get me this from the laptop" and "read this off
-  the nas".
+- **Read from a paired device** (the read path, the agent-native path). No share
+  code, no staging copy, no transfer session. The reading device asks; the
+  serving device answers, scoped to its `--shared-dirs`. This is what an agent
+  uses for "get me this from the laptop" and "read this off the nas".
 - **Share-code transfer** (the original path). Still the only way to hand a
-  file to an unpaired peer, and the only way to move a directory. Folders
-  share as `<name>.zip`. A code from a *paired* device is fetched over the read
-  path instead, so this path is what remains after the read path takes what it
-  can.
-
-Plus **push**: the sending device dials the receiver and writes directly, so
-an agent holding a file can place it on another device without the receiver
-having to ask. This is the one case the share-code path used to be the only
-answer to.
+  file to an unpaired peer. A code from a *paired* device is fetched over the
+  read path instead, so this path is what remains after the read path takes what
+  it can.
+- **Push**. The sending device dials the receiver and writes directly, so an
+  agent holding a file can place it on another device without the receiver
+  having to ask. This is the one case the share-code path used to be the only
+  answer to.
 
 Push takes a directory as well as a file. The sender archives it and sends one
 write; the receiver verifies the digest, then expands the archive into a
@@ -48,8 +45,8 @@ Connections happen when the agent asks for something, and are otherwise
 absent. This keeps a device light on memory and CPU, and means a stranger
 running Lantern on the same Wi-Fi is never connected to.
 
-Known gaps: sync is unimplemented. The desktop shell has been removed, so the
-tree is pure Go and cross-compiles for every target we ship.
+The desktop shell has been removed, so the tree is pure Go and cross-compiles
+for every target we ship.
 
 ## Run it
 
