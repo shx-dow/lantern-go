@@ -276,6 +276,11 @@ The project's vocabulary — what a device, a pairing, a tier, a shared root, a
 share code, a fetch and a push each mean — is in [`CONTEXT.md`](CONTEXT.md).
 Prose and code should use those words.
 
+Design decisions that are not obvious from the code, and why they went that way:
+[`docs/adr/`](docs/adr/). Start with
+[0002](docs/adr/0002-new-pairings-default-to-read.md) if paired peers stopped
+being able to push after an upgrade.
+
 Write-path security review: [`docs/write-path-audit.md`](docs/write-path-audit.md)
 records an internal adversarial pass over the push path, its two open findings,
 and the properties that held. Not an independent audit.
