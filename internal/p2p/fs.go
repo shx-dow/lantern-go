@@ -392,7 +392,7 @@ func resolveWritePath(pol WritePolicy, path string) (string, error) {
 	if pol.Mode == WriteDenied || pol.Mode == "" {
 		return "", errors.New("writes are not permitted on this device; it must be started with write access enabled")
 	}
-	if pol.Mode != WriteSharedRoots && pol.Mode != WriteAnywhere {
+	if pol.Mode != WriteSharedRoots {
 		return "", fmt.Errorf("unknown write mode %q", pol.Mode)
 	}
 
@@ -401,9 +401,6 @@ func resolveWritePath(pol WritePolicy, path string) (string, error) {
 	// first writable root, which is what a caller passing "report.txt"
 	// means. Absolute paths are honoured as given.
 	if !filepath.IsAbs(path) {
-		if pol.Mode == WriteAnywhere {
-			return "", errors.New("a relative destination needs a configured writable root; use an absolute path")
-		}
 		if len(pol.Roots) == 0 {
 			return "", errors.New("no writable roots are configured on this device")
 		}
@@ -419,9 +416,6 @@ func resolveWritePath(pol WritePolicy, path string) (string, error) {
 	}
 	parent := filepath.Dir(abs)
 
-	if pol.Mode == WriteAnywhere {
-		return filepath.Join(parent, base), nil
-	}
 	roots := pol.Roots
 	if len(roots) == 0 {
 		// No roots configured means no writable location. Falling back to
