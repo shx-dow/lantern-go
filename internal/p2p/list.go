@@ -80,24 +80,22 @@ func (n *Node) rootsFor(peerID string) []string {
 // policy denies every write, which is the default for a node that never
 // calls SetWritePolicy.
 type WritePolicy struct {
-	// Mode is WriteDenied, WriteSharedRoots, or WriteAnywhere.
+	// Mode is WriteDenied or WriteSharedRoots. There is deliberately no mode
+	// that widens a destination beyond Roots: a paired device's write standing
+	// is always the operator's Roots, narrowed per peer, never something more.
 	Mode string
-	// Roots bounds destination paths. Ignored under WriteAnywhere.
+	// Roots bounds destination paths.
 	Roots []string
 	// MaxBytes caps one write. Zero means DefaultMaxWriteBytes.
 	MaxBytes int64
 }
 
-// Write modes for SetWritePolicy.
+// Write modes for SetWriteAccess.
 const (
 	// WriteDenied refuses every write. The default.
 	WriteDenied = "denied"
 	// WriteSharedRoots allows writes confined to Roots.
 	WriteSharedRoots = "shared-roots"
-	// WriteAnywhere allows writes to any path. Deliberately awkward: it
-	// exists for the NAS case, and a node using it has effectively handed
-	// paired peers write access to the whole filesystem.
-	WriteAnywhere = "anywhere"
 )
 
 // DefaultMaxWriteBytes caps one push when a policy does not set its own.

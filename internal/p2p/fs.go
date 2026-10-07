@@ -15,6 +15,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/shx-dow/lantern-go/internal/protocol"
+	"github.com/shx-dow/lantern-go/internal/storage"
 )
 
 // FSProtocolID is the libp2p stream protocol for remote filesystem reads.
@@ -74,6 +75,11 @@ type FSRequest struct {
 	ContentLen int64  `json:"content_len,omitempty"`
 	// Code is the share code for OpResolveShare; the other ops ignore it.
 	Code string `json:"code,omitempty"`
+	// Unpack asks the receiver to expand a zip archive into a directory once
+	// its digest has been verified. It is explicit rather than inferred from a
+	// .zip name, because a peer pushing backup.zip must get a file, not a tree
+	// nobody asked for.
+	Unpack bool `json:"unpack,omitempty"`
 }
 
 // FSEntry describes one path: a file or a directory.
@@ -392,7 +398,7 @@ func resolveWritePath(pol WritePolicy, path string) (string, error) {
 	if pol.Mode == WriteDenied || pol.Mode == "" {
 		return "", errors.New("writes are not permitted on this device; it must be started with write access enabled")
 	}
-	if pol.Mode != WriteSharedRoots && pol.Mode != WriteAnywhere {
+	if pol.Mode != WriteSharedRoots {
 		return "", fmt.Errorf("unknown write mode %q", pol.Mode)
 	}
 
@@ -401,9 +407,6 @@ func resolveWritePath(pol WritePolicy, path string) (string, error) {
 	// first writable root, which is what a caller passing "report.txt"
 	// means. Absolute paths are honoured as given.
 	if !filepath.IsAbs(path) {
-		if pol.Mode == WriteAnywhere {
-			return "", errors.New("a relative destination needs a configured writable root; use an absolute path")
-		}
 		if len(pol.Roots) == 0 {
 			return "", errors.New("no writable roots are configured on this device")
 		}
@@ -419,9 +422,6 @@ func resolveWritePath(pol WritePolicy, path string) (string, error) {
 	}
 	parent := filepath.Dir(abs)
 
-	if pol.Mode == WriteAnywhere {
-		return filepath.Join(parent, base), nil
-	}
 	roots := pol.Roots
 	if len(roots) == 0 {
 		// No roots configured means no writable location. Falling back to
@@ -573,7 +573,16 @@ func (n *Node) fsWrite(s network.Stream, remote string, req FSRequest) {
 	}
 
 	if fi, err := os.Lstat(resolved); err == nil {
-		if fi.IsDir() {
+		// A file push needs a file-shaped destination; an archive expands into
+		// a directory, so a directory is the right shape of thing to find
+		// there. Either way a mismatched shape is refused rather than replaced,
+		// because a peer should not be able to turn a file into a tree by
+		// naming a path that happens to exist.
+		if req.Unpack && !fi.IsDir() {
+			reject("destination exists and is not a directory")
+			return
+		}
+		if !req.Unpack && fi.IsDir() {
 			reject("path is a directory")
 			return
 		}
@@ -615,12 +624,15 @@ func (n *Node) fsWrite(s network.Stream, remote string, req FSRequest) {
 		return
 	}
 	tmpPath := tmp.Name()
-	// Any failure past this point must not leave debris or a partial file.
-	committed := false
+	// The staging file is removed unless it was renamed into place as the
+	// destination. A directory push never renames it — the archive is expanded
+	// and then has no further use — so the flag, not the success of the
+	// transfer, is what decides whether it stays.
+	renamed := false
 	defer func() {
 		tmp.Close()
-		if !committed {
-			os.Remove(tmpPath)
+		if !renamed {
+			_ = os.Remove(tmpPath)
 		}
 	}()
 
@@ -652,72 +664,220 @@ func (n *Node) fsWrite(s network.Stream, remote string, req FSRequest) {
 		_ = protocol.WriteMetadata(s, fail(err.Error()))
 		return
 	}
-	if err := os.Rename(tmpPath, resolved); err != nil {
-		_ = protocol.WriteMetadata(s, fail(err.Error()))
-		return
-	}
-	committed = true
 
-	fi, err := os.Stat(resolved)
-	if err != nil {
-		_ = protocol.WriteMetadata(s, fail(err.Error()))
-		return
+	var resp FSResponse
+	if req.Unpack {
+		// The archive's digest has now been verified against the bytes that
+		// arrived, so its contents are as trustworthy as a pushed file's.
+		// Expanding it is the last thing that happens before the tree lands.
+		entries, err := expandArchive(tmpPath, resolved, perm, req.Overwrite)
+		if err != nil {
+			_ = protocol.WriteMetadata(s, fail(err.Error()))
+			return
+		}
+		resp = FSResponse{Entries: entries, Bytes: written, EOF: true, SHA256: hex.EncodeToString(hasher.Sum(nil))}
+	} else {
+		if err := os.Rename(tmpPath, resolved); err != nil {
+			_ = protocol.WriteMetadata(s, fail(err.Error()))
+			return
+		}
+		renamed = true
+		fi, err := os.Stat(resolved)
+		if err != nil {
+			_ = protocol.WriteMetadata(s, fail(err.Error()))
+			return
+		}
+		resp = FSResponse{Entry: entryFor(fi), Bytes: written, EOF: true, SHA256: hex.EncodeToString(hasher.Sum(nil))}
 	}
-	_ = protocol.WriteMetadata(s, FSResponse{Entry: entryFor(fi), Bytes: written, EOF: true, SHA256: hex.EncodeToString(hasher.Sum(nil))})
+	_ = protocol.WriteMetadata(s, resp)
+}
+
+// expandArchive expands the verified archive at zipPath into the directory
+// dest, and returns what landed.
+//
+// It expands into a sibling temporary directory and renames that into place,
+// so the destination is either absent or complete: a reader never sees a
+// half-expanded tree, and a failure removes the staging directory rather than
+// leaving debris where the tree should be. The staging directory is a sibling
+// so the final rename stays on one filesystem, which is what makes it atomic.
+func expandArchive(zipPath, dest string, perm writePerm, overwrite bool) ([]FSEntry, error) {
+	dir := filepath.Dir(dest)
+
+	// resolveWritePath already refused a destination that exists without
+	// overwrite, and it rejects a non-directory destination, so at this point
+	// either nothing is there or a directory is there and replacing it was
+	// explicitly granted.
+	if fi, err := os.Lstat(dest); err == nil && !fi.IsDir() {
+		return nil, fmt.Errorf("destination exists and is not a directory")
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+
+	stage, err := os.MkdirTemp(dir, ".lantern-unpack-*")
+	if err != nil {
+		return nil, fmt.Errorf("stage expansion: %w", err)
+	}
+	// Everything the expansion created lives under stage; remove it on any
+	// failure, whether the failure is the extraction or the rename.
+	done := false
+	defer func() {
+		if !done {
+			_ = os.Chmod(stage, perm.dir)
+			_ = os.RemoveAll(stage)
+		}
+	}()
+
+	if err := os.Chmod(stage, perm.dir); err != nil {
+		return nil, err
+	}
+	if err := storage.UnpackZip(zipPath, stage, storage.ExtractPerm{Dir: perm.dir, File: perm.file}); err != nil {
+		return nil, err
+	}
+
+	// Renaming over an existing directory works on Unix but fails on Windows,
+	// and a two-step swap would leave a window where dest does not exist. So an
+	// existing tree is moved aside first and only removed once the new one is
+	// in place, which keeps the old tree recoverable if the rename fails.
+	var replaced string
+	if _, err := os.Lstat(dest); err == nil {
+		replaced, err = os.MkdirTemp(dir, ".lantern-replaced-*")
+		if err != nil {
+			return nil, err
+		}
+		_ = os.Remove(replaced)
+		if err := os.Rename(dest, replaced); err != nil {
+			return nil, fmt.Errorf("replace destination: %w", err)
+		}
+	}
+	if err := os.Rename(stage, dest); err != nil {
+		if replaced != "" {
+			// Put the old tree back; a failed push must not cost the
+			// operator the directory that was already there.
+			_ = os.Rename(replaced, dest)
+		}
+		return nil, fmt.Errorf("place expanded tree: %w", err)
+	}
+	done = true
+	if replaced != "" {
+		_ = os.Chmod(replaced, perm.dir)
+		_ = os.RemoveAll(replaced)
+	}
+
+	// Report what landed, so the sender can describe the tree rather than just
+	// the archive that produced it.
+	entries, err := listTree(dest)
+	if err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+// listTree walks the directory a push just created and describes each entry.
+// It is bounded by the extraction caps, so the walk cannot run away.
+func listTree(root string) ([]FSEntry, error) {
+	var entries []FSEntry
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		entries = append(entries, FSEntry{
+			Name:    filepath.ToSlash(rel),
+			Size:    fi.Size(),
+			IsDir:   fi.IsDir(),
+			ModTime: fi.ModTime().UTC().Format(time.RFC3339),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list expanded tree: %w", err)
+	}
+	return entries, nil
 }
 
 // WriteFS stores content at path on pi. It is the client half of OpWrite and
 // is the only way a peer can change another device's filesystem, so the
 // remote's policy has the final say on whether it lands.
 func (n *Node) WriteFS(ctx context.Context, pi peer.AddrInfo, path string, content []byte, overwrite bool) (FSEntry, string, error) {
+	entry, _, digest, err := n.writeFS(ctx, pi, path, content, overwrite, false)
+	return entry, digest, err
+}
+
+// WriteDirFS pushes a zip archive that pi expands into a directory at path,
+// returning the entries that landed and the digest of the archive as sent.
+//
+// The content is still delivered as one verified write, so a push of a
+// directory carries exactly the safety properties of a push of a file: the
+// remote resolves the destination under its own write policy, refuses to
+// replace without overwrite, verifies the digest before expanding, and stages
+// the tree before renaming it into place. What is new is only that the result
+// is a directory, so a single write can create many paths — which is why the
+// destination must already be inside a writable root and why nothing is
+// expanded until the digest has been checked.
+func (n *Node) WriteDirFS(ctx context.Context, pi peer.AddrInfo, path string, archive []byte, overwrite bool) ([]FSEntry, string, error) {
+	_, entries, digest, err := n.writeFS(ctx, pi, path, archive, overwrite, true)
+	return entries, digest, err
+}
+
+func (n *Node) writeFS(ctx context.Context, pi peer.AddrInfo, path string, content []byte, overwrite, unpack bool) (FSEntry, []FSEntry, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, fsiOTimeout)
 	defer cancel()
 
 	if err := n.Host.Connect(ctx, pi); err != nil {
-		return FSEntry{}, "", fmt.Errorf("connect: %w", err)
+		return FSEntry{}, nil, "", fmt.Errorf("connect: %w", err)
 	}
 	s, err := n.Host.NewStream(ctx, pi.ID, FSProtocolID)
 	if err != nil {
-		return FSEntry{}, "", fmt.Errorf("open stream: %w", err)
+		return FSEntry{}, nil, "", fmt.Errorf("open stream: %w", err)
 	}
 	defer s.Close()
 	if err := s.SetDeadline(time.Now().Add(fsiOTimeout)); err != nil {
-		return FSEntry{}, "", err
+		return FSEntry{}, nil, "", err
 	}
 
-	req := FSRequest{Op: OpWrite, Path: path, ContentLen: int64(len(content)), Overwrite: overwrite}
+	req := FSRequest{Op: OpWrite, Path: path, ContentLen: int64(len(content)), Overwrite: overwrite, Unpack: unpack}
 	if err := protocol.WriteMetadata(s, req); err != nil {
-		return FSEntry{}, "", fmt.Errorf("send request: %w", err)
+		return FSEntry{}, nil, "", fmt.Errorf("send request: %w", err)
 	}
 	// The remote refuses before reading content when policy, overwrite, or
 	// the size cap says no, so send the body only once it has agreed.
 	var ack FSResponse
 	if err := protocol.ReadMetadata(s, &ack); err != nil {
-		return FSEntry{}, "", fmt.Errorf("read write acknowledgement: %w", err)
+		return FSEntry{}, nil, "", fmt.Errorf("read write acknowledgement: %w", err)
 	}
 	if ack.Error != "" {
-		return FSEntry{}, "", fmt.Errorf("remote: %s", ack.Error)
+		return FSEntry{}, nil, "", fmt.Errorf("remote: %s", ack.Error)
 	}
 	if !ack.Ready {
-		return FSEntry{}, "", errors.New("remote did not accept the write")
+		return FSEntry{}, nil, "", errors.New("remote did not accept the write")
 	}
 
 	if err := protocol.WriteFull(s, content); err != nil {
-		return FSEntry{}, "", fmt.Errorf("send content: %w", err)
+		return FSEntry{}, nil, "", fmt.Errorf("send content: %w", err)
 	}
 
 	var resp FSResponse
 	if err := protocol.ReadMetadata(s, &resp); err != nil {
-		return FSEntry{}, "", fmt.Errorf("read response: %w", err)
+		return FSEntry{}, nil, "", fmt.Errorf("read response: %w", err)
 	}
 	if resp.Error != "" {
-		return FSEntry{}, "", fmt.Errorf("remote: %s", resp.Error)
+		return FSEntry{}, nil, "", fmt.Errorf("remote: %s", resp.Error)
 	}
 	var entry FSEntry
 	if resp.Entry != nil {
 		entry = *resp.Entry
 	}
-	return entry, resp.SHA256, nil
+	return entry, resp.Entries, resp.SHA256, nil
 }
 
 // ReadFS runs one filesystem op against pi. It is the client half and the

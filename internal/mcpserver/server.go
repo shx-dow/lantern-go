@@ -99,11 +99,11 @@ func tools() []toolDef {
 			"device": str("Device alias or peer ID"),
 			"path":   str("Absolute path on that device"),
 		}, "device", "path")},
-		{"push", "Send a local file to a paired device. Fails if the target refuses writes or the file exists (see overwrite).", obj(map[string]any{
+		{"push", "Send a local file or directory to a paired device. A directory is archived and expanded on the receiving side, creating a tree there. Fails if the target refuses writes, or if the destination exists (see overwrite).", obj(map[string]any{
 			"to":          str("Destination device alias (e.g. nas) or peer ID"),
-			"path":        str("Local file to send"),
-			"remote_path": str("Destination path on that device (default: the file's base name)"),
-			"overwrite":   str("Replace the file if it already exists (default false)"),
+			"path":        str("Local file or directory to send"),
+			"remote_path": str("Destination path on that device (default: the source's base name)"),
+			"overwrite":   str("Replace the destination if it already exists (default false). A directory push replaces the whole tree; it does not merge."),
 		}, "to", "path")},
 	}
 }
@@ -462,7 +462,7 @@ Tools:
                                (probe=true dials each for real reachability)
   read                         read a file from a paired device
   stat                         size and modification time for a path
-  push                         send a local file to a paired device
+  push                         send a local file or directory to a paired device
   share, fetch, transfers, transfer, history, cancel
   trust_list, trust_add, trust_set, trust_remove
   files, remote_files, status, discover

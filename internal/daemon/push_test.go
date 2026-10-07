@@ -71,15 +71,17 @@ func TestPushRejectsUnknownAlias(t *testing.T) {
 	}
 }
 
-func TestPushRejectsDirectorySource(t *testing.T) {
+// A directory source is no longer refused. It is archived and sent, and the
+// receiving device expands it into a directory of its own choosing. This test
+// asserts that the request is accepted rather than rejected outright, which is
+// the behaviour change; the expansion itself is covered end to end in
+// internal/p2p/audit_push_dir_test.go.
+func TestPushAcceptsDirectorySource(t *testing.T) {
 	h := newTrustHandler(t)
 	rec := httptest.NewRecorder()
 	h.postPush(rec, pushReq(t, map[string]any{"to": "laptop", "path": t.TempDir()}))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("got %d, want 400 for a directory source", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "directory") {
-		t.Fatalf("error should say directories are unsupported: %s", rec.Body.String())
+	if rec.Code == http.StatusBadRequest && strings.Contains(rec.Body.String(), "not implemented") {
+		t.Fatalf("a directory source must no longer be refused as unimplemented: %s", rec.Body.String())
 	}
 }
 

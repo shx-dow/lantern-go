@@ -28,6 +28,16 @@ an agent holding a file can place it on another device without the receiver
 having to ask. This is the one case the share-code path used to be the only
 answer to.
 
+Push takes a directory as well as a file. The sender archives it and sends one
+write; the receiver verifies the digest, then expands the archive into a
+directory it creates itself, inside its writable roots. That keeps every
+safety property a file push has — the destination is resolved by the receiver,
+an existing tree is not replaced without `overwrite`, nothing is created until
+the digest verifies, and the tree is staged and renamed so a failure leaves the
+destination untouched. Symbolic links in an archive are refused, and every
+entry is checked to resolve inside the destination. Replacing a directory
+replaces the whole tree; two pushes never merge.
+
 Push is **off by default**. A device refuses every write unless it is started
 with `--allow-writes`, and its writable roots bound where content can land.
 Pairing a device is never by itself enough to change anything on it.
@@ -38,10 +48,8 @@ Connections happen when the agent asks for something, and are otherwise
 absent. This keeps a device light on memory and CPU, and means a stranger
 running Lantern on the same Wi-Fi is never connected to.
 
-Known gaps: directory push is not implemented, so folders still need the
-share-code path; sync is unimplemented; the `WriteAnywhere` write mode is still
-reachable from Go but not from any flag. The desktop shell has been removed, so
-the tree is pure Go and cross-compiles for every target we ship.
+Known gaps: sync is unimplemented. The desktop shell has been removed, so the
+tree is pure Go and cross-compiles for every target we ship.
 
 ## Run it
 

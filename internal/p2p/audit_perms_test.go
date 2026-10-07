@@ -75,42 +75,22 @@ func TestAuditCreatedDirectoriesAreNotWorldAccessible(t *testing.T) {
 	}
 }
 
-// The widest mode, WriteAnywhere, skips the shared-root resolver and so also
-// skips the destination-symlink refusal. The staging write still ends in a
-// rename, and rename replaces the link rather than following it, so the
-// symlink target must survive even though the link itself is clobbered.
-// Pin that down: it is the reason the shared-roots symlink refusal is about
-// clarity as much as safety.
-func TestAuditWriteAnywhereReplacesLinkRatherThanFollowingIt(t *testing.T) {
+// WriteAnywhere, which allowed writes to any path on the disk, is gone. It was
+// reachable only from tests, and it was the last write mode that skipped the
+// shared-root resolver — the one boundary that makes a pairing reviewable.
+//
+// Its removal is asserted rather than assumed: a policy carrying the old mode
+// must fail closed, not fall through to an unconstrained write.
+func TestAuditRemovedWriteModeFailsClosed(t *testing.T) {
 	root := t.TempDir()
-	victim := filepath.Join(t.TempDir(), "precious.txt")
-	if err := os.WriteFile(victim, []byte("original"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(root, "link.txt")
-	if err := os.Symlink(victim, link); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
-	}
+	requester, pi := fsPairWith(t, root, &WritePolicy{Mode: "anywhere", Roots: []string{root}, MaxBytes: 1024})
 
-	requester, pi := fsPairWith(t, root, &WritePolicy{Mode: WriteAnywhere, MaxBytes: 1024})
-	if _, _, err := requester.WriteFS(fsCtx(t), pi, link, []byte("pwned"), true); err != nil {
-		t.Fatalf("WriteAnywhere should allow the write: %v", err)
+	_, _, err := requester.WriteFS(fsCtx(t), pi, filepath.Join(root, "escape.txt"), []byte("x"), false)
+	if err == nil {
+		t.Fatal("the removed write mode must refuse, not allow an unconstrained write")
 	}
-
-	if got, _ := os.ReadFile(victim); string(got) != "original" {
-		t.Fatalf("the symlink target was written through: %q", got)
-	}
-	// The link itself is replaced by a regular file, which is the rename
-	// semantics rather than a follow.
-	fi, err := os.Lstat(link)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fi.Mode()&os.ModeSymlink != 0 {
-		t.Fatal("expected the link to be replaced by a regular file")
-	}
-	if got, _ := os.ReadFile(link); string(got) != "pwned" {
-		t.Fatalf("the new file should hold the pushed content: %q", got)
+	if _, statErr := os.Stat(filepath.Join(root, "escape.txt")); !os.IsNotExist(statErr) {
+		t.Error("a refused write created a file")
 	}
 }
 

@@ -262,20 +262,6 @@ func TestFSWriteLeavesNoDebrisOnTruncation(t *testing.T) {
 	}
 }
 
-func TestFSWritePolicyAnywhereStillPairs(t *testing.T) {
-	root := t.TempDir()
-	outside := t.TempDir()
-	requester, pi := fsPairWith(t, root, &WritePolicy{Mode: WriteAnywhere, MaxBytes: 1024})
-
-	dst := filepath.Join(outside, "anywhere.txt")
-	if _, _, err := requester.WriteFS(fsCtx(t), pi, dst, []byte("ok"), false); err != nil {
-		t.Fatalf("anywhere policy should allow the write: %v", err)
-	}
-	if got, err := os.ReadFile(dst); err != nil || string(got) != "ok" {
-		t.Fatalf("write did not land: %q %v", got, err)
-	}
-}
-
 // A policy with the shared-roots mode but no roots must refuse, not fall
 // back to the read roots.
 func TestFSWriteSharedRootsWithNoRootsRefuses(t *testing.T) {
@@ -337,17 +323,6 @@ func TestFSWriteDeniedErrorIsSpecific(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not permitted") {
 		t.Fatalf("error should say writes are disabled, got: %v", err)
-	}
-}
-
-// A relative destination under the anywhere policy has no root to anchor
-// to, so it is refused rather than resolved against the process's cwd.
-func TestFSWriteAnywhereRejectsRelativePath(t *testing.T) {
-	root := t.TempDir()
-	requester, pi := fsPairWith(t, root, &WritePolicy{Mode: WriteAnywhere, MaxBytes: 1024})
-
-	if _, _, err := requester.WriteFS(fsCtx(t), pi, "note.txt", []byte("hi"), false); err == nil {
-		t.Fatal("expected refusal for a relative path with no writable root")
 	}
 }
 

@@ -120,10 +120,14 @@ func (l *Lantern) StatRemote(ctx context.Context, ref, path string) (Entry, erro
 }
 
 // PushResult describes what a remote stored.
+//
+// For a directory push, Entries lists the tree that landed and Entry is the
+// zero value, because the result is a directory rather than a stored file.
 type PushResult struct {
-	Entry  Entry
-	Bytes  int64
-	SHA256 string
+	Entry   Entry
+	Entries []Entry
+	Bytes   int64
+	SHA256  string
 }
 
 // PushRemote writes content to path on a paired device. The sending device
@@ -143,6 +147,25 @@ func (l *Lantern) PushRemote(ctx context.Context, ref, path string, content []by
 		return PushResult{}, err
 	}
 	return PushResult{Entry: entry, Bytes: entry.Size, SHA256: sum}, nil
+}
+
+// PushDirRemote sends a zip archive to a paired device, which verifies it and
+// expands it into a directory at path. It returns the entries that landed and
+// the digest of the archive as sent.
+//
+// The archive is not the destination: the receiving device creates the tree
+// itself, under its own write policy, and refuses to replace an existing
+// directory unless overwrite is set. Use storage.ZipDir to build the archive.
+func (l *Lantern) PushDirRemote(ctx context.Context, ref, path string, archive []byte, overwrite bool) (PushResult, error) {
+	pi, err := l.resolvePeer(ref)
+	if err != nil {
+		return PushResult{}, err
+	}
+	entries, sum, err := l.node.WriteDirFS(ctx, pi, path, archive, overwrite)
+	if err != nil {
+		return PushResult{}, err
+	}
+	return PushResult{Entries: entries, Bytes: int64(len(archive)), SHA256: sum}, nil
 }
 
 // ListRemoteEntries lists one directory level on a paired device. Empty dir
