@@ -351,13 +351,16 @@ func (d *Daemon) Subscribe(buffer int) (<-chan EventDTO, func()) {
 }
 
 func (d *Daemon) broadcast(e EventDTO) {
+	// subsMu is held across the sends rather than released after snapshotting
+	// the channel list. The sends are non-blocking, so holding the lock cannot
+	// stall: it costs nothing and it closes the window in which an unsubscribe
+	// deletes and closes a channel between the snapshot and the send, which
+	// would panic. That panic runs on the watch goroutine, which net/http does
+	// not recover, so it would take the whole daemon down on any SSE client
+	// disconnect.
 	d.subsMu.Lock()
-	subs := make([]chan EventDTO, 0, len(d.subs))
+	defer d.subsMu.Unlock()
 	for _, ch := range d.subs {
-		subs = append(subs, ch)
-	}
-	d.subsMu.Unlock()
-	for _, ch := range subs {
 		select {
 		case ch <- e:
 		default:

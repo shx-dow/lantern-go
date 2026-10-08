@@ -34,10 +34,18 @@ func TestNoNodeIsAnErrorNotAPanic(t *testing.T) {
 // node that has not been created yet.
 func TestReadOnlyAccessorsTolerateNoNode(t *testing.T) {
 	d := New(nil)
-	_ = d.List("")
-	_ = d.History()
-	_ = d.Peers()
-	_ = d.node()
+	if got := d.List(""); len(got) != 0 {
+		t.Errorf("List with no node returned %d records, want none", len(got))
+	}
+	if got := d.History(); len(got) != 0 {
+		t.Errorf("History with no node returned %d records, want none", len(got))
+	}
+	if got := d.Peers(); len(got) != 0 {
+		t.Errorf("Peers with no node returned %d peers, want none", len(got))
+	}
+	if got := d.node(); got != nil {
+		t.Errorf("node with no underlying Lantern = %v, want nil", got)
+	}
 }
 
 // The HTTP surface must answer with an error status rather than crashing the
@@ -60,5 +68,21 @@ func TestHTTPReturnsErrorStatusWithNoNode(t *testing.T) {
 		if rec.Code < 400 {
 			t.Errorf("%s returned %d, want an error status", tc.name, rec.Code)
 		}
+	}
+}
+
+func TestPeersEndpointReturnsEmptyArrayWithNoNode(t *testing.T) {
+	h := NewHandler(New(nil), "self", nil, true, 0, t.TempDir())
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/peers", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/peers returned %d, want %d", rec.Code, http.StatusOK)
+	}
+	if body := strings.TrimSpace(rec.Body.String()); body != `{"peers":[]}` {
+		t.Fatalf("GET /v1/peers body = %s, want {\"peers\":[]}", body)
 	}
 }

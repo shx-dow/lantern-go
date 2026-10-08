@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,7 +33,12 @@ type fetchSetup struct {
 	pi       peer.AddrInfo
 	// transferOpens counts streams that arrived on the transfer protocol. It
 	// must stay zero when the read path carried the fetch.
-	transferOpens int
+	//
+	// It is a pointer because the counter is incremented on the stream
+	// handler's goroutine, long after this struct is built. An int field would
+	// capture the value at construction — always zero — and the assertion below
+	// could never fail, which is exactly what it did before.
+	transferOpens *atomic.Int32
 }
 
 func newFetchSetup(t *testing.T, code, content string) fetchSetup {
@@ -50,9 +56,9 @@ func newFetchSetup(t *testing.T, code, content string) fetchSetup {
 	// Count every stream on the transfer protocol. If a fetch that should have
 	// gone over the read path opens one of these, the unification did not
 	// happen, and a green download alone would not show it.
-	opens := 0
+	var opens atomic.Int32
 	sender.Host.SetStreamHandler(ProtocolID, func(s network.Stream) {
-		opens++
+		opens.Add(1)
 		defer s.Close()
 		// Answer with nothing useful: this test is about which protocol ran.
 		_ = s.Reset()
@@ -79,7 +85,7 @@ func newFetchSetup(t *testing.T, code, content string) fetchSetup {
 
 	return fetchSetup{
 		root: root, code: code, sender: sender, receiver: receiver,
-		pi: pi, transferOpens: opens,
+		pi: pi, transferOpens: &opens,
 	}
 }
 
@@ -103,8 +109,8 @@ func TestFetchFromPairedSenderUsesReadPath(t *testing.T) {
 	if string(got) != content {
 		t.Fatalf("content = %q, want %q", got, content)
 	}
-	if s.transferOpens != 0 {
-		t.Fatalf("the transfer protocol was opened %d times; the read path should have carried this fetch", s.transferOpens)
+	if n := s.transferOpens.Load(); n != 0 {
+		t.Fatalf("the transfer protocol was opened %d times; the read path should have carried this fetch", n)
 	}
 }
 

@@ -128,17 +128,6 @@ func (n *Node) serveFS(s network.Stream) {
 	defer s.Close()
 	remote := s.Conn().RemotePeer().String()
 
-	// Reads are bounded per peer as well as per device: an empty root list
-	// means this peer may read nothing, which is what a device paired at
-	// TierNone gets. Refusing here rather than in the HTTP layer matters,
-	// because this stream handler is reachable by any paired peer, not only
-	// by a local API caller.
-	roots := n.rootsFor(remote)
-	if len(roots) == 0 {
-		_ = protocol.WriteMetadata(s, fail("not paired for read access"))
-		return
-	}
-
 	if err := s.SetDeadline(time.Now().Add(fsiOTimeout)); err != nil {
 		return
 	}
@@ -146,6 +135,35 @@ func (n *Node) serveFS(s network.Stream) {
 	if err := protocol.ReadMetadata(s, &req); err != nil {
 		_ = protocol.WriteMetadata(s, fail("bad request"))
 		return
+	}
+
+	// Reads are bounded per peer as well as per device: an empty root list
+	// means this peer may read nothing, which is what a device paired at
+	// TierNone gets. Refusing here rather than in the HTTP layer matters,
+	// because this stream handler is reachable by any paired peer, not only
+	// by a local API caller.
+	//
+	// OpWrite is gated differently, and only just. A node with no pairing
+	// resolver has no trust store and cannot authorise anything, so it refuses
+	// every write regardless of what the write grant says — that check stays
+	// ahead of the policy so a misconfigured grant cannot hand access to a
+	// stranger. Beyond it the decision is grantWrite's: tier, writable roots
+	// and size cap, which is what actually governs a write. Gating writes on
+	// the number of read roots, as this handler used to, refused a push from a
+	// peer the device was willing to accept writes from whenever the operator
+	// configured writable roots and no shared roots.
+	var roots []string
+	if req.Op == OpWrite {
+		if !n.trustConfigured() {
+			_ = protocol.WriteMetadata(s, fail("not paired for write access"))
+			return
+		}
+	} else {
+		roots = n.rootsFor(remote)
+		if len(roots) == 0 {
+			_ = protocol.WriteMetadata(s, fail("not paired for read access"))
+			return
+		}
 	}
 
 	switch req.Op {
@@ -909,6 +927,13 @@ func (n *Node) ReadFS(ctx context.Context, pi peer.AddrInfo, req FSRequest) ([]F
 	}
 	if resp.Bytes == 0 {
 		return resp.Entries, resp.Entry, nil, resp.EOF, nil
+	}
+	// The serving side clamps its own response, but that is its promise, not
+	// an invariant of this stream. A peer is free to answer with any int64 it
+	// likes, and a negative value would panic inside make while a huge one
+	// would be allocated on the peer's say-so. Validate before allocating.
+	if resp.Bytes < 0 || resp.Bytes > MaxReadLength {
+		return nil, nil, nil, false, fmt.Errorf("remote: implausible content length %d (max %d)", resp.Bytes, MaxReadLength)
 	}
 	data := make([]byte, resp.Bytes)
 	if _, err := io.ReadFull(s, data); err != nil {
