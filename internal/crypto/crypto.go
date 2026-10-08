@@ -155,6 +155,7 @@ type EncryptedReader struct {
 	buf    []byte
 	pos    int
 	header [4 + NonceSize]byte
+	err    error
 }
 
 // NewEncryptedReader decrypts chunked frames from r with key.
@@ -175,7 +176,11 @@ func NewEncryptedReader(r io.Reader, key []byte) (*EncryptedReader, error) {
 
 func (er *EncryptedReader) Read(p []byte) (int, error) {
 	if er.pos >= len(er.buf) {
+		if er.err != nil {
+			return 0, er.err
+		}
 		if err := er.readChunk(); err != nil {
+			er.err = err
 			return 0, err
 		}
 	}
@@ -187,7 +192,7 @@ func (er *EncryptedReader) Read(p []byte) (int, error) {
 
 func (er *EncryptedReader) readChunk() error {
 	if _, err := io.ReadFull(er.r, er.header[:]); err != nil {
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
+		if err == io.EOF {
 			return io.EOF
 		}
 		return fmt.Errorf("read chunk header: %w", err)

@@ -2,6 +2,8 @@ package crypto
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"io"
 	"testing"
 )
@@ -256,5 +258,42 @@ func TestDecryptRejectsTruncationAndWrongKey(t *testing.T) {
 	}
 	if _, err := io.ReadAll(r); err == nil {
 		t.Fatal("wrong-key stream was accepted")
+	}
+}
+
+func TestDecryptRejectsTruncatedFrameHeader(t *testing.T) {
+	key, err := DeriveKey("truncated-header-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire bytes.Buffer
+	w, err := NewEncryptedWriter(&wire, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("payload")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// A frame header is length (4 bytes) plus nonce (NonceSize bytes). Keep
+	// each proper prefix so ReadAll must distinguish truncation from clean EOF.
+	headerSize := 4 + NonceSize
+	for n := 1; n < headerSize; n++ {
+		t.Run(fmt.Sprintf("%d bytes", n), func(t *testing.T) {
+			r, err := NewEncryptedReader(bytes.NewReader(wire.Bytes()[:n]), key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := io.ReadAll(r); err == nil {
+				t.Fatalf("accepted %d-byte prefix of a %d-byte frame header", n, headerSize)
+			} else if !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Fatalf("truncated header error = %v, want wrapped io.ErrUnexpectedEOF", err)
+			}
+			if _, err := r.Read(make([]byte, 1)); !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Fatalf("reader did not preserve its truncation error: %v", err)
+			}
+		})
 	}
 }

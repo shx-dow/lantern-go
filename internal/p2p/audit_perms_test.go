@@ -34,15 +34,20 @@ func TestAuditPushedFilePermissionsRespectRoot(t *testing.T) {
 	if _, _, err := requester.WriteFS(fsCtx(t), pi, dst, []byte("sensitive"), false); err != nil {
 		t.Fatal(err)
 	}
+	// A push must not widen a private root. This used to be a t.Logf, which
+	// meant the test could not fail: the finding it reported was real at the
+	// time it was written, and the fix that answered it (a push inherits the
+	// landing directory's mode instead of hardcoding 0644) left the assertion
+	// behind as a log line. The sibling test below already asserts this same
+	// property with t.Errorf for created directories.
 	fi, err := os.Stat(dst)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 0644 in a 0700 dir is fine in practice, but it means a later chmod of
-	// the dir exposes every pushed file. Record the actual mode.
-	t.Logf("pushed file mode: %o (root is 0700)", fi.Mode().Perm())
-	if fi.Mode().Perm()&0o077 != 0 {
-		t.Logf("FINDING: pushed files are group/world accessible regardless of the root's own mode")
+	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+		t.Errorf("push created %s with mode %o inside a 0700 root; the file mode must be inherited, never widened", dst, perm)
+	} else {
+		t.Logf("pushed file mode: %o, inherited from the 0700 root", fi.Mode().Perm())
 	}
 }
 

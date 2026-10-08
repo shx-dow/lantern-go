@@ -294,6 +294,40 @@ func TestUnpackZipRejectsCorruptArchive(t *testing.T) {
 	}
 }
 
+func TestCheckArchiveLimits(t *testing.T) {
+	regularFile := func(size uint64) *zip.File {
+		var header zip.FileHeader
+		header.Name = "entry"
+		header.SetMode(0o600)
+		header.UncompressedSize64 = size
+		return &zip.File{FileHeader: header}
+	}
+
+	for _, tc := range []struct {
+		name    string
+		files   []*zip.File
+		wantErr string
+	}{
+		{name: "at byte cap", files: []*zip.File{regularFile(6), regularFile(4)}},
+		{name: "over byte cap", files: []*zip.File{regularFile(6), regularFile(5)}, wantErr: "byte limit"},
+		{name: "zip64 size cannot overflow", files: []*zip.File{regularFile(^uint64(0))}, wantErr: "byte limit"},
+		{name: "over entry cap", files: []*zip.File{regularFile(0), regularFile(0), regularFile(0)}, wantErr: "entries"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkArchiveLimits(tc.files, 10, 2)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("checkArchiveLimits returned an error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("checkArchiveLimits error = %v, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestSafeJoin(t *testing.T) {
 	root := t.TempDir()
 	good := []string{"a.txt", "sub/b.txt", "sub/deep/c.txt", "dots..in..name.txt"}

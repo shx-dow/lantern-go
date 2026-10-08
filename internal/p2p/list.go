@@ -62,6 +62,20 @@ func (n *Node) SetReadAccess(resolve ReadRoots) {
 // ReadRoots resolves the shared roots one peer may read.
 type ReadRoots func(peerID string) []string
 
+// trustConfigured reports whether a pairing resolver has been installed at all.
+//
+// It separates two states that rootsFor deliberately conflates: a node that has
+// no trust store, and a node that has one and has decided this peer may read
+// nothing. Both return an empty result from rootsFor, but only the first means
+// the node cannot authorise anything. Writes gate on this rather than on the
+// length of the read roots, so a device configured with writable roots and no
+// shared roots can still accept a push.
+func (n *Node) trustConfigured() bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.readRoots != nil
+}
+
 // rootsFor is the single read gate for both the fs and the list handlers.
 func (n *Node) rootsFor(peerID string) []string {
 	n.mu.Lock()

@@ -59,15 +59,14 @@ func UnpackZip(srcZip, dstDir string, perm ExtractPerm) error {
 	}
 	defer zr.Close()
 
-	if len(zr.File) > MaxExtractEntries {
-		return fmt.Errorf("archive holds %d entries, over the %d limit", len(zr.File), MaxExtractEntries)
+	if err := checkArchiveLimits(zr.File, MaxExtractBytes, MaxExtractEntries); err != nil {
+		return err
 	}
 
 	// Validate every name, mode and declared size first. Expanding as we go
 	// would leave a partial tree behind for an archive refused three entries
 	// later, and would let a declared-size bomb write until the disk filled.
 	targets := make([]string, len(zr.File))
-	var total int64
 	for i, f := range zr.File {
 		target, err := safeJoin(dstDir, f.Name)
 		if err != nil {
@@ -81,10 +80,6 @@ func UnpackZip(srcZip, dstDir string, perm ExtractPerm) error {
 			return fmt.Errorf("archive entry %q is a symbolic link, which is not accepted", f.Name)
 		case mode.IsDir():
 		case mode.IsRegular():
-			total += int64(f.UncompressedSize64)
-			if total > MaxExtractBytes {
-				return fmt.Errorf("archive expands to more than the %d byte limit", int64(MaxExtractBytes))
-			}
 		default:
 			return fmt.Errorf("archive entry %q is neither a file nor a directory", f.Name)
 		}
@@ -99,6 +94,26 @@ func UnpackZip(srcZip, dstDir string, perm ExtractPerm) error {
 		if err := extractEntry(f, targets[i], perm); err != nil {
 			return fmt.Errorf("archive entry %q: %w", f.Name, err)
 		}
+	}
+	return nil
+}
+
+// checkArchiveLimits refuses archives whose declared expansion could exhaust
+// disk space or inodes. Compare each uint64 size against the remaining budget
+// before converting it to int64, so a zip64 size cannot overflow the sum.
+func checkArchiveLimits(files []*zip.File, maxBytes int64, maxEntries int) error {
+	if len(files) > maxEntries {
+		return fmt.Errorf("archive holds %d entries, over the %d limit", len(files), maxEntries)
+	}
+	remaining := uint64(maxBytes)
+	for _, f := range files {
+		if !f.Mode().IsRegular() {
+			continue
+		}
+		if f.UncompressedSize64 > remaining {
+			return fmt.Errorf("archive expands to more than the %d byte limit", maxBytes)
+		}
+		remaining -= f.UncompressedSize64
 	}
 	return nil
 }

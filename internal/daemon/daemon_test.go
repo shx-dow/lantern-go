@@ -1,6 +1,9 @@
 package daemon
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestNormalizeCode(t *testing.T) {
 	cases := map[string]string{
@@ -18,7 +21,12 @@ func TestNormalizeCode(t *testing.T) {
 
 func TestEventDTOShapes(t *testing.T) {
 	e := EventDTO{Type: "progress", ID: "abc", Bytes: 10, Total: 100}
-	if e.Type != "progress" || e.Bytes != 10 || e.Total != 100 {
-		t.Fatal("event DTO mutated unexpectedly")
+	got, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"type":"progress","id":"abc","bytes":10,"total":100}`
+	if string(got) != want {
+		t.Fatalf("EventDTO JSON = %s, want %s", got, want)
 	}
 }
