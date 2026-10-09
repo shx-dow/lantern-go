@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 
 	"github.com/libp2p/go-libp2p/core/network"
@@ -18,6 +19,30 @@ import (
 	"github.com/shx-dow/lantern-go/internal/protocol"
 	"github.com/shx-dow/lantern-go/internal/storage"
 )
+
+// cleanupPartial removes the staged partial file and its resume checkpoint after
+// a transfer was refused, so a failed attempt leaves nothing behind that the
+// next attempt would resume into.
+//
+// It deliberately does not take the caller's *os.File. The caller owns that
+// handle and tracks it with its own `closed` flag; a helper that closed it
+// behind the caller's back would leave the two disagreeing about whether the
+// file is open, and the next use would be a use-after-close. Callers close
+// immediately before calling this, which is also where the Windows requirement
+// lives: unlinking an open file works on Unix but fails on Windows, and leaving
+// the file behind there would defeat the point.
+func cleanupPartial(partialPath, outputDir, code string) error {
+	var errs []error
+	if partialPath != "" {
+		if err := os.Remove(partialPath); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, fmt.Errorf("remove partial %s: %w", partialPath, err))
+		}
+	}
+	if err := storage.ClearResume(outputDir, code); err != nil {
+		errs = append(errs, fmt.Errorf("clear resume state: %w", err))
+	}
+	return errors.Join(errs...)
+}
 
 // FileMeta is the plaintext header sent before file bytes: base name,
 // total size, and a hex SHA-256 of the source for end-to-end verification.
@@ -426,11 +451,26 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 		return errors.Join(fmt.Errorf("unexpected end of transfer at %d of %d bytes", received, meta.Size), saveCheckpoint())
 	}
 
-	if meta.Hash != "" {
-		got := fmt.Sprintf("%x", h.Sum(nil))
-		if got != meta.Hash {
-			return fmt.Errorf("hash mismatch: expected %s, got %s", meta.Hash, got)
-		}
+	// The sender's digest is mandatory. An absent one used to mean "skip the
+	// check", which let a peer land arbitrary bytes as a completed fetch; a
+	// device that cannot verify what it received refuses to place it.
+	//
+	// saveCheckpoint runs before cleanupPartial on purpose: errors.Join evaluates
+	// its arguments left to right, so the checkpoint is written and then cleared.
+	// The other order would clear it and immediately write it back, leaving the
+	// stale resume state this refuses to leave.
+	closed = true
+	if meta.Hash == "" {
+		_ = out.Close()
+		return errors.Join(
+			fmt.Errorf("sender offered no digest; refusing to place unverified content (this device requires fs protocol v%d, so upgrade the sending device)", FSProtocolVersion),
+			saveCheckpoint(), cleanupPartial(outPath, outputDir, code))
+	}
+	if got := fmt.Sprintf("%x", h.Sum(nil)); !strings.EqualFold(got, meta.Hash) {
+		_ = out.Close()
+		return errors.Join(
+			fmt.Errorf("hash mismatch: expected %s, got %s; nothing was placed", meta.Hash, got),
+			saveCheckpoint(), cleanupPartial(outPath, outputDir, code))
 	}
 	if err := out.Close(); err != nil {
 		return fmt.Errorf("close output file: %w", err)
@@ -592,12 +632,21 @@ func (n *Node) FetchFS(ctx context.Context, pi peer.AddrInfo, code string, outpu
 	}
 
 	// Verify against the sender's own hash, so a corrupted read is reported as
-	// a failure rather than landing on disk as a completed file.
-	if info.SHA256 != "" {
-		got := fmt.Sprintf("%x", h.Sum(nil))
-		if got != info.SHA256 {
-			return fmt.Errorf("hash mismatch: expected %s, got %s", info.SHA256, got)
-		}
+	// a failure rather than landing on disk as a completed file. An absent
+	// digest is a refusal, not a skip: this is the read-path half of the fix
+	// that the push path already had.
+	closed = true
+	if info.SHA256 == "" {
+		_ = out.Close()
+		return errors.Join(
+			fmt.Errorf("sender offered no digest; refusing to place unverified content (this device requires fs protocol v%d, so upgrade the sending device)", FSProtocolVersion),
+			saveCheckpoint(), cleanupPartial(outPath, outputDir, code))
+	}
+	if got := fmt.Sprintf("%x", h.Sum(nil)); !strings.EqualFold(got, info.SHA256) {
+		_ = out.Close()
+		return errors.Join(
+			fmt.Errorf("hash mismatch: expected %s, got %s; nothing was placed", info.SHA256, got),
+			saveCheckpoint(), cleanupPartial(outPath, outputDir, code))
 	}
 	if err := out.Close(); err != nil {
 		return fmt.Errorf("close output file: %w", err)

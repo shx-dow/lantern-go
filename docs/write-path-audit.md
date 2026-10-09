@@ -75,6 +75,16 @@ This is a behaviour change for any receiver that omits the digest, including an
 older Lantern build. No such build is reachable in practice: `fsWrite` has
 always set `SHA256` on success.
 
+The remaining half was closed separately. That fix compared the two digests in
+the *sender's* process, after the receiver had already renamed or expanded
+content into place, and the receiver itself verified nothing — so a mismatch
+was reported after the fact and nothing removed what had landed. The sender also
+computed the digest, so a peer could simply omit it and the check was skipped
+entirely. Protocol revision 2 (see
+[0003](adr/0003-content-without-a-digest-is-refused.md)) makes the digest a
+required field, verifies it on the receiving device before anything is placed,
+and cleans up the staged file and checkpoint on refusal.
+
 ## Finding 2 — a push creates world-accessible directories
 
 `internal/p2p/fs.go:399` creates missing parents with `os.MkdirAll(dir, 0755)`,

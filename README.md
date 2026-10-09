@@ -276,7 +276,9 @@ Prose and code should use those words.
 Design decisions that are not obvious from the code, and why they went that way:
 [`docs/adr/`](docs/adr/). Start with
 [0002](docs/adr/0002-new-pairings-default-to-read.md) if paired peers stopped
-being able to push after an upgrade.
+being able to push after an upgrade, or
+[0003](docs/adr/0003-content-without-a-digest-is-refused.md) if transfers
+between two devices stopped working after an upgrade.
 
 Write-path security review: [`docs/write-path-audit.md`](docs/write-path-audit.md)
 records an internal adversarial pass over the push path, its two open findings,
@@ -321,12 +323,20 @@ pass. When writes are enabled they are still bounded: destinations must resolve
 inside a writable root, an existing file is never replaced without an explicit
 overwrite, a write is staged to a temp file and renamed into place so a reader
 never sees a half-written file, permissions are inherited from the directory the
-file lands in rather than widened, and the sender compares digests before
-calling it delivered.
+file lands in rather than widened, and the receiving device compares the sender's
+digest against the bytes that arrived before anything is renamed or expanded
+into place. The same check guards the read path and share-code fetches: content
+with no digest from the sender is refused rather than placed unverified.
 
 **Upgrading:** devices paired before tiers existed read as `read`. If you relied
 on a paired device pushing files here, raise it with
 `lantern trust tier <alias> read-write`.
+
+**Upgrading:** transfers between devices on different builds fail until both are
+upgraded. Content that arrives without a sender digest cannot be verified, and
+an unverifiable transfer is refused rather than landed; see
+[0003](docs/adr/0003-content-without-a-digest-is-refused.md). The refusal names
+the required protocol revision, so the error says which side needs upgrading.
 
 Writes are the half of this product that most deserves an audit before
 anyone points it at a real machine. Reads are encrypted and authenticated by
