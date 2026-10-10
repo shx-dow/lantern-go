@@ -342,6 +342,10 @@ Downloads are unaffected by version. Previous builds already sent digests for
 read-path fetches and share-code transfers, so those keep working in both
 directions.
 
+**Upgrade senders before receivers.** A new sender can still push to an
+un-upgraded receiver — the old build ignores the added field — so pushes keep
+working while receivers catch up. Going the other way breaks them at once.
+
 Writes are the half of this product that most deserves an audit before
 anyone points it at a real machine. Reads are encrypted and authenticated by
 the libp2p transport. Unlike the share-code path there is no separate

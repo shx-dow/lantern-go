@@ -50,8 +50,13 @@ so a window here is a delay, not a migration.
   and hands back the digest it computed over what it stored, which the sender
   then compares — so the sender's end-to-end check still holds. What the old
   receiver cannot do is refuse before placing, which is the guarantee revision 2
-  adds. Upgrading receivers first therefore does not break senders, and is the
-  safer order to deploy in.
+  adds.
+- **Upgrade senders first.** The order is not symmetric. Bringing a *receiver*
+  up to revision 2 while its senders are still on revision 1 is what triggers the
+  refusal above, so receivers-first breaks pushes immediately. Bringing the
+  senders up first does not, because a revision 2 sender pushing to a revision 1
+  receiver still succeeds — pushes keep working while receivers catch up. Only
+  once every sender is on revision 2 does upgrading a receiver cost nothing.
 - **A mismatch now leaves nothing behind.** Both routes stage first and place
   last. A refusal removes the staged file, its resume checkpoint, and the output
   directory the archive would have expanded into, so a failed attempt does not

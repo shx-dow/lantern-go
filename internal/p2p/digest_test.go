@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -322,18 +323,29 @@ func TestFSWriteAcceptsMatchingDigest(t *testing.T) {
 // fetch is something the receiver does to the sender.
 func lyingReadSender(t *testing.T, content []byte, digest string) (*Node, peer.AddrInfo) {
 	t.Helper()
-	receiver, pi := lyingReadSenderInto(t, fsHost(t), content, digest, nil)
+	receiver, pi := lyingReadSenderInto(t, fsHost(t), content, digest, bodyMode{})
 	return receiver, pi
 }
+
+// bodyMode controls what a test sender does after answering the resolve.
+type bodyMode struct {
+	// withhold sends no body at all and holds the stream open, so the receiver
+	// can only decide from the resolve reply. Used to prove a refusal happens
+	// before the download rather than after it.
+	withhold bool
+	// release, when non-nil, splits the body in half around it, so the sender
+	// stalls mid-transfer until the test closes the channel. That is what lets a
+	// second download run while the first still holds the file.
+	release <-chan struct{}
+}
+
+// silentBody is a bodyMode that never sends content.
+var silentBody = bodyMode{withhold: true}
 
 // lyingReadSenderInto serves the read path to an existing receiver, so a test can
 // have one device fetch from two peers — which is how two downloads end up
 // competing for the same partial file.
-//
-// When release is non-nil the OpRead body is split around it, so the sender
-// stalls mid-transfer until the test closes the channel. That is what lets a
-// second download run while the first still holds the file.
-func lyingReadSenderInto(t *testing.T, receiver *Node, content []byte, digest string, release <-chan struct{}) (*Node, peer.AddrInfo) {
+func lyingReadSenderInto(t *testing.T, receiver *Node, content []byte, digest string, mode bodyMode) (*Node, peer.AddrInfo) {
 	t.Helper()
 	sender := fsHost(t)
 	sender.Host.SetStreamHandler(FSProtocolID, func(s network.Stream) {
@@ -355,18 +367,29 @@ func lyingReadSenderInto(t *testing.T, receiver *Node, content []byte, digest st
 				Bytes: int64(len(content)),
 				EOF:   true,
 			}))
-			if release == nil {
+			switch {
+			case mode.withhold:
+				// Hold the stream open with no body. The deadline is belt and
+				// braces; the receiver closing the stream also unblocks the read.
+				s.SetDeadline(time.Now().Add(30 * time.Second))
+				buf := make([]byte, 1)
+				for {
+					if _, err := s.Read(buf); err != nil {
+						return
+					}
+				}
+			case mode.release == nil:
 				if int64(len(content)) > 0 {
 					_, _ = s.Write(content)
 				}
-				return
+			default:
+				half := len(content) / 2
+				if _, err := s.Write(content[:half]); err != nil {
+					return
+				}
+				<-mode.release
+				_, _ = s.Write(content[half:])
 			}
-			half := len(content) / 2
-			if _, err := s.Write(content[:half]); err != nil {
-				return
-			}
-			<-release
-			_, _ = s.Write(content[half:])
 		default:
 			_ = protocol.WriteMetadata(s, fail("unexpected op"))
 		}
@@ -399,17 +422,29 @@ func assertNoFetchArtifacts(t *testing.T, out string) {
 	}
 }
 
+// TestFetchRefusesSenderWithoutDigest uses a sender that withholds its body, so
+// the receiver has to decide from the resolve reply alone. A sender that streamed
+// content would let a refusal that happened after the download pass this test.
 func TestFetchRefusesSenderWithoutDigest(t *testing.T) {
-	receiver, pi := lyingReadSender(t, []byte("content with nothing to verify it"), "")
+	content := []byte("content with nothing to verify it")
+	receiver := fsHost(t)
+	_, pi := lyingReadSenderInto(t, receiver, content, "", silentBody)
 
 	out := t.TempDir()
+	start := time.Now()
 	err := fetchInto(t, receiver, pi, "66666666666666666666666666666666", out)
+	elapsed := time.Since(start)
+
 	if err == nil {
 		t.Fatal("a fetch from a sender that reports no digest must be refused")
 	}
 	if !strings.Contains(err.Error(), "no digest") {
 		t.Fatalf("the refusal should name the missing digest, got: %v", err)
 	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("the receiver waited %v for a body the sender never sent; the refusal is not on the resolve reply", elapsed)
+	}
+	t.Logf("refused in %v with: %v", elapsed, err)
 	assertNoFetchArtifacts(t, out)
 }
 
@@ -605,7 +640,7 @@ func TestRefusedFetchDoesNotDeleteConcurrentFetch(t *testing.T) {
 	// One receiver, as in production: a device has a single node.
 	receiver := fsHost(t)
 	release := make(chan struct{})
-	_, honestPi := lyingReadSenderInto(t, receiver, content, digestOf(content), release)
+	_, honestPi := lyingReadSenderInto(t, receiver, content, digestOf(content), bodyMode{release: release})
 
 	honestErr := make(chan error, 1)
 	go func() {
@@ -631,7 +666,7 @@ func TestRefusedFetchDoesNotDeleteConcurrentFetch(t *testing.T) {
 	// A second fetch for the same code and directory now runs, from a peer whose
 	// digest will not match. It must be refused up front rather than allowed to
 	// delete the partial the first one is still writing.
-	_, liarPi := lyingReadSenderInto(t, receiver, content, strings.Repeat("c", 64), nil)
+	_, liarPi := lyingReadSenderInto(t, receiver, content, strings.Repeat("c", 64), bodyMode{})
 
 	secondErr := receiver.FetchFS(fsCtx(t), liarPi, code, out, make(chan TransferProgress, 64))
 	if secondErr == nil {
@@ -653,27 +688,60 @@ func TestRefusedFetchDoesNotDeleteConcurrentFetch(t *testing.T) {
 	}
 }
 
-// A sender that offers no digest and sends no body: the receiver must refuse on
-// the header alone rather than waiting for bytes that never come.
-func TestShareTransferRefusesBeforeReadingBody(t *testing.T) {
-	source := filepath.Join(t.TempDir(), "payload.bin")
-	content := []byte(strings.Repeat("never sent", 100))
-	if err := os.WriteFile(source, content, 0600); err != nil {
-		t.Fatal(err)
-	}
+// silentShareSender answers the transfer handshake and sends a header carrying
+// no digest, then stops. The body never arrives and never will.
+//
+// A real share handler streams content immediately after the header, so a test
+// built on one cannot tell a refusal that happens on the header from one that
+// happens after the download: both get the same bytes and both end in an error.
+// This sender makes refusing the only way out. If the check moved after the
+// body read, the receiver would block here until its deadline expired.
+func silentShareSender(t *testing.T, code, name string, size int64) peer.AddrInfo {
+	t.Helper()
+	sender := fsHost(t)
+	sender.Host.SetStreamHandler(ProtocolID, func(s network.Stream) {
+		defer s.Close()
+		var req protocol.TransferRequest
+		if err := json.NewDecoder(s).Decode(&req); err != nil {
+			return
+		}
+		key, err := crypto.DeriveKey(code)
+		if err != nil {
+			return
+		}
+		ew, err := crypto.NewEncryptedWriter(s, key)
+		if err != nil {
+			return
+		}
+		// No Hash field: a revision 1 peer's header. Close here only flushes the
+		// buffered chunk; the stream itself stays open for the read below.
+		if err := protocol.WriteMetadata(ew, FileMeta{Name: name, Size: size}); err != nil {
+			return
+		}
+		if err := ew.Close(); err != nil {
+			return
+		}
+		// Hold the stream open without writing a body. The receiver must decide
+		// from the header alone. The deadline is belt and braces: the receiver
+		// closing the stream also unblocks the read.
+		s.SetDeadline(time.Now().Add(30 * time.Second))
+		buf := make([]byte, 1)
+		for {
+			if _, err := s.Read(buf); err != nil {
+				return
+			}
+		}
+	})
+	return peer.AddrInfo{ID: sender.Host.ID(), Addrs: sender.Host.Addrs()}
+}
 
+// A sender that offers no digest and sends no body: the receiver must refuse on
+// the header alone rather than waiting for bytes that never arrive.
+func TestShareTransferRefusesBeforeReadingBody(t *testing.T) {
 	code := "8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e"
 	ctx := fsCtx(t)
-	sender := fsHost(t)
-	sender.ctx = ctx
-	if err := sender.RegisterShareHandler(code, source, make(chan TransferProgress, 64)); err != nil {
-		t.Fatal(err)
-	}
-	sender.mu.Lock()
-	sender.shares[code].fileHash = ""
-	sender.mu.Unlock()
+	pi := silentShareSender(t, code, "payload.bin", 1024)
 
-	pi := peer.AddrInfo{ID: sender.Host.ID(), Addrs: sender.Host.Addrs()}
 	receiver := fsHost(t)
 	receiver.ctx = ctx
 	if err := receiver.Host.Connect(ctx, pi); err != nil {
@@ -686,10 +754,15 @@ func TestShareTransferRefusesBeforeReadingBody(t *testing.T) {
 	elapsed := time.Since(start)
 
 	if err == nil {
-		t.Fatal("expected a refusal")
+		t.Fatal("a sender that offers no digest must be refused")
 	}
 	if !strings.Contains(err.Error(), "no digest") {
 		t.Fatalf("the refusal should name the missing digest, got: %v", err)
+	}
+	// The sender never sends a body, so a receiver that waited for one would sit
+	// until the context expired rather than returning this error promptly.
+	if elapsed > 2*time.Second {
+		t.Fatalf("the receiver waited %v for a body the sender never sent; the refusal is not on the header", elapsed)
 	}
 	t.Logf("refused in %v with: %v", elapsed, err)
 
