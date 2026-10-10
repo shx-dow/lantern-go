@@ -15,9 +15,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: dominikh/staticcheck-action@v1
+        with:
+          # Pinned, not "latest": a new staticcheck release can add checks that
+          # fail the build on an unrelated commit. Bump deliberately.
+          version: "2026.2.1"
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
-      - name: Check patch
+      - name: Check whitespace
         run: git diff --check
       - name: Test
         run: go test ./...

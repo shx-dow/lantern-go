@@ -61,6 +61,10 @@ func tools() []toolDef {
 	}
 	str := func(desc string) map[string]any { return map[string]any{"type": "string", "description": desc} }
 	num := func(desc string) map[string]any { return map[string]any{"type": "number", "description": desc} }
+	// Declared as a boolean so a model sends a JSON bool. Declaring a flag as a
+	// string invites "no"/"off"/"0", which read as false without complaint —
+	// see isTruthyArg for why the handler still accepts strings.
+	boolean := func(desc string) map[string]any { return map[string]any{"type": "boolean", "description": desc} }
 	arr := func(desc string) map[string]any {
 		return map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": desc}
 	}
@@ -88,7 +92,7 @@ func tools() []toolDef {
 		{"trust_remove", "Unpair a device", obj(map[string]any{"peer_id": str("Peer ID or alias to unpair")}, "peer_id")},
 		{"files", "List local shared-dir files", obj(map[string]any{"dir": str("Subdirectory (omit for roots)")})},
 		{"remote_files", "List files on a connected peer", obj(map[string]any{"peer_id": str("Connected peer ID"), "dir": str("Subdirectory (omit for roots)")}, "peer_id")},
-		{"devices", "List paired devices with aliases and status. Start here when the user names a device. Probe=true dials each one to test real reachability; by default 'online' only means a connection is open right now, so an idle device looks offline.", obj(map[string]any{"probe": num("Dial each device and report reachability (default false)")})},
+		{"devices", "List paired devices with aliases and status. Start here when the user names a device. Probe=true dials each one to test real reachability; by default 'online' only means a connection is open right now, so an idle device looks offline.", obj(map[string]any{"probe": boolean("Dial each device and report reachability (default false)")})},
 		{"read", "Read a file from a paired device. Device may be an alias or a peer ID. Text comes back as text, binary as base64.", obj(map[string]any{
 			"device": str("Device alias (e.g. laptop) or peer ID"),
 			"path":   str("Absolute path on that device"),
@@ -103,7 +107,7 @@ func tools() []toolDef {
 			"to":          str("Destination device alias (e.g. nas) or peer ID"),
 			"path":        str("Local file or directory to send"),
 			"remote_path": str("Destination path on that device (default: the source's base name)"),
-			"overwrite":   str("Replace the destination if it already exists (default false). A directory push replaces the whole tree; it does not merge."),
+			"overwrite":   boolean("Replace the destination if it already exists (default false). A directory push replaces the whole tree; it does not merge."),
 		}, "to", "path")},
 	}
 }
@@ -292,14 +296,7 @@ func callTool(c *daemonClient, name string, args map[string]any) (any, error) {
 		if rp := str("remote_path"); rp != "" {
 			body["remote_path"] = rp
 		}
-		overwrite := false
-		switch v := args["overwrite"].(type) {
-		case bool:
-			overwrite = v
-		case string:
-			overwrite = v == "true" || v == "1" || v == "yes"
-		}
-		body["overwrite"] = overwrite
+		body["overwrite"] = isTruthyArg(args["overwrite"])
 		return c.Do(http.MethodPost, "/v1/pushes", body)
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)
@@ -325,6 +322,14 @@ func stringList(v any) ([]string, bool) {
 
 // isTruthyArg reads a boolean-ish tool argument. Tools are called by models,
 // which send "true" as a string as often as a bool, so both are accepted.
+// isTruthyArg reads a flag that may arrive as a bool, a string, or a number.
+//
+// The schemas declare these flags as booleans, so a well-behaved client sends a
+// JSON bool. Strings are still accepted because clients do not always honour the
+// declared type: a model asked for a boolean will sometimes send "true". Anything
+// unrecognised is false rather than an error, because a flag that was not clearly
+// requested should not replace a file — the safe direction for "overwrite" is the
+// one where nothing is destroyed.
 func isTruthyArg(v any) bool {
 	switch t := v.(type) {
 	case bool:

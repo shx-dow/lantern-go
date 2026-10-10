@@ -7,9 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -393,19 +391,6 @@ type daemonClient = lanternclient.Client
 
 func newDaemonClient(base, token string) *daemonClient {
 	return lanternclient.New(base, token)
-}
-
-func apiError(resp *http.Response) error {
-	var m map[string]string
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
-	if err := json.Unmarshal(body, &m); err == nil && m["error"] != "" {
-		return fmt.Errorf("daemon: %s (status %d)", m["error"], resp.StatusCode)
-	}
-	msg := strings.TrimSpace(string(body))
-	if msg == "" {
-		msg = resp.Status
-	}
-	return fmt.Errorf("daemon: %s (status %d)", msg, resp.StatusCode)
 }
 
 func runDaemonCommand(ctx context.Context, opts cliOptions) {

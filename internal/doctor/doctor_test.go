@@ -20,7 +20,6 @@ type stubDaemon struct {
 	devices   []lanternclient.Device
 	devicesNo int
 	probe     string
-	authed    string
 }
 
 func (s *stubDaemon) start(t *testing.T) *httptest.Server {
