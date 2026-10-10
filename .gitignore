@@ -56,4 +56,10 @@ tmp/
 *.lantern-state
 .lantern-*.part
 
-docs/
+# Audit artifacts from the code audit: a self-contained HTML report and the
+# rendered charts. These are working output rather than documentation, and they
+# are large and regenerable, so they stay out of the tree. Everything else under
+# docs/ is documentation and is tracked — in particular docs/adr/, which README
+# links to. Ignore the artifacts by name, not the directory.
+docs/audit.html
+docs/charts/

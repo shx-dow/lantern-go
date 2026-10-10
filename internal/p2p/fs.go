@@ -73,6 +73,12 @@ type FSRequest struct {
 	Length     int64  `json:"length,omitempty"`
 	Overwrite  bool   `json:"overwrite,omitempty"`
 	ContentLen int64  `json:"content_len,omitempty"`
+	// SHA256 is the sender's hex digest of the ContentLen bytes that follow,
+	// for OpWrite. It is required from protocol revision 2 onward: the
+	// receiving device compares what it stored against it before anything is
+	// renamed or expanded into place, so a corrupted push is never landed.
+	// A request without one is refused rather than trusted.
+	SHA256 string `json:"sha256,omitempty"`
 	// Code is the share code for OpResolveShare; the other ops ignore it.
 	Code string `json:"code,omitempty"`
 	// Unpack asks the receiver to expand a zip archive into a directory once
@@ -100,7 +106,21 @@ type FSResponse struct {
 	EOF     bool      `json:"eof,omitempty"`
 	// SHA256 is the lowercase hex digest of what was stored, returned on a
 	// successful OpWrite so the sender can confirm what landed.
+	//
+	// On an OpResolveShare it is the digest of the file being offered, and it is
+	// the digest the fetching device verifies against before placing anything. An
+	// OpRead response carries no digest: the read is verified against the one from
+	// the resolve, not one repeated per chunk.
 	SHA256 string `json:"sha256,omitempty"`
+	// Version is the fs protocol revision the responder speaks, sent on every
+	// response so a peer can see what it is talking to. A revision 1 peer leaves
+	// it zero.
+	//
+	// Nothing branches on it yet. The break with an older peer is detected by the
+	// digest being absent, and the refusal names the required revision; this field
+	// is what lets a future build detect the mismatch up front instead of at the
+	// first refusal.
+	Version int `json:"version,omitempty"`
 	// Ready is set in the pre-content acknowledgement of an OpWrite, once
 	// policy, overwrite, and the size cap have all been satisfied. The
 	// sender waits for it before sending any content.
@@ -113,7 +133,27 @@ type FSResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
-func fail(msg string) FSResponse { return FSResponse{Error: msg} }
+// FSProtocolVersion is the fs protocol revision this build speaks.
+//
+// Revision 2 is the one in which a write carries the sender's digest
+// (FSRequest.SHA256) and every response that serves content reports one
+// (FSResponse.SHA256). A revision 1 peer may omit either, and content with no
+// digest cannot be verified, so a revision 2 device refuses it rather than
+// placing bytes it cannot vouch for. Refusing is deliberate and is a break:
+// upgrade both ends of the pair.
+const FSProtocolVersion = 2
+
+// fail builds a refusal. It stamps the protocol version so the peer can be told
+// which revision it was talking to, which is the difference between an
+// actionable error and a mysterious one on a mixed-version pair.
+func fail(msg string) FSResponse { return FSResponse{Error: msg, Version: FSProtocolVersion} }
+
+// stamped tags a non-error response with this build's protocol revision, so a
+// peer can tell a revision 1 device from a revision 2 one even on a success.
+func stamped(r FSResponse) FSResponse {
+	r.Version = FSProtocolVersion
+	return r
+}
 
 // RegisterFSHandler installs the filesystem stream handler (idempotent).
 // Call SetListAccess first: the fs protocol is gated by the same roots and
@@ -212,14 +252,14 @@ func (n *Node) fsResolveShare(s network.Stream, remote string, req FSRequest) {
 	}
 	info := n.resolveShare(req.Code, roots)
 	if info == nil {
-		_ = protocol.WriteMetadata(s, FSResponse{})
+		_ = protocol.WriteMetadata(s, stamped(FSResponse{}))
 		return
 	}
-	_ = protocol.WriteMetadata(s, FSResponse{
+	_ = protocol.WriteMetadata(s, stamped(FSResponse{
 		Path:   info.Path,
 		Entry:  &FSEntry{Name: info.Name, Size: info.Size},
 		SHA256: info.SHA256,
-	})
+	}))
 }
 
 // resolveShare maps code to a path inside roots, or nil. Containment is decided
@@ -312,7 +352,7 @@ func (n *Node) fsStat(roots []string, path string) FSResponse {
 	if err != nil {
 		return fail(err.Error())
 	}
-	return FSResponse{Entry: entryFor(fi)}
+	return stamped(FSResponse{Entry: entryFor(fi)})
 }
 
 func (n *Node) fsList(roots []string, path string) FSResponse {
@@ -329,7 +369,7 @@ func (n *Node) fsList(roots []string, path string) FSResponse {
 			IsDir:   f.IsDir,
 		})
 	}
-	return FSResponse{Entries: entries}
+	return stamped(FSResponse{Entries: entries})
 }
 
 func (n *Node) fsRead(s network.Stream, roots []string, req FSRequest) {
@@ -383,7 +423,7 @@ func (n *Node) fsRead(s network.Stream, roots []string, req FSRequest) {
 		_ = protocol.WriteMetadata(s, fail(err.Error()))
 		return
 	}
-	if err := protocol.WriteMetadata(s, FSResponse{Entry: entryFor(fi), Bytes: length, EOF: eof}); err != nil {
+	if err := protocol.WriteMetadata(s, stamped(FSResponse{Entry: entryFor(fi), Bytes: length, EOF: eof})); err != nil {
 		return
 	}
 	if length == 0 {
@@ -613,6 +653,19 @@ func (n *Node) fsWrite(s network.Stream, remote string, req FSRequest) {
 		return
 	}
 
+	// A peer that offers no digest cannot be verified, so its content is not
+	// stored. This is the last pre-content refusal rather than the first: a peer
+	// that is already ineligible for a write should hear why that is, and not be
+	// told to upgrade instead.
+	//
+	// It also sits before MkdirAll and CreateTemp below, so a refused push leaves
+	// nothing at all behind — not content, and not an empty directory tree
+	// materialised inside a writable root on behalf of the peer being refused.
+	if req.SHA256 == "" {
+		reject(fmt.Sprintf("write requires the sender's digest (fs protocol v%d); this device refuses content it cannot verify, so upgrade the sending device", FSProtocolVersion))
+		return
+	}
+
 	dir := filepath.Dir(resolved)
 	// A push takes its permissions from the directory it lands in, rather than
 	// hardcoding a mode. An operator who chose 0700 for a shared root must not
@@ -656,7 +709,7 @@ func (n *Node) fsWrite(s network.Stream, remote string, req FSRequest) {
 
 	// Agree to receive before a single content byte moves, so a sender is
 	// never asked to push a payload that was going to be refused anyway.
-	if err := protocol.WriteMetadata(s, FSResponse{Ready: true}); err != nil {
+	if err := protocol.WriteMetadata(s, stamped(FSResponse{Ready: true})); err != nil {
 		return
 	}
 
@@ -670,6 +723,24 @@ func (n *Node) fsWrite(s network.Stream, remote string, req FSRequest) {
 		reject(fmt.Sprintf("short content: got %d of %d bytes", written, req.ContentLen))
 		return
 	}
+
+	// Verify the bytes against the digest the sender computed, and do it before
+	// anything is renamed or expanded. Everything above this point touched only
+	// the staging file; everything below it becomes visible at the destination.
+	// This is the check CONTEXT.md requires ("nothing is placed until the digest
+	// of what arrived has been verified") and the one the push route was
+	// missing: the sender used to learn of a mismatch only after the tree had
+	// already landed, and nothing removed it.
+	//
+	// The absence of a digest was refused before the content arrived; what is
+	// left is whether these particular bytes are the ones that were promised.
+	if got := hex.EncodeToString(hasher.Sum(nil)); !strings.EqualFold(got, req.SHA256) {
+		// The staging file is removed by the deferred cleanup above, so a
+		// mismatch leaves the destination exactly as it was.
+		reject(fmt.Sprintf("digest mismatch: sender computed %s, arrived as %s; nothing was placed", req.SHA256, got))
+		return
+	}
+
 	if err := tmp.Sync(); err != nil {
 		_ = protocol.WriteMetadata(s, fail(err.Error()))
 		return
@@ -685,15 +756,15 @@ func (n *Node) fsWrite(s network.Stream, remote string, req FSRequest) {
 
 	var resp FSResponse
 	if req.Unpack {
-		// The archive's digest has now been verified against the bytes that
-		// arrived, so its contents are as trustworthy as a pushed file's.
-		// Expanding it is the last thing that happens before the tree lands.
+		// The archive's digest was verified against the bytes that arrived, so
+		// its contents are as trustworthy as a pushed file's. Expanding it is
+		// the last thing that happens before the tree lands.
 		entries, err := expandArchive(tmpPath, resolved, perm, req.Overwrite)
 		if err != nil {
 			_ = protocol.WriteMetadata(s, fail(err.Error()))
 			return
 		}
-		resp = FSResponse{Entries: entries, Bytes: written, EOF: true, SHA256: hex.EncodeToString(hasher.Sum(nil))}
+		resp = stamped(FSResponse{Entries: entries, Bytes: written, EOF: true, SHA256: hex.EncodeToString(hasher.Sum(nil))})
 	} else {
 		if err := os.Rename(tmpPath, resolved); err != nil {
 			_ = protocol.WriteMetadata(s, fail(err.Error()))
@@ -705,7 +776,7 @@ func (n *Node) fsWrite(s network.Stream, remote string, req FSRequest) {
 			_ = protocol.WriteMetadata(s, fail(err.Error()))
 			return
 		}
-		resp = FSResponse{Entry: entryFor(fi), Bytes: written, EOF: true, SHA256: hex.EncodeToString(hasher.Sum(nil))}
+		resp = stamped(FSResponse{Entry: entryFor(fi), Bytes: written, EOF: true, SHA256: hex.EncodeToString(hasher.Sum(nil))})
 	}
 	_ = protocol.WriteMetadata(s, resp)
 }
@@ -863,7 +934,18 @@ func (n *Node) writeFS(ctx context.Context, pi peer.AddrInfo, path string, conte
 		return FSEntry{}, nil, "", err
 	}
 
-	req := FSRequest{Op: OpWrite, Path: path, ContentLen: int64(len(content)), Overwrite: overwrite, Unpack: unpack}
+	// The digest travels with the request so the receiving device can verify
+	// what arrived before it places anything, rather than telling us afterwards
+	// that what we pushed was not what we sent.
+	sum := sha256.Sum256(content)
+	req := FSRequest{
+		Op:         OpWrite,
+		Path:       path,
+		ContentLen: int64(len(content)),
+		Overwrite:  overwrite,
+		Unpack:     unpack,
+		SHA256:     hex.EncodeToString(sum[:]),
+	}
 	if err := protocol.WriteMetadata(s, req); err != nil {
 		return FSEntry{}, nil, "", fmt.Errorf("send request: %w", err)
 	}

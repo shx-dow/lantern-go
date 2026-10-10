@@ -115,4 +115,7 @@ caller does not have to reason about which one they used:
 
 A **digest** is the sender's hash of what it sent, compared against the
 receiver's hash of what it stored. A mismatch is reported as a failure, never
-as a delivery.
+as a delivery. It is also mandatory: content that arrives without one cannot be
+verified, so the receiving device refuses it rather than storing it unchecked.
+The comparison happens on the device that received the bytes, before anything
+is placed, not afterwards in the sender's process.

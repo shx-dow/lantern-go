@@ -542,6 +542,11 @@ paths:
         redirects a later write. Expanding a tree replaces it whole; two
         pushes never merge.
 
+        The digest is required, not optional. A write that arrives without
+        one is refused rather than stored unverified, so a receiving device
+        on protocol revision 2 will not accept content from a build that
+        does not send a digest.
+
         Whether the write lands is entirely the receiving device's decision.
         It refuses unless it was started with writes enabled, and its
         writable roots bound the destination. A bare `remote_path` is
@@ -553,8 +558,10 @@ paths:
         `sha256` is the digest the receiver computed over what it stored
         and `local_sha256` the digest of what was sent. For a directory
         push the digest is over the archive, which is the thing that
-        crossed the wire; the tree is created from it afterwards. The daemon
-        compares the two digests and reports a mismatch rather than a
+        crossed the wire; the tree is created from it afterwards. The
+        receiver has already compared the two before placing anything, so a
+        mismatch is reported by the device that received the bytes; the
+        daemon repeats the comparison and reports a mismatch rather than a
         success.
 
         A file push returns `entry`. A directory push returns `entries`,
