@@ -55,6 +55,11 @@ type Node struct {
 
 	fsOnce     sync.Once
 	writeGrant WriteGrant
+
+	// downloads holds the in-flight download keys, so two downloads that resolve
+	// to the same partial file cannot overlap. See claimDownload.
+	downloadsMu sync.Mutex
+	downloads   map[string]struct{}
 }
 
 // NewNode brings up a TCP+QUIC host with relay, hole punching, DHT in

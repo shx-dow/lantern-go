@@ -4,6 +4,9 @@ The fs protocol is at revision 2. A write carries the sender's digest
 (`FSRequest.SHA256`), and every response that serves content reports one
 (`FSResponse.SHA256`). A peer that offers content with neither is refused.
 
+The break is one-directional in practice, and only for pushes: see the
+consequences below.
+
 ## Considered options
 
 **Keep treating an absent digest as "skip the check".** This is what revision 1
@@ -34,13 +37,21 @@ so a window here is a delay, not a migration.
 
 ## Consequences
 
-- **A mixed-version pair stops transferring files.** A revision 2 device refuses
-  a revision 1 peer's writes, reads, and fetches; a revision 1 device has no
-  digest field to compare. This is deliberate, and it is the first thing to check
-  when a transfer stops working after an upgrade: upgrade both ends of the pair.
-  The refusal names the required revision rather than reporting a generic
-  failure, so the cause is visible in the error rather than something to guess
-  at.
+- **A revision 1 sender can no longer push to a revision 2 device.** The request
+  has no digest field to compare, so the push is refused, and the refusal names
+  the required revision rather than reporting a generic failure. This is the
+  first thing to check when a push *to* a device stops working after an upgrade.
+- **Downloads are not affected by version.** Revision 1 already sent a digest on
+  both the resolve-share reply and the share-code transfer header, because both
+  were computed when the share was registered. A revision 1 sender's downloads
+  therefore still verify against a revision 2 receiver, in both directions.
+- **A revision 2 sender pushing to a revision 1 receiver silently succeeds, and
+  the receiver does not verify.** The old build ignores the added request field
+  and hands back the digest it computed over what it stored, which the sender
+  then compares — so the sender's end-to-end check still holds. What the old
+  receiver cannot do is refuse before placing, which is the guarantee revision 2
+  adds. Upgrading receivers first therefore does not break senders, and is the
+  safer order to deploy in.
 - **A mismatch now leaves nothing behind.** Both routes stage first and place
   last. A refusal removes the staged file, its resume checkpoint, and the output
   directory the archive would have expanded into, so a failed attempt does not

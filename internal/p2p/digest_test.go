@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -321,6 +322,19 @@ func TestFSWriteAcceptsMatchingDigest(t *testing.T) {
 // fetch is something the receiver does to the sender.
 func lyingReadSender(t *testing.T, content []byte, digest string) (*Node, peer.AddrInfo) {
 	t.Helper()
+	receiver, pi := lyingReadSenderInto(t, fsHost(t), content, digest, nil)
+	return receiver, pi
+}
+
+// lyingReadSenderInto serves the read path to an existing receiver, so a test can
+// have one device fetch from two peers — which is how two downloads end up
+// competing for the same partial file.
+//
+// When release is non-nil the OpRead body is split around it, so the sender
+// stalls mid-transfer until the test closes the channel. That is what lets a
+// second download run while the first still holds the file.
+func lyingReadSenderInto(t *testing.T, receiver *Node, content []byte, digest string, release <-chan struct{}) (*Node, peer.AddrInfo) {
+	t.Helper()
 	sender := fsHost(t)
 	sender.Host.SetStreamHandler(FSProtocolID, func(s network.Stream) {
 		defer s.Close()
@@ -341,15 +355,23 @@ func lyingReadSender(t *testing.T, content []byte, digest string) (*Node, peer.A
 				Bytes: int64(len(content)),
 				EOF:   true,
 			}))
-			if int64(len(content)) > 0 {
-				_, _ = s.Write(content)
+			if release == nil {
+				if int64(len(content)) > 0 {
+					_, _ = s.Write(content)
+				}
+				return
 			}
+			half := len(content) / 2
+			if _, err := s.Write(content[:half]); err != nil {
+				return
+			}
+			<-release
+			_, _ = s.Write(content[half:])
 		default:
 			_ = protocol.WriteMetadata(s, fail("unexpected op"))
 		}
 	})
 
-	receiver := fsHost(t)
 	pi := peer.AddrInfo{ID: sender.Host.ID(), Addrs: sender.Host.Addrs()}
 	if err := receiver.Host.Connect(fsCtx(t), pi); err != nil {
 		t.Fatal(err)
@@ -570,5 +592,112 @@ func TestShareTransferAcceptsMatchingDigest(t *testing.T) {
 	}
 	if !bytes.Equal(got, content) {
 		t.Fatalf("contents differ from the source (%d bytes vs %d)", len(got), len(content))
+	}
+}
+
+// Two concurrent downloads of the same code into the same directory resolve to
+// the same partial file, so a refusal must not delete the other's in-flight work.
+func TestRefusedFetchDoesNotDeleteConcurrentFetch(t *testing.T) {
+	content := []byte(strings.Repeat("payload ", 500))
+	code := "9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d"
+	out := t.TempDir()
+
+	// One receiver, as in production: a device has a single node.
+	receiver := fsHost(t)
+	release := make(chan struct{})
+	_, honestPi := lyingReadSenderInto(t, receiver, content, digestOf(content), release)
+
+	honestErr := make(chan error, 1)
+	go func() {
+		honestErr <- receiver.FetchFS(fsCtx(t), honestPi, code, out, make(chan TransferProgress, 64))
+	}()
+
+	// Wait until the honest fetch has staged its partial and is mid-body.
+	partial, err := storage.PartialPath(out, code, "file.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(partial); err == nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := os.Stat(partial); err != nil {
+		t.Fatalf("the honest fetch never staged %s: %v", partial, err)
+	}
+
+	// A second fetch for the same code and directory now runs, from a peer whose
+	// digest will not match. It must be refused up front rather than allowed to
+	// delete the partial the first one is still writing.
+	_, liarPi := lyingReadSenderInto(t, receiver, content, strings.Repeat("c", 64), nil)
+
+	secondErr := receiver.FetchFS(fsCtx(t), liarPi, code, out, make(chan TransferProgress, 64))
+	if secondErr == nil {
+		t.Error("the second fetch should have been refused while the first holds the download")
+	} else {
+		t.Logf("second fetch refused with: %v", secondErr)
+	}
+
+	// The honest fetch must still be able to land its file.
+	close(release)
+	if err := <-honestErr; err != nil {
+		t.Errorf("concurrent fetch was broken by the other one being refused: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(out, "file.txt"))
+	if err != nil {
+		t.Errorf("the concurrent fetch did not land: %v", err)
+	} else if string(got) != string(content) {
+		t.Errorf("landed %d bytes, want %d", len(got), len(content))
+	}
+}
+
+// A sender that offers no digest and sends no body: the receiver must refuse on
+// the header alone rather than waiting for bytes that never come.
+func TestShareTransferRefusesBeforeReadingBody(t *testing.T) {
+	source := filepath.Join(t.TempDir(), "payload.bin")
+	content := []byte(strings.Repeat("never sent", 100))
+	if err := os.WriteFile(source, content, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	code := "8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e"
+	ctx := fsCtx(t)
+	sender := fsHost(t)
+	sender.ctx = ctx
+	if err := sender.RegisterShareHandler(code, source, make(chan TransferProgress, 64)); err != nil {
+		t.Fatal(err)
+	}
+	sender.mu.Lock()
+	sender.shares[code].fileHash = ""
+	sender.mu.Unlock()
+
+	pi := peer.AddrInfo{ID: sender.Host.ID(), Addrs: sender.Host.Addrs()}
+	receiver := fsHost(t)
+	receiver.ctx = ctx
+	if err := receiver.Host.Connect(ctx, pi); err != nil {
+		t.Fatal(err)
+	}
+
+	out := t.TempDir()
+	start := time.Now()
+	err := receiver.receiveFile(ctx, pi, code, out, make(chan TransferProgress, 64))
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	if !strings.Contains(err.Error(), "no digest") {
+		t.Fatalf("the refusal should name the missing digest, got: %v", err)
+	}
+	t.Logf("refused in %v with: %v", elapsed, err)
+
+	entries, rerr := os.ReadDir(out)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	for _, e := range entries {
+		t.Errorf("a pre-body refusal left %q behind in %s", e.Name(), out)
 	}
 }

@@ -277,8 +277,8 @@ Design decisions that are not obvious from the code, and why they went that way:
 [`docs/adr/`](docs/adr/). Start with
 [0002](docs/adr/0002-new-pairings-default-to-read.md) if paired peers stopped
 being able to push after an upgrade, or
-[0003](docs/adr/0003-content-without-a-digest-is-refused.md) if transfers
-between two devices stopped working after an upgrade.
+[0003](docs/adr/0003-content-without-a-digest-is-refused.md) if a push **to**
+this device stopped working after an upgrade.
 
 Write-path security review: [`docs/write-path-audit.md`](docs/write-path-audit.md)
 records an internal adversarial pass over the push path, its two open findings,
@@ -332,11 +332,15 @@ with no digest from the sender is refused rather than placed unverified.
 on a paired device pushing files here, raise it with
 `lantern trust tier <alias> read-write`.
 
-**Upgrading:** transfers between devices on different builds fail until both are
-upgraded. Content that arrives without a sender digest cannot be verified, and
-an unverifiable transfer is refused rather than landed; see
+**Upgrading:** pushes **from an older device to this one** fail until the
+sender is upgraded. A push from an older build carries no sender digest, and
+content that cannot be verified is refused rather than landed; see
 [0003](docs/adr/0003-content-without-a-digest-is-refused.md). The refusal names
 the required protocol revision, so the error says which side needs upgrading.
+
+Downloads are unaffected by version. Previous builds already sent digests for
+read-path fetches and share-code transfers, so those keep working in both
+directions.
 
 Writes are the half of this product that most deserves an audit before
 anyone points it at a real machine. Reads are encrypted and authenticated by

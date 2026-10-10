@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/libp2p/go-libp2p/core/network"
@@ -31,6 +32,11 @@ import (
 // immediately before calling this, which is also where the Windows requirement
 // lives: unlinking an open file works on Unix but fails on Windows, and leaving
 // the file behind there would defeat the point.
+//
+// Callers must hold the download lock for partialPath (see claimDownload). The
+// partial path is derived from the code and file name, so it is shared between
+// two downloads of the same code into the same directory, and without exclusive
+// ownership one download's refusal deletes the other's in-flight work.
 func cleanupPartial(partialPath, outputDir, code string) error {
 	var errs []error
 	if partialPath != "" {
@@ -42,6 +48,51 @@ func cleanupPartial(partialPath, outputDir, code string) error {
 		errs = append(errs, fmt.Errorf("clear resume state: %w", err))
 	}
 	return errors.Join(errs...)
+}
+
+// claimDownload takes exclusive ownership of the download identified by
+// downloadKey, and returns the function that releases it.
+//
+// The partial file's path is derived from the output directory, the code, and
+// the file name, so two downloads that agree on all three agree on the file. A
+// caller that cleans up on failure — which cleanupPartial does — would then
+// delete the partial the other download is still writing, and that download
+// would fail its final rename having done nothing wrong. Ownership is therefore
+// per download key rather than per process: two fetches of the same code into
+// the same directory cannot overlap, and neither can a fetch and a resume of it.
+//
+// Releasing is deferred by the caller, so a download that panics does not wedge
+// the key permanently.
+func (n *Node) claimDownload(key string) (release func(), err error) {
+	key = filepath.Clean(key)
+
+	n.downloadsMu.Lock()
+	defer n.downloadsMu.Unlock()
+
+	if n.downloads == nil {
+		n.downloads = make(map[string]struct{})
+	}
+	if _, busy := n.downloads[key]; busy {
+		return nil, fmt.Errorf("another download of %s into this directory is already in progress", filepath.Base(key))
+	}
+	n.downloads[key] = struct{}{}
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			n.downloadsMu.Lock()
+			delete(n.downloads, key)
+			n.downloadsMu.Unlock()
+		})
+	}, nil
+}
+
+// noDigestRefusal is the error both download routes return when a sender offers
+// no digest. It is one function so the two routes cannot drift into describing
+// the same break differently, which is the sort of drift that makes a support
+// question unanswerable.
+func noDigestRefusal() error {
+	return fmt.Errorf("sender offered no digest; refusing to place unverified content (this device requires fs protocol v%d, so upgrade the sending device)", FSProtocolVersion)
 }
 
 // FileMeta is the plaintext header sent before file bytes: base name,
@@ -294,6 +345,16 @@ func (n *Node) RegisterReceive(ctx context.Context, pi peer.AddrInfo, code strin
 }
 
 func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, outputDir string, progress chan<- TransferProgress) error {
+	// Claim before touching the resume state or the partial file. The file name
+	// is not known until the sender's header arrives, but the checkpoint is keyed
+	// by code alone and the partial by code and name, so the code is the
+	// narrowest key available here and is the one that matters for cleanup.
+	release, err := n.claimDownload(filepath.Join(outputDir, code))
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	if err := n.Host.Connect(ctx, pi); err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
@@ -351,6 +412,17 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 	}
 	if meta.Size < 0 {
 		return fmt.Errorf("peer sent invalid file size %d", meta.Size)
+	}
+	// The digest arrives in the same header as the size, so there is no reason to
+	// pull a body we already know cannot be placed. Refusing here also means no
+	// partial is created for a transfer that was never going to finish, which is
+	// what used to leave the next attempt resuming into bytes from a peer that
+	// had already been told no.
+	if meta.Hash == "" {
+		if err := storage.ClearResume(outputDir, code); err != nil {
+			return fmt.Errorf("clear resume state: %w", err)
+		}
+		return noDigestRefusal()
 	}
 
 	if outPath == "" {
@@ -451,21 +523,15 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 		return errors.Join(fmt.Errorf("unexpected end of transfer at %d of %d bytes", received, meta.Size), saveCheckpoint())
 	}
 
-	// The sender's digest is mandatory. An absent one used to mean "skip the
-	// check", which let a peer land arbitrary bytes as a completed fetch; a
-	// device that cannot verify what it received refuses to place it.
+	// The body has arrived; all that is left is whether these particular bytes are
+	// the ones the sender promised. An absent digest was already refused before
+	// any of this was read.
 	//
 	// saveCheckpoint runs before cleanupPartial on purpose: errors.Join evaluates
 	// its arguments left to right, so the checkpoint is written and then cleared.
 	// The other order would clear it and immediately write it back, leaving the
 	// stale resume state this refuses to leave.
 	closed = true
-	if meta.Hash == "" {
-		_ = out.Close()
-		return errors.Join(
-			fmt.Errorf("sender offered no digest; refusing to place unverified content (this device requires fs protocol v%d, so upgrade the sending device)", FSProtocolVersion),
-			saveCheckpoint(), cleanupPartial(outPath, outputDir, code))
-	}
 	if got := fmt.Sprintf("%x", h.Sum(nil)); !strings.EqualFold(got, meta.Hash) {
 		_ = out.Close()
 		return errors.Join(
@@ -517,6 +583,25 @@ func (n *Node) FetchFS(ctx context.Context, pi peer.AddrInfo, code string, outpu
 	}
 	if err := storage.CheckFileName(info.Name); err != nil {
 		return fmt.Errorf("peer sent invalid file name: %w", err)
+	}
+
+	// The file name is known here, so the claim can be keyed on the partial path
+	// itself. That keeps two fetches of *different* codes into one directory
+	// independent while still serialising the ones that would collide.
+	release, err := n.claimDownload(filepath.Join(outputDir, code, info.Name))
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	// The digest comes from the resolve, so it is known before a single content
+	// byte is requested. Refusing here means no read stream is opened and no
+	// partial is staged for a transfer that cannot land.
+	if info.SHA256 == "" {
+		if err := storage.ClearResume(outputDir, code); err != nil {
+			return fmt.Errorf("clear resume state: %w", err)
+		}
+		return noDigestRefusal()
 	}
 
 	// A resume whose file name no longer matches is a different file sharing
@@ -633,15 +718,8 @@ func (n *Node) FetchFS(ctx context.Context, pi peer.AddrInfo, code string, outpu
 
 	// Verify against the sender's own hash, so a corrupted read is reported as
 	// a failure rather than landing on disk as a completed file. An absent
-	// digest is a refusal, not a skip: this is the read-path half of the fix
-	// that the push path already had.
+	// digest was already refused before the content was requested.
 	closed = true
-	if info.SHA256 == "" {
-		_ = out.Close()
-		return errors.Join(
-			fmt.Errorf("sender offered no digest; refusing to place unverified content (this device requires fs protocol v%d, so upgrade the sending device)", FSProtocolVersion),
-			saveCheckpoint(), cleanupPartial(outPath, outputDir, code))
-	}
 	if got := fmt.Sprintf("%x", h.Sum(nil)); !strings.EqualFold(got, info.SHA256) {
 		_ = out.Close()
 		return errors.Join(
