@@ -15,8 +15,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-func boolp(b bool) *bool { return &b }
-
 // registerShare advertises path under code and returns the code's state.
 func registerShare(t *testing.T, n *Node, code, path string) {
 	t.Helper()

@@ -10,6 +10,11 @@ import (
 // Every entry point must report a missing node rather than dereferencing it.
 // A panic here takes the whole daemon down, and the daemon is the only thing
 // serving the API, so it is an availability fault and not a cosmetic one.
+//
+// The nil contexts below are the point of the test, not an oversight: a nil
+// context is exactly the kind of zero value a caller can hand in, and these
+// entry points have to reject it on the missing node before anything reaches a
+// library that would dereference it.
 func TestNoNodeIsAnErrorNotAPanic(t *testing.T) {
 	d := New(nil)
 
@@ -19,12 +24,15 @@ func TestNoNodeIsAnErrorNotAPanic(t *testing.T) {
 	if _, err := d.Fetch("code", "/tmp"); err == nil {
 		t.Error("Fetch with no node should error")
 	}
+	//lint:ignore SA1012 A nil context is the input under test.
 	if _, err := d.ReadFile(nil, "peer", "/tmp/x", 0, 0); err == nil {
 		t.Error("ReadFile with no node should error")
 	}
+	//lint:ignore SA1012 A nil context is the input under test.
 	if _, err := d.StatFile(nil, "peer", "/tmp/x"); err == nil {
 		t.Error("StatFile with no node should error")
 	}
+	//lint:ignore SA1012 A nil context is the input under test.
 	if _, err := d.PushFile(nil, "peer", "/etc/hostname", "", false); err == nil {
 		t.Error("PushFile with no node should error")
 	}
