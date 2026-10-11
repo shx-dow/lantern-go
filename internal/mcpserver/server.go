@@ -320,16 +320,16 @@ func stringList(v any) ([]string, bool) {
 	return out, true
 }
 
-// isTruthyArg reads a boolean-ish tool argument. Tools are called by models,
-// which send "true" as a string as often as a bool, so both are accepted.
 // isTruthyArg reads a flag that may arrive as a bool, a string, or a number.
 //
-// The schemas declare these flags as booleans, so a well-behaved client sends a
-// JSON bool. Strings are still accepted because clients do not always honour the
-// declared type: a model asked for a boolean will sometimes send "true". Anything
-// unrecognised is false rather than an error, because a flag that was not clearly
-// requested should not replace a file — the safe direction for "overwrite" is the
-// one where nothing is destroyed.
+// Tools are called by models, which send "true" as a string about as often as a
+// bool, so both are accepted — and a number, which the push tool's own parser
+// used to drop on the floor. The schemas declare these flags as booleans, so a
+// well-behaved client sends a JSON bool and none of this matters.
+//
+// Anything unrecognised is false rather than an error: a flag that was not
+// clearly requested should not replace a file, and the safe direction for
+// "overwrite" is the one where nothing is destroyed.
 func isTruthyArg(v any) bool {
 	switch t := v.(type) {
 	case bool:
