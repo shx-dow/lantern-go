@@ -125,12 +125,42 @@ func archiveOf(t *testing.T, files map[string]string) []byte {
 // parent directories leaves empty directories behind rather than files, and a
 // single-level scan sees an empty directory as one unexplained entry at best —
 // it cannot tell an empty directory the push created from a legitimate one.
+//
+// It also waits first. fsWrite announces the refusal over the stream and only
+// then removes its staging file on the way out, so a client that reads the
+// response and immediately looks at the directory can beat the cleanup. Linux
+// wins that race reliably enough that it never showed; the macOS runner lost it
+// on every run. The assertion is still strict — the directory has to end up
+// clean — but it is asked after the server has had a moment to finish.
 func assertNoDebris(t *testing.T, root string, survivors ...string) {
 	t.Helper()
 	keep := map[string]bool{}
 	for _, s := range survivors {
 		keep[s] = true
 	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		stray := debrisUnder(t, root, keep)
+		if len(stray) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			for _, s := range stray {
+				t.Errorf("a refused push left %q behind in %s", s, root)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// debrisUnder lists what is in root that should not be, as paths relative to it.
+// A staging file is reported separately because it is the specific thing a
+// refused push must not leave, and deserves its own failure message.
+func debrisUnder(t *testing.T, root string, keep map[string]bool) []string {
+	t.Helper()
+	var stray []string
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -143,17 +173,18 @@ func assertNoDebris(t *testing.T, root string, survivors ...string) {
 			rel = path
 		}
 		if strings.HasPrefix(d.Name(), ".lantern-push-") {
-			t.Errorf("staging file %q survived a refused push", rel)
+			stray = append(stray, "staging file "+rel)
 			return nil
 		}
 		if !keep[rel] && !keep[d.Name()] {
-			t.Errorf("a refused push left %q behind in %s", rel, root)
+			stray = append(stray, rel)
 		}
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	return stray
 }
 
 // ---------------------------------------------------------------- push route
