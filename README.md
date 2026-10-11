@@ -172,6 +172,15 @@ protocol, so codes still work for unpaired peers and for files outside a shared
 dir. Both paths verify the file against a hash the sender computed, and both
 resume a partial download.
 
+**A download never replaces a file you already have.** If the destination name
+is taken — by a file, a directory, or a symlink — the transfer is refused and
+names the path, rather than overwriting it. Remove or rename what is in the way,
+or fetch into a different directory. This is checked before the download starts
+*and* again immediately before the file is put in place, because a transfer
+takes long enough for something to appear in between. Downloaded files take
+their permissions from the directory they land in, the same way a push does, so
+receiving into a `0700` directory produces `0600` files.
+
 ## When something is not working
 
 `lantern doctor` checks a setup and prints the command that fixes each problem.

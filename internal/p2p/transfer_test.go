@@ -44,7 +44,7 @@ func TestTransferRoundTripAcrossTwoHosts(t *testing.T) {
 	receiver := &Node{Host: receiverHost, ctx: ctx}
 	code := "0123456789abcdef0123456789abcdef"
 	progress := make(chan TransferProgress, 32)
-	sender.RegisterShareHandler(code, sourcePath, progress)
+	sender.RegisterShareHandler(fsCtx(t), code, sourcePath, progress)
 
 	pi := peer.AddrInfo{ID: senderHost.ID(), Addrs: senderHost.Addrs()}
 	transferCtx, transferCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -104,7 +104,7 @@ func TestTransferResumesAndVerifiesExistingPrefix(t *testing.T) {
 	defer cancel()
 	sender := &Node{Host: senderHost, ctx: ctx}
 	receiver := &Node{Host: receiverHost, ctx: ctx}
-	sender.RegisterShareHandler(code, sourcePath, make(chan TransferProgress, 32))
+	sender.RegisterShareHandler(fsCtx(t), code, sourcePath, make(chan TransferProgress, 32))
 	pi := peer.AddrInfo{ID: senderHost.ID(), Addrs: senderHost.Addrs()}
 	if err := receiver.receiveFile(ctx, pi, code, outputDir, make(chan TransferProgress, 32)); err != nil {
 		t.Fatal(err)
@@ -151,10 +151,10 @@ func TestTwoSharesOnOneHostDispatchIndependently(t *testing.T) {
 	receiver := &Node{Host: receiverHost, ctx: ctx}
 	codeA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	codeB := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	if err := sender.RegisterShareHandler(codeA, pathA, make(chan TransferProgress, 32)); err != nil {
+	if err := sender.RegisterShareHandler(fsCtx(t), codeA, pathA, make(chan TransferProgress, 32)); err != nil {
 		t.Fatal(err)
 	}
-	if err := sender.RegisterShareHandler(codeB, pathB, make(chan TransferProgress, 32)); err != nil {
+	if err := sender.RegisterShareHandler(fsCtx(t), codeB, pathB, make(chan TransferProgress, 32)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -202,7 +202,7 @@ func TestTransferWrongCodeIsRejected(t *testing.T) {
 	defer cancel()
 	sender := &Node{Host: senderHost, ctx: ctx}
 	receiver := &Node{Host: receiverHost, ctx: ctx}
-	if err := sender.RegisterShareHandler("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", sourcePath, make(chan TransferProgress, 32)); err != nil {
+	if err := sender.RegisterShareHandler(fsCtx(t), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", sourcePath, make(chan TransferProgress, 32)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -258,7 +258,7 @@ func TestTransferCorruptPrefixFailsHashCheck(t *testing.T) {
 	defer cancel()
 	sender := &Node{Host: senderHost, ctx: ctx}
 	receiver := &Node{Host: receiverHost, ctx: ctx}
-	if err := sender.RegisterShareHandler(code, sourcePath, make(chan TransferProgress, 32)); err != nil {
+	if err := sender.RegisterShareHandler(fsCtx(t), code, sourcePath, make(chan TransferProgress, 32)); err != nil {
 		t.Fatal(err)
 	}
 	pi := peer.AddrInfo{ID: senderHost.ID(), Addrs: senderHost.Addrs()}

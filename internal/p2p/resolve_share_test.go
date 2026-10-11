@@ -19,7 +19,7 @@ import (
 func registerShare(t *testing.T, n *Node, code, path string) {
 	t.Helper()
 	progress := make(chan TransferProgress, 8)
-	if err := n.RegisterShareHandler(code, path, progress); err != nil {
+	if err := n.RegisterShareHandler(fsCtx(t), code, path, progress); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -211,7 +211,7 @@ func TestResolveShareRefusesDirectory(t *testing.T) {
 	receiver := fsHost(t)
 
 	const code = "99999999999999999999999999999999"
-	if err := sender.RegisterShareHandler(code, sub, make(chan TransferProgress, 4)); err == nil {
+	if err := sender.RegisterShareHandler(fsCtx(t), code, sub, make(chan TransferProgress, 4)); err == nil {
 		t.Fatal("registering a directory as a share must fail at the source")
 	}
 
