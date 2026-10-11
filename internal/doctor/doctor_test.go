@@ -3,12 +3,12 @@ package doctor
 import (
 	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/shx-dow/lantern-go/pkg/lanternclient"
@@ -416,10 +416,17 @@ func TestSendMDNSQuerySucceeds(t *testing.T) {
 		// Binding a multicast socket succeeds on runners that then refuse to route
 		// to the group — the macOS CI host, for one. That is an environment
 		// restriction rather than a defect in the query, so skip rather than fail.
-		// Only a network-level send failure is excused; anything else is a bug.
-		var opErr *net.OpError
-		if errors.As(err, &opErr) && opErr.Op == "sendto" {
-			t.Skipf("this environment cannot send multicast: %v", err)
+		//
+		// Matched on the errno rather than the operation name: the failure nests,
+		// arriving as a *net.OpError with Op "write" around an *os.SyscallError
+		// with Syscall "sendto". Matching "sendto" missed it.
+		for _, environmental := range []syscall.Errno{
+			syscall.ENETUNREACH, syscall.EHOSTUNREACH, syscall.ENETDOWN,
+			syscall.EPERM, syscall.EACCES, syscall.ENODEV,
+		} {
+			if errors.Is(err, environmental) {
+				t.Skipf("this environment cannot send multicast (%v): %v", environmental, err)
+			}
 		}
 		t.Fatalf("mDNS query should be sendable: %v", err)
 	}
