@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -116,6 +118,65 @@ func destinationExists(path string) (bool, error) {
 // looking for a flag that — at the moment — does not exist.
 func errDestinationExists(path string) error {
 	return fmt.Errorf("%s already exists; remove or rename it, or fetch into a different directory", path)
+}
+
+// linkUnsupported reports whether err means "this filesystem cannot make hard
+// links" rather than a real failure.
+//
+// FAT, some network mounts, and Windows without the SeCreateHardlink privilege
+// refuse link(2). For those the caller falls back to a check-then-rename, which
+// is racy but still better than replacing unconditionally.
+func linkUnsupported(err error) bool {
+	return errors.Is(err, syscall.EPERM) ||
+		errors.Is(err, syscall.ENOSYS) ||
+		errors.Is(err, syscall.EOPNOTSUPP) ||
+		errors.Is(err, syscall.EXDEV)
+}
+
+// publishIfAbsent moves src to dst only if dst does not exist.
+//
+// os.Rename replaces dst unconditionally, so checking first and renaming second
+// leaves a window: anything that creates dst between the two is silently
+// overwritten. That is not hypothetical here. The per-download claim is keyed on
+// the code, so two downloads with *different* codes into one directory may
+// overlap — and two peers sharing a file called report.txt both target
+// outputDir/report.txt. Both pass the check, both rename, and the second replaces
+// the first.
+//
+// A hard link is the portable atomic form of "create if absent": link(2) either
+// creates dst or fails with EEXIST, with no gap between. The staged file keeps
+// its own name until the link has succeeded, so a reader never sees a partial —
+// dst appears pointing at complete content, or not at all.
+func publishIfAbsent(src, dst string) error {
+	err := os.Link(src, dst)
+	if err == nil {
+		// dst now names the same inode as src. Dropping src leaves exactly one
+		// name for the content, which is what a rename would have produced.
+		if rmErr := os.Remove(src); rmErr != nil {
+			return fmt.Errorf("file landed at %s but the staged copy %s could not be removed: %w", dst, src, rmErr)
+		}
+		return nil
+	}
+	if errors.Is(err, fs.ErrExist) {
+		return errDestinationExists(dst)
+	}
+	if !linkUnsupported(err) {
+		return fmt.Errorf("publish %s: %w", dst, err)
+	}
+
+	// No hard links on this filesystem. Fall back, and accept that the check and
+	// the rename are no longer atomic against each other.
+	occupied, cerr := destinationExists(dst)
+	if cerr != nil {
+		return cerr
+	}
+	if occupied {
+		return errDestinationExists(dst)
+	}
+	if rerr := os.Rename(src, dst); rerr != nil {
+		return fmt.Errorf("finalize output file: %w", rerr)
+	}
+	return nil
 }
 
 // noDigestRefusal is the error both download routes return when a sender offers
@@ -644,18 +705,11 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 	if err := os.Chmod(outPath, perm.file); err != nil {
 		return errors.Join(fmt.Errorf("set permissions on %s: %w", outPath, err), cleanupPartial(outPath, outputDir, code))
 	}
-	// Re-check immediately before the rename. The check above ran before the
-	// download, and a download takes long enough for something to appear in the
-	// meantime; this is the one that decides.
-	occupied, err = destinationExists(finalPath)
-	if err != nil {
-		return err
-	}
-	if occupied {
-		return errors.Join(errDestinationExists(finalPath), cleanupPartial(outPath, outputDir, code))
-	}
-	if err := os.Rename(outPath, finalPath); err != nil {
-		return fmt.Errorf("finalize output file: %w", err)
+	// Publishing is atomic and refuses an occupied destination. The check above
+	// saved the download; this is what decides, because a check-then-rename
+	// leaves a window a concurrent download or another process can slip into.
+	if err := publishIfAbsent(outPath, finalPath); err != nil {
+		return errors.Join(err, cleanupPartial(outPath, outputDir, code))
 	}
 
 	if err := storage.ClearResume(outputDir, code); err != nil {
@@ -870,18 +924,10 @@ func (n *Node) FetchFS(ctx context.Context, pi peer.AddrInfo, code string, outpu
 	if err := os.Chmod(outPath, perm.file); err != nil {
 		return errors.Join(fmt.Errorf("set permissions on %s: %w", outPath, err), cleanupPartial(outPath, outputDir, code))
 	}
-	// Re-check immediately before the rename, for the same reason as the share
-	// route: the check above ran before the download, and a download takes long
-	// enough for something to appear in the meantime.
-	occupied, err = destinationExists(finalPath)
-	if err != nil {
-		return err
-	}
-	if occupied {
-		return errors.Join(errDestinationExists(finalPath), cleanupPartial(outPath, outputDir, code))
-	}
-	if err := os.Rename(outPath, finalPath); err != nil {
-		return fmt.Errorf("finalize output file: %w", err)
+	// Atomic publish, for the same reason as the share route: the check above
+	// saved the download, this decides.
+	if err := publishIfAbsent(outPath, finalPath); err != nil {
+		return errors.Join(err, cleanupPartial(outPath, outputDir, code))
 	}
 	if err := storage.ClearResume(outputDir, code); err != nil {
 		return fmt.Errorf("clear resume state: %w", err)
