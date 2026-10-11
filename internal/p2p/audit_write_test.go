@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -41,11 +40,13 @@ func TestAuditWriteTraversalSpellingsAllRefused(t *testing.T) {
 		filepath.Join(root, "a", "b", "..", "..", "..", filepath.Base(outside), "victim.txt"),
 	}
 	// The same traversal spelled out with a literal "/". This is a distinct case
-	// — the point is the unnormalised spelling a caller can type — but it is only
-	// a path where "/" separates, so it is not asserted on Windows.
-	if runtime.GOOS != "windows" {
-		escapes = append(escapes, root+"/../../etc/passwd")
-	}
+	// — the other entries are cleaned by filepath.Join before WriteFS sees them,
+	// so only this one exercises a caller handing over an unnormalised path.
+	//
+	// Kept on Windows too: os.IsPathSeparator returns true for "/" there
+	// ("NOTE: Windows accepts / as path separator"), so this is a real traversal
+	// input on that platform rather than a malformed string.
+	escapes = append(escapes, root+"/../../etc/passwd")
 	for _, dst := range escapes {
 		if _, _, err := requester.WriteFS(fsCtx(t), pi, dst, []byte("pwned"), true); err == nil {
 			t.Errorf("traversal accepted: %q", dst)
