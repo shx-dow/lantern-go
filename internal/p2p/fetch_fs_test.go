@@ -71,7 +71,7 @@ func newFetchSetup(t *testing.T, code, content string) fetchSetup {
 	}
 
 	progress := make(chan TransferProgress, 8)
-	if err := sender.RegisterShareHandler(code, path, progress); err != nil {
+	if err := sender.RegisterShareHandler(fsCtx(t), code, path, progress); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -211,7 +211,7 @@ func TestFetchFromPairedSenderRefusesPathOutsideRoots(t *testing.T) {
 
 	const code = "55555555555555555555555555555555"
 	progress := make(chan TransferProgress, 8)
-	if err := sender.RegisterShareHandler(code, outside, progress); err != nil {
+	if err := sender.RegisterShareHandler(fsCtx(t), code, outside, progress); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {

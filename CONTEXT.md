@@ -113,6 +113,11 @@ caller does not have to reason about which one they used:
 - permissions are **inherited** from the directory the content lands in, never
   widened and never taken from the sender
 
+A **download** is a landing route like any other, so it holds to the same list.
+It has no overwrite request to offer and therefore refuses an occupied
+destination outright rather than replacing it, on both the read path and the
+share-code transfer path.
+
 A **digest** is the sender's hash of what it sent, compared against the
 receiver's hash of what it stored. A mismatch is reported as a failure, never
 as a delivery. It is also mandatory: content that arrives without one cannot be

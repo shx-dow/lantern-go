@@ -87,6 +87,37 @@ func (n *Node) claimDownload(key string) (release func(), err error) {
 	}, nil
 }
 
+// destinationExists reports whether anything already sits at path.
+//
+// The rename that publishes a download will silently replace a regular file, so
+// a download has to ask before it lands rather than after. The push path has
+// always had this check, gated on the sender setting overwrite; the download
+// routes had none, so receiving a share named notes.md destroyed whatever
+// notes.md was already in the directory.
+//
+// A symlink counts as occupied. Replacing it would either clobber the file it
+// points at or write through it to somewhere outside the output directory,
+// depending on the platform.
+func destinationExists(path string) (bool, error) {
+	_, err := os.Lstat(path)
+	switch {
+	case err == nil:
+		return true, nil
+	case os.IsNotExist(err):
+		return false, nil
+	default:
+		return false, fmt.Errorf("check destination %s: %w", path, err)
+	}
+}
+
+// errDestinationExists is the refusal both routes return when the destination is
+// occupied. It names the path so the operator can see what is in the way, and
+// says what to do about it, because "file exists" on its own sends people
+// looking for a flag that — at the moment — does not exist.
+func errDestinationExists(path string) error {
+	return fmt.Errorf("%s already exists; remove or rename it, or fetch into a different directory", path)
+}
+
 // noDigestRefusal is the error both download routes return when a sender offers
 // no digest. It is one function so the two routes cannot drift into describing
 // the same break differently, which is the sort of drift that makes a support
@@ -119,6 +150,27 @@ type TransferProgress struct {
 	Err      error
 }
 
+// reportProgress delivers msg to the transfer's consumer, and reports false if
+// the consumer has gone.
+//
+// A bare `progress <- msg` blocks forever once the consumer stops reading, which
+// is what happens the moment a caller cancels: the daemon's forwardProgress
+// selects on its context and returns, and the CLI's reader exits. The transfer
+// goroutine then sits on a full channel holding an open file and a libp2p
+// stream, for the lifetime of the process. On a long-running daemon those
+// accumulate silently.
+//
+// Callers return when this returns false, so a cancelled transfer stops writing
+// instead of blocking on its way out.
+func reportProgress(ctx context.Context, progress chan<- TransferProgress, msg TransferProgress) bool {
+	select {
+	case progress <- msg:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 type shareState struct {
 	code     string
 	filePath string
@@ -127,18 +179,28 @@ type shareState struct {
 	fileHash string
 	handled  atomic.Bool
 	progress chan TransferProgress
-	done     func()
+	// ctx governs the share's lifetime. It is the same context the advertisement
+	// runs under, so cancelling it means nobody is reporting progress any more.
+	ctx  context.Context
+	done func()
 }
 
 // RegisterShareHandler advertises path under code to any receiver that
 // proves knowledge of the code. The file is hashed up front so serving a
 // stream never blocks on I/O. Each code serves at most one receiver.
-func (n *Node) RegisterShareHandler(code string, path string, progress chan TransferProgress, done ...func()) error {
+//
+// ctx bounds the share: cancelling it stops an in-flight transfer that is
+// blocked reporting to a consumer which has stopped reading. Pass the same
+// context that runs the advertisement.
+func (n *Node) RegisterShareHandler(ctx context.Context, code string, path string, progress chan TransferProgress, done ...func()) error {
 	if code == "" {
 		return fmt.Errorf("share code must not be empty")
 	}
 	if progress == nil {
 		return fmt.Errorf("progress channel must not be nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	stop := func() {}
 	if len(done) > 0 && done[0] != nil {
@@ -169,6 +231,7 @@ func (n *Node) RegisterShareHandler(code string, path string, progress chan Tran
 		fileSize: fi.Size(),
 		fileHash: fmt.Sprintf("%x", fullHash),
 		progress: progress,
+		ctx:      ctx,
 		done:     stop,
 	}
 
@@ -208,6 +271,10 @@ func (n *Node) serveShare(s network.Stream) {
 		return
 	}
 	progress := state.progress
+	ctx := state.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// Teardown order matters (defers run LIFO): the progress channel must
 	// close before state.done() cancels the advertisement context.
 	// forwardProgress selects on both, so cancelling first lets it observe
@@ -220,39 +287,39 @@ func (n *Node) serveShare(s network.Stream) {
 
 	file, err := os.Open(state.filePath)
 	if err != nil {
-		progress <- TransferProgress{Err: fmt.Errorf("open file: %w", err)}
+		_ = reportProgress(ctx, progress, TransferProgress{Err: fmt.Errorf("open file: %w", err)})
 		return
 	}
 	defer file.Close()
 
 	fi, err := file.Stat()
 	if err != nil {
-		progress <- TransferProgress{Err: fmt.Errorf("stat file: %w", err)}
+		_ = reportProgress(ctx, progress, TransferProgress{Err: fmt.Errorf("stat file: %w", err)})
 		return
 	}
 	if fi.Size() != state.fileSize {
-		progress <- TransferProgress{Err: fmt.Errorf("file changed during share: was %d bytes, now %d", state.fileSize, fi.Size())}
+		_ = reportProgress(ctx, progress, TransferProgress{Err: fmt.Errorf("file changed during share: was %d bytes, now %d", state.fileSize, fi.Size())})
 		return
 	}
 
 	if req.Offset > fi.Size() {
-		progress <- TransferProgress{Err: fmt.Errorf("resume offset %d exceeds file size %d", req.Offset, fi.Size())}
+		_ = reportProgress(ctx, progress, TransferProgress{Err: fmt.Errorf("resume offset %d exceeds file size %d", req.Offset, fi.Size())})
 		return
 	}
 	if _, err := file.Seek(req.Offset, io.SeekStart); err != nil {
-		progress <- TransferProgress{Err: fmt.Errorf("seek: %w", err)}
+		_ = reportProgress(ctx, progress, TransferProgress{Err: fmt.Errorf("seek: %w", err)})
 		return
 	}
 
 	key, err := crypto.DeriveKey(state.code)
 	if err != nil {
-		progress <- TransferProgress{Err: fmt.Errorf("derive key: %w", err)}
+		_ = reportProgress(ctx, progress, TransferProgress{Err: fmt.Errorf("derive key: %w", err)})
 		return
 	}
 
 	ew, err := crypto.NewEncryptedWriter(s, key)
 	if err != nil {
-		progress <- TransferProgress{Err: fmt.Errorf("create encrypt: %w", err)}
+		_ = reportProgress(ctx, progress, TransferProgress{Err: fmt.Errorf("create encrypt: %w", err)})
 		return
 	}
 
@@ -263,7 +330,7 @@ func (n *Node) serveShare(s network.Stream) {
 	}
 
 	if err := protocol.WriteMetadata(ew, meta); err != nil {
-		progress <- TransferProgress{Err: fmt.Errorf("send meta: %w", err)}
+		_ = reportProgress(ctx, progress, TransferProgress{Err: fmt.Errorf("send meta: %w", err)})
 		return
 	}
 
@@ -273,36 +340,38 @@ func (n *Node) serveShare(s network.Stream) {
 		n, err := file.Read(buf)
 		if n > 0 {
 			if _, werr := ew.Write(buf[:n]); werr != nil {
-				progress <- TransferProgress{Err: fmt.Errorf("write stream: %w", werr)}
+				_ = reportProgress(ctx, progress, TransferProgress{Err: fmt.Errorf("write stream: %w", werr)})
 				return
 			}
 			sent += int64(n)
-			progress <- TransferProgress{
+			if !reportProgress(ctx, progress, TransferProgress{
 				FileName: meta.Name,
 				Bytes:    sent,
 				Total:    meta.Size,
+			}) {
+				return
 			}
 		}
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			progress <- TransferProgress{Err: fmt.Errorf("read file: %w", err)}
+			_ = reportProgress(ctx, progress, TransferProgress{Err: fmt.Errorf("read file: %w", err)})
 			return
 		}
 	}
 
 	if err := ew.Close(); err != nil {
-		progress <- TransferProgress{Err: fmt.Errorf("close encrypt: %w", err)}
+		_ = reportProgress(ctx, progress, TransferProgress{Err: fmt.Errorf("close encrypt: %w", err)})
 		return
 	}
 
-	progress <- TransferProgress{
+	reportProgress(ctx, progress, TransferProgress{
 		FileName: meta.Name,
 		Bytes:    sent,
 		Total:    meta.Size,
 		Done:     true,
-	}
+	})
 }
 
 func (n *Node) matchShare(req protocol.TransferRequest) *shareState {
@@ -339,7 +408,9 @@ func (n *Node) RegisterReceive(ctx context.Context, pi peer.AddrInfo, code strin
 		defer close(progress)
 		err := n.receiveFile(ctx, pi, code, outputDir, progress)
 		if err != nil {
-			progress <- TransferProgress{Err: err}
+			// Best effort: if the caller cancelled, it is no longer reading, and
+			// blocking here would strand this goroutine and the files it holds.
+			reportProgress(ctx, progress, TransferProgress{Err: err})
 		}
 	}()
 }
@@ -434,7 +505,27 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 		return fmt.Errorf("resume file name changed from %s to %s", resume.FileName, meta.Name)
 	}
 
-	if err := os.MkdirAll(outputDir, storage.PublicDirPerm); err != nil {
+	// The destination name is known from the header, so refuse before pulling a
+	// body that would only be discarded at the rename.
+	finalPath := filepath.Join(outputDir, filepath.Base(meta.Name))
+	occupied, err := destinationExists(finalPath)
+	if err != nil {
+		return err
+	}
+	if occupied {
+		return errDestinationExists(finalPath)
+	}
+
+	// Permissions are inherited from the destination rather than hardcoded, for
+	// the same reason a push inherits them: an operator who chose 0700 must not
+	// get world-readable files and directories because a constant won. Derived
+	// before MkdirAll so a directory the download has to create is born with the
+	// mode its parent implies rather than 0755.
+	perm, err := inheritedPerm(outputDir)
+	if err != nil {
+		return fmt.Errorf("derive permissions for %s: %w", outputDir, err)
+	}
+	if err := os.MkdirAll(outputDir, perm.dir); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
 	}
 
@@ -442,7 +533,7 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 	if offset == 0 {
 		flags |= os.O_TRUNC
 	}
-	out, err := os.OpenFile(outPath, flags, storage.PublicFilePerm)
+	out, err := os.OpenFile(outPath, flags, perm.file)
 	if err != nil {
 		return fmt.Errorf("open output file: %w", err)
 	}
@@ -505,10 +596,14 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 				return errors.Join(fmt.Errorf("write file: %w", werr), saveCheckpoint())
 			}
 			received += int64(n)
-			progress <- TransferProgress{
+			// The checkpoint is saved on the way out even when the consumer is
+			// gone: a cancelled transfer has still made progress worth resuming.
+			if !reportProgress(ctx, progress, TransferProgress{
 				FileName: meta.Name,
 				Bytes:    received,
 				Total:    meta.Size,
+			}) {
+				return errors.Join(ctx.Err(), saveCheckpoint())
 			}
 		}
 		if err == io.EOF {
@@ -542,7 +637,23 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 		return fmt.Errorf("close output file: %w", err)
 	}
 	closed = true
-	finalPath := filepath.Join(outputDir, filepath.Base(meta.Name))
+	// The mode passed to OpenFile only applies on creation and is masked by the
+	// process umask, so it is set explicitly here. This is the same reason the
+	// push path chmods its staging file: a download that "inherits" 0600 and
+	// lands 0644 because of a umask is not inheriting anything.
+	if err := os.Chmod(outPath, perm.file); err != nil {
+		return errors.Join(fmt.Errorf("set permissions on %s: %w", outPath, err), cleanupPartial(outPath, outputDir, code))
+	}
+	// Re-check immediately before the rename. The check above ran before the
+	// download, and a download takes long enough for something to appear in the
+	// meantime; this is the one that decides.
+	occupied, err = destinationExists(finalPath)
+	if err != nil {
+		return err
+	}
+	if occupied {
+		return errors.Join(errDestinationExists(finalPath), cleanupPartial(outPath, outputDir, code))
+	}
 	if err := os.Rename(outPath, finalPath); err != nil {
 		return fmt.Errorf("finalize output file: %w", err)
 	}
@@ -550,12 +661,14 @@ func (n *Node) receiveFile(ctx context.Context, pi peer.AddrInfo, code string, o
 	if err := storage.ClearResume(outputDir, code); err != nil {
 		return fmt.Errorf("clear resume state: %w", err)
 	}
-	progress <- TransferProgress{
+	// The file has already landed, so a consumer that has gone away costs
+	// nothing to ignore here.
+	reportProgress(ctx, progress, TransferProgress{
 		FileName: meta.Name,
 		Bytes:    received,
 		Total:    meta.Size,
 		Done:     true,
-	}
+	})
 	return nil
 }
 
@@ -604,6 +717,17 @@ func (n *Node) FetchFS(ctx context.Context, pi peer.AddrInfo, code string, outpu
 		return noDigestRefusal()
 	}
 
+	// The name is known from the resolve, so an occupied destination can be
+	// refused before the read stream is even opened.
+	finalPath := filepath.Join(outputDir, info.Name)
+	occupied, err := destinationExists(finalPath)
+	if err != nil {
+		return err
+	}
+	if occupied {
+		return errDestinationExists(finalPath)
+	}
+
 	// A resume whose file name no longer matches is a different file sharing
 	// the same code, so it is discarded rather than mixed in.
 	resume, hasResume, err := storage.LoadResume(outputDir, code)
@@ -620,7 +744,14 @@ func (n *Node) FetchFS(ctx context.Context, pi peer.AddrInfo, code string, outpu
 		offset = resume.Offset
 	}
 
-	if err := os.MkdirAll(outputDir, storage.PublicDirPerm); err != nil {
+	// Same reasoning as the share route above: derive the modes from the
+	// destination so a created directory and the file inside it inherit rather
+	// than defaulting to world-readable.
+	perm, err := inheritedPerm(outputDir)
+	if err != nil {
+		return fmt.Errorf("derive permissions for %s: %w", outputDir, err)
+	}
+	if err := os.MkdirAll(outputDir, perm.dir); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
 	}
 	if outPath == "" {
@@ -634,7 +765,7 @@ func (n *Node) FetchFS(ctx context.Context, pi peer.AddrInfo, code string, outpu
 	if offset == 0 {
 		flags |= os.O_TRUNC
 	}
-	out, err := os.OpenFile(outPath, flags, storage.PublicFilePerm)
+	out, err := os.OpenFile(outPath, flags, perm.file)
 	if err != nil {
 		return fmt.Errorf("open output file: %w", err)
 	}
@@ -701,7 +832,11 @@ func (n *Node) FetchFS(ctx context.Context, pi peer.AddrInfo, code string, outpu
 			return errors.Join(fmt.Errorf("write file: %w", err), saveCheckpoint())
 		}
 		received += int64(len(data))
-		progress <- TransferProgress{FileName: info.Name, Bytes: received, Total: sizeOf(entry, received)}
+		// As in receiveFile: a cancelled fetch still made progress worth
+		// resuming, so the checkpoint is saved on the way out.
+		if !reportProgress(ctx, progress, TransferProgress{FileName: info.Name, Bytes: received, Total: sizeOf(entry, received)}) {
+			return errors.Join(ctx.Err(), saveCheckpoint())
+		}
 
 		// The peer's own size is authoritative, not the chunk length: the read
 		// caps what it returns, so a short read does not mean the end.
@@ -730,13 +865,29 @@ func (n *Node) FetchFS(ctx context.Context, pi peer.AddrInfo, code string, outpu
 		return fmt.Errorf("close output file: %w", err)
 	}
 	closed = true
-	if err := os.Rename(outPath, filepath.Join(outputDir, info.Name)); err != nil {
+	// Explicit, for the same reason as the share route: the mode given to
+	// OpenFile applies only on creation and is masked by the process umask.
+	if err := os.Chmod(outPath, perm.file); err != nil {
+		return errors.Join(fmt.Errorf("set permissions on %s: %w", outPath, err), cleanupPartial(outPath, outputDir, code))
+	}
+	// Re-check immediately before the rename, for the same reason as the share
+	// route: the check above ran before the download, and a download takes long
+	// enough for something to appear in the meantime.
+	occupied, err = destinationExists(finalPath)
+	if err != nil {
+		return err
+	}
+	if occupied {
+		return errors.Join(errDestinationExists(finalPath), cleanupPartial(outPath, outputDir, code))
+	}
+	if err := os.Rename(outPath, finalPath); err != nil {
 		return fmt.Errorf("finalize output file: %w", err)
 	}
 	if err := storage.ClearResume(outputDir, code); err != nil {
 		return fmt.Errorf("clear resume state: %w", err)
 	}
-	progress <- TransferProgress{FileName: info.Name, Bytes: received, Total: received, Done: true}
+	// The file has already landed; a consumer that has gone away costs nothing.
+	reportProgress(ctx, progress, TransferProgress{FileName: info.Name, Bytes: received, Total: received, Done: true})
 	return nil
 }
 

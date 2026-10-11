@@ -503,7 +503,7 @@ func shareSender(t *testing.T, sourcePath, code, digest string) peer.AddrInfo {
 	ctx := fsCtx(t)
 	sender := fsHost(t)
 	sender.ctx = ctx
-	if err := sender.RegisterShareHandler(code, sourcePath, make(chan TransferProgress, 64)); err != nil {
+	if err := sender.RegisterShareHandler(fsCtx(t), code, sourcePath, make(chan TransferProgress, 64)); err != nil {
 		t.Fatal(err)
 	}
 

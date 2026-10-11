@@ -336,7 +336,7 @@ func (l *Lantern) shareWithCode(ctx context.Context, path string, code string) (
 	progress := make(chan p2p.TransferProgress, broadcastBufferSize)
 
 	advCtx, advCancel := context.WithCancel(ctx)
-	if err := l.node.RegisterShareHandler(code, path, progress, advCancel); err != nil {
+	if err := l.node.RegisterShareHandler(advCtx, code, path, progress, advCancel); err != nil {
 		advCancel()
 		return nil, err
 	}
