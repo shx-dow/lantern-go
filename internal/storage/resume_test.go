@@ -7,6 +7,8 @@ import (
 )
 
 func TestResumeStateRoundTripIsPrivate(t *testing.T) {
+	posixOnly(t)
+
 	dir := t.TempDir()
 	name := "photo.bin"
 	partial, err := PartialPath(dir, "code", name)

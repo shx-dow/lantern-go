@@ -295,6 +295,8 @@ func TestFSDirWriteLeavesNoDebris(t *testing.T) {
 // the archive and not from a public default. This is the same rule a file push
 // follows, and the audit found the alternative widening access.
 func TestFSDirWriteInheritsPermissions(t *testing.T) {
+	posixOnly(t)
+
 	root := t.TempDir()
 	private := filepath.Join(root, "private")
 	if err := os.MkdirAll(private, 0o700); err != nil {
