@@ -241,21 +241,21 @@ func TestRootsAliasAcceptsBothForms(t *testing.T) {
 // Every daemon-backed command must be recognised as one. Without --daemon the
 // CLI said `unknown command "status"` and then printed usage listing status
 // immediately below it — telling the user the command did not exist while
-// showing them that it does. The real problem is a missing flag, so that is
-// what the error should say.
+// showing them that it does.
+// The commands runDaemonCommand serves, other than the two that also run
+// locally. These go to the daemon whether or not --daemon was passed.
 func TestDaemonCommandsAreRecognisedWithoutTheFlag(t *testing.T) {
-	// The commands runDaemonCommand handles other than the two that work
-	// without a daemon.
 	daemonOnly := []string{"status", "discover", "peers", "list", "trust", "files", "remote-files"}
 	for _, cmd := range daemonOnly {
 		if !commandNeedsDaemon(cmd) {
-			t.Errorf("%q is served by the daemon but is not recognised as needing one", cmd)
+			t.Errorf("%q is served by the daemon but is not recognised as one", cmd)
 		}
 	}
-	// And the local ones must not be misreported as daemon commands.
+	// send and receive run either way — --daemon chooses between lanternd and a
+	// fresh in-process node — so they must not be forced onto the daemon.
 	for _, cmd := range []string{"send", "receive", "version", "daemon", "doctor", "mcp"} {
 		if commandNeedsDaemon(cmd) {
-			t.Errorf("%q works without a daemon but is reported as needing one", cmd)
+			t.Errorf("%q also runs locally but is forced onto the daemon", cmd)
 		}
 	}
 }

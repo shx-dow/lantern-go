@@ -111,27 +111,18 @@ type cliOptions struct {
 	positional    []string
 }
 
-// commandNeedsDaemon reports whether a command is served by runDaemonCommand.
+// commandNeedsDaemon reports whether a command is served only by
+// runDaemonCommand, and so goes to the daemon whether or not --daemon was
+// passed.
 //
-// send and receive work locally against a fresh node, so they run whichever
-// route the CLI took. Everything else in runDaemonCommand needs a running
-// daemon, and asking for one without --daemon used to produce
-// "unknown command" followed by a usage text listing that same command.
+// send and receive run either way — --daemon chooses between lanternd and a
+// fresh in-process node for them — so they are deliberately absent.
 func commandNeedsDaemon(command string) bool {
 	switch command {
 	case "status", "discover", "peers", "list", "trust", "files", "remote-files":
 		return true
 	}
 	return false
-}
-
-// daemonFlagError explains that command is served by a daemon the CLI was not
-// told to talk to. Callers check it before doing any local setup.
-func daemonFlagError(command string) error {
-	if !commandNeedsDaemon(command) {
-		return nil
-	}
-	return fmt.Errorf("%q talks to a running daemon; pass --daemon, or --daemon-url=URL if it is not on the default port", command)
 }
 
 func main() {
@@ -187,15 +178,19 @@ func main() {
 		return
 	}
 
-	// A command served by the daemon is refused before any local node is
-	// created. lantern.New brings up a p2p host and writes an identity key and a
-	// data directory, so checking this afterwards meant the refusal arrived
-	// *after* those side effects — and never arrived at all when setup failed
-	// first, because that error exited sooner.
-	if !opts.daemon {
-		if err := daemonFlagError(opts.command); err != nil {
-			fatal(opts.jsonOut, err)
-		}
+	// Commands the daemon serves go to the daemon, whether or not --daemon was
+	// passed. Asking for one without it used to be an error naming the flag, which
+	// made the user learn a flag to get the thing they had already asked for.
+	//
+	// --daemon is still meaningful for send and receive, where it chooses between
+	// lanternd and a fresh in-process node. For the rest there is no local
+	// alternative to choose, so the flag is implied.
+	//
+	// Routing here rather than after lantern.New also keeps the side effects out:
+	// bringing up an in-process node writes an identity key and a data directory,
+	// which a status query has no use for.
+	if commandNeedsDaemon(opts.command) {
+		opts.daemon = true
 	}
 
 	cliCtx, cancel := context.WithCancel(ctx)
@@ -394,17 +389,17 @@ func usage() {
   commands:
     send <path>                  share a file or directory (dirs arrive as <name>.zip)
     receive <code> [output-dir]  fetch a file (or use --out DIR)
-    status                       daemon status (needs --daemon)
-    list [transfers|history]     daemon transfers (needs --daemon)
-    peers                        connected peers (needs --daemon)
-    discover                     self + connected peers (needs --daemon)
-    trust list                   paired devices (needs --daemon)
+    status                       daemon status
+    list [transfers|history]     daemon transfers
+    peers                        connected peers
+    discover                     self + connected peers
+    trust list                   paired devices
     trust add <peer-id> [alias]  pair a device, at --tier (default read)
     trust tier <peer-id|alias> T change what a paired device may do
     trust roots <peer-id|alias> [dirs...]  confine a device's writes
-    trust remove <peer-id>       unpair a device (needs --daemon)
-    files [dir]                  list shared-dir files (needs --daemon)
-    remote-files <peer-id> [dir] list files on a connected peer (needs --daemon)
+    trust remove <peer-id>       unpair a device
+    files [dir]                  list shared-dir files
+    remote-files <peer-id> [dir] list files on a connected peer
     doctor                       diagnose a setup and print the fix for each problem
                                 (lantern doctor --probe-peers for real reachability)
 
@@ -413,7 +408,9 @@ flags:
   --out DIR         receive output directory (default ".")
   --port N          in-process listen port (default 0 = random)
   --data-dir DIR    in-process local advertisement directory
-  --daemon[=URL]    talk to lanternd instead of in-process node
+  --daemon[=URL]    for send/receive: talk to lanternd instead of starting an
+                    in-process node. Commands above that are served by lanternd
+                    always use it, flag or not.
                     (default URL http://127.0.0.1:43782 or $LANTERND_URL)
   --daemon-url URL  same as --daemon=URL
   --daemon-token T  daemon bearer token (or $LANTERN_DAEMON_TOKEN)
@@ -423,7 +420,7 @@ examples:
   lantern send --json ./photo.jpg
   lantern --daemon send ./photo.jpg
   lantern --daemon receive <code> --out ./inbox
-  lantern --daemon status`)
+  lantern status`)
 }
 
 // daemonRecord aliases the shared client record for compactness.

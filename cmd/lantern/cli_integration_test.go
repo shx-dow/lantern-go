@@ -70,15 +70,18 @@ func runCLI(t *testing.T, args ...string) (stdout, stderr string, code int) {
 	return outBuf.String(), errBuf.String(), code
 }
 
-// A daemon-backed command asked for without --daemon must say so, and must not
-// have created anything on the way to saying it.
+// A daemon-backed command asked for without --daemon goes to the daemon, and
+// must not bring up an in-process node on the way.
 //
-// The second half is the point. lantern.New brings up a p2p host and writes an
-// identity key, so checking the command after that meant the refusal landed
-// after those side effects — and when setup failed first, the setup error
-// exited before the refusal could ever be printed. The user was told their data
-// directory was broken, when the actual problem was a missing flag.
-func TestDaemonCommandRefusedBeforeCreatingLocalState(t *testing.T) {
+// The second half is the point. lantern.New starts a p2p host and writes an
+// identity key and a data directory; a status query has no use for any of that,
+// and creating it meant `lantern status` left a device identity behind on
+// whatever machine ran it.
+//
+// No daemon is listening here, so the observable outcome is a connection error
+// naming the daemon URL — which is the real problem, and is what a user who typed
+// `lantern status` needs to be told.
+func TestDaemonCommandUsesTheDaemonWithoutLocalSetup(t *testing.T) {
 	dataDir := t.TempDir()
 
 	for _, command := range []string{"status", "discover", "peers", "files"} {
@@ -87,19 +90,20 @@ func TestDaemonCommandRefusedBeforeCreatingLocalState(t *testing.T) {
 			stdout, _, code := runCLI(t, "--json", "--data-dir", dir, command)
 
 			if code == 0 {
-				t.Fatalf("%s without --daemon should not succeed, got exit 0: %s", command, stdout)
+				t.Fatalf("%s should not succeed with no daemon running: %s", command, stdout)
 			}
-			if !strings.Contains(stdout, "pass --daemon") {
-				t.Errorf("%s: expected the missing-daemon message, got %q", command, stdout)
+			if !strings.Contains(stdout, defaultDaemonURL) && !strings.Contains(stdout, "lanternd") {
+				t.Errorf("%s did not report a daemon connection problem, got %q", command, stdout)
 			}
-			// Nothing should exist where a local node would have put an
-			// identity key.
+			if strings.Contains(stdout, "pass --daemon") {
+				t.Errorf("%s still demands the --daemon flag: %q", command, stdout)
+			}
 			if entries, err := os.ReadDir(dir); err == nil && len(entries) > 0 {
 				names := make([]string, 0, len(entries))
 				for _, e := range entries {
 					names = append(names, e.Name())
 				}
-				t.Errorf("%s created local state before refusing: %v", command, names)
+				t.Errorf("%s created local state for a daemon command: %v", command, names)
 			}
 		})
 	}

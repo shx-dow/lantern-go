@@ -84,8 +84,8 @@ is what you address:
 lantern daemon --shared-dirs ~/Share --device-name laptop
 
 # pair them, each side naming the other
-lantern --daemon discover
-lantern --daemon trust add <peer-id> laptop
+lantern discover
+lantern trust add <peer-id> laptop
 
 # then, from the asking device
 curl -s -H "Authorization: Bearer $LANTERN_DAEMON_TOKEN" \
@@ -207,8 +207,8 @@ multicast path.
 Persistent daemon, also used to serve shared dirs for remote listing:
 
 ```sh
-lantern --daemon files
-lantern --daemon remote-files <peer-id>
+lantern files
+lantern remote-files <peer-id>
 ```
 
 MCP shim for agents, over stdio. It proxies the daemon API and holds no
