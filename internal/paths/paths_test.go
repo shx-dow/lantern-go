@@ -52,24 +52,20 @@ func TestConfigIsNeverInTemp(t *testing.T) {
 	}
 }
 
-func TestConfigAndDataDifferOnAppleAndWindows(t *testing.T) {
-	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
-		t.Skip("Unix keeps config and data apart by convention already")
-	}
-	if runtime.GOOS == "darwin" {
-		// KNOWN COLLISION, not yet decided.
-		//
-		// os.UserConfigDir returns ~/Library/Application Support on darwin, which
-		// is exactly where Data() puts the identity key, the pairings and the
-		// token. So on macOS the daemon's lanternd.json sits in the same directory
-		// as the secrets, and this assertion fails — it was written to catch
-		// exactly that, and had never run on macOS.
-		//
-		// Skipped rather than fixed here because the fix is a behaviour change:
-		// moving config to ~/Library/Preferences would orphan the lanternd.json of
-		// every existing macOS install. That deserves its own decision and its own
-		// migration, not a drive-by inside a CI change.
-		t.Skip("config and data coincide on darwin by Go's UserConfigDir convention; see paths.go Config()")
+// On Windows, config and data are genuinely separate directories:
+// UserConfigDir is %AppData% (Roaming) and Data is %LOCALAPPDATA%. That
+// separation is worth keeping under test.
+//
+// It does not hold on macOS. os.UserConfigDir returns ~/Library/Application
+// Support there, which is where Data puts the identity key, the pairings and
+// the token, so asserting it would fail. That was a real finding — see issue
+// #30 — but it was investigated and accepted rather than fixed: the shared
+// directory is created 0700, it is not iCloud-synced by default, and nothing
+// ever writes the config file. So there is no separation to assert and moving
+// config to ~/Library/Preferences would buy nothing measurable.
+func TestConfigAndDataDifferOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("only Windows separates the two; see issue #30")
 	}
 	if Config() == Data() {
 		t.Fatalf("config and data share a directory on %s: %q", runtime.GOOS, Config())

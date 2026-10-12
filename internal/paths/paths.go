@@ -54,6 +54,18 @@ func Data() string {
 // On Windows and macOS this uses each platform's own convention so the
 // directory looks where a user expects to find it; elsewhere it honours
 // XDG_CONFIG_HOME.
+//
+// Config and Data are the same directory on macOS. os.UserConfigDir returns
+// ~/Library/Application Support there, which is exactly where Data puts the
+// identity key, the pairings and the token — so there is no separation between
+// settings and state on that platform, only on Windows, where UserConfigDir is
+// %AppData% (Roaming) and Data is %LOCALAPPDATA%.
+//
+// That costs less than it sounds. The shared directory is created 0700 by
+// EnsureData, ~/Library/Application Support is not iCloud-synced by default,
+// and nothing ever writes the config file — it is read, never written. So an
+// operator copying this directory to back up their settings also copies the key
+// and the token, and nothing is exposed unless they do. See issue #30.
 func Config() string {
 	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 		if dir, err := os.UserConfigDir(); err == nil && dir != "" {
@@ -74,11 +86,6 @@ func Config() string {
 // callers should prefer, so the directory exists before anything writes to it.
 func EnsureData() (string, error) {
 	return ensure(Data())
-}
-
-// EnsureConfig returns Config, creating it if needed.
-func EnsureConfig() (string, error) {
-	return ensure(Config())
 }
 
 func ensure(dir string) (string, error) {
