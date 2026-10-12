@@ -125,6 +125,15 @@ func commandNeedsDaemon(command string) bool {
 	return false
 }
 
+// daemonFlagError explains that command is served by a daemon the CLI was not
+// told to talk to. Callers check it before doing any local setup.
+func daemonFlagError(command string) error {
+	if !commandNeedsDaemon(command) {
+		return nil
+	}
+	return fmt.Errorf("%q talks to a running daemon; pass --daemon, or --daemon-url=URL if it is not on the default port", command)
+}
+
 func main() {
 	args := os.Args[1:]
 
@@ -178,6 +187,17 @@ func main() {
 		return
 	}
 
+	// A command served by the daemon is refused before any local node is
+	// created. lantern.New brings up a p2p host and writes an identity key and a
+	// data directory, so checking this afterwards meant the refusal arrived
+	// *after* those side effects — and never arrived at all when setup failed
+	// first, because that error exited sooner.
+	if !opts.daemon {
+		if err := daemonFlagError(opts.command); err != nil {
+			fatal(opts.jsonOut, err)
+		}
+	}
+
 	cliCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -200,10 +220,6 @@ func main() {
 	case "receive":
 		runReceive(cliCtx, ln, opts)
 	default:
-		if commandNeedsDaemon(opts.command) {
-			fatal(opts.jsonOut, fmt.Errorf(
-				"%q talks to a running daemon; pass --daemon, or --daemon-url=URL if it is not on the default port", opts.command))
-		}
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", opts.command)
 		usage()
 		os.Exit(2)
