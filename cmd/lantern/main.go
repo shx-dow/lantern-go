@@ -6,11 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"time"
 
@@ -221,6 +222,21 @@ func main() {
 	}
 }
 
+// parseArgs turns a raw argument list into options.
+//
+// It uses flag.FlagSet for the parsing rather than a hand-rolled switch, so
+// --flag=value, --flag value, and the error messages for a missing value all
+// behave the same way without each flag having to spell them out. Two things
+// the standard parser does not do are arranged around rather than fought:
+//
+//   - It stops at the first non-flag argument. The CLI accepts flags anywhere,
+//     including after the command and its arguments (`lantern send a.txt
+//     --json`), so the parse is looped over what is left each time.
+//   - A bool cannot carry a value. --daemon is a flag that may also take a URL,
+//     so it is registered through BoolFunc, which receives "true" when bare
+//     and the text when written with "=".
+//
+// Every flag's behaviour is pinned in parse_contract_test.go.
 func parseArgs(args []string) (cliOptions, error) {
 	var opts cliOptions
 	opts.outDir = "."
@@ -229,124 +245,107 @@ func parseArgs(args []string) (cliOptions, error) {
 		opts.daemonURL = defaultDaemonURL
 	}
 	opts.daemonToken = os.Getenv("LANTERN_DAEMON_TOKEN")
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--json":
-			opts.jsonOut = true
-		case a == "--daemon":
-			opts.daemon = true
-		case strings.HasPrefix(a, "--daemon="):
-			opts.daemon = true
-			if v := strings.TrimPrefix(a, "--daemon="); v != "" {
-				opts.daemonURL = normalizeBaseURL(v)
-			}
-		case a == "--daemon-url" || a == "--daemon-addr":
-			if i+1 >= len(args) {
-				return opts, fmt.Errorf("flag %s needs a value", a)
-			}
-			i++
-			opts.daemon = true
-			opts.daemonURL = normalizeBaseURL(args[i])
-		case strings.HasPrefix(a, "--daemon-url="), strings.HasPrefix(a, "--daemon-addr="):
-			// An empty value means "not overriding", not "use the default".
-			// Without the guard these two spellings disagreed with --daemon=,
-			// and an empty flag silently discarded $LANTERND_URL — leaving the
-			// caller dialling a hardcoded port and reporting it as unreachable.
-			opts.daemon = true
-			_, v, _ := strings.Cut(a, "=")
-			if v != "" {
-				opts.daemonURL = normalizeBaseURL(v)
-			}
-		case a == "--daemon-token":
-			if i+1 >= len(args) {
-				return opts, fmt.Errorf("flag --daemon-token needs a value")
-			}
-			i++
-			opts.daemonToken = args[i]
-		case strings.HasPrefix(a, "--daemon-token="):
-			opts.daemonToken = strings.TrimPrefix(a, "--daemon-token=")
-		case a == "--out":
-			if i+1 >= len(args) {
-				return opts, fmt.Errorf("flag --out needs a value")
-			}
-			i++
-			opts.outDir = args[i]
-		case strings.HasPrefix(a, "--out="):
-			opts.outDir = strings.TrimPrefix(a, "--out=")
-		case a == "--port":
-			if i+1 >= len(args) {
-				return opts, fmt.Errorf("flag --port needs a value")
-			}
-			i++
-			p, err := strconv.Atoi(args[i])
-			if err != nil {
-				return opts, fmt.Errorf("invalid --port %q", args[i])
-			}
-			opts.port = p
-		case strings.HasPrefix(a, "--port="):
-			p, err := strconv.Atoi(strings.TrimPrefix(a, "--port="))
-			if err != nil {
-				return opts, fmt.Errorf("invalid --port %q", a)
-			}
-			opts.port = p
-		case a == "--data-dir":
-			if i+1 >= len(args) {
-				return opts, fmt.Errorf("flag --data-dir needs a value")
-			}
-			i++
-			opts.dataDir = args[i]
-		case strings.HasPrefix(a, "--data-dir="):
-			opts.dataDir = strings.TrimPrefix(a, "--data-dir=")
-		case a == "--tier":
-			if i+1 >= len(args) {
-				return opts, fmt.Errorf("flag --tier needs a value")
-			}
-			i++
-			opts.tier = args[i]
-		case strings.HasPrefix(a, "--tier="):
-			opts.tier = strings.TrimPrefix(a, "--tier=")
-		case a == "--writable-roots" || a == "--roots":
-			if i+1 >= len(args) {
-				return opts, fmt.Errorf("flag --writable-roots needs a value")
-			}
-			i++
-			opts.writableRoots = splitRoots(args[i])
-		case strings.HasPrefix(a, "--writable-roots="), strings.HasPrefix(a, "--roots="):
-			// --roots is an alias, so it needs the "=" form too. It had only
-			// the space form, which made the two spellings non-interchangeable
-			// for anything generating flags programmatically.
-			_, v, _ := strings.Cut(a, "=")
-			opts.writableRoots = splitRoots(v)
-		case a == "--probe-peers":
-			opts.probePeers = true
-		case strings.HasPrefix(a, "--probe-peers="):
-			// Only the literal "false" used to turn this off, so "no", "off" and
-			// "0" all enabled the probe — and enabling it dials every paired
-			// device. Read the value the same way the MCP shim reads the same
-			// flag rather than by exact string comparison.
-			opts.probePeers = truthyFlag(strings.TrimPrefix(a, "--probe-peers="))
-		case a == "-h" || a == "--help":
-			if opts.command == "" {
-				opts.command = "help"
-			} else {
-				opts.positional = append(opts.positional, a)
-			}
-		case strings.HasPrefix(a, "-") && a != "-":
-			return opts, fmt.Errorf("unknown flag %q", a)
-		default:
-			if opts.command == "" {
-				opts.command = a
-			} else {
-				opts.positional = append(opts.positional, a)
-			}
+
+	// Errors are reported here and printed by the caller, so a parse failure
+	// must not have written anything itself.
+	fs := flag.NewFlagSet("lantern", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
+
+	setDaemonURL := func(v string) error {
+		// Naming the flag is a request to talk to the daemon, so that part is
+		// honoured even with no value. An empty value then means "not
+		// overriding", which keeps $LANTERND_URL alive when a script passes the
+		// flag through with nothing after the "=".
+		opts.daemon = true
+		if strings.TrimSpace(v) != "" {
+			opts.daemonURL = normalizeBaseURL(v)
 		}
+		return nil
+	}
+
+	fs.BoolVar(&opts.jsonOut, "json", false, "machine-readable JSONL on stdout")
+	// BoolFunc takes "true" when the flag is bare and the text when written as
+	// --daemon=URL, which is exactly the shape this flag has.
+	fs.BoolFunc("daemon", "talk to lanternd instead of an in-process node", func(v string) error {
+		opts.daemon = true
+		if v != "true" {
+			return setDaemonURL(v)
+		}
+		return nil
+	})
+	fs.Func("daemon-url", "lanternd base URL", setDaemonURL)
+	// A second spelling of --daemon-url, kept because scripts in the wild use
+	// it. Only --daemon-url is advertised.
+	fs.Func("daemon-addr", "lanternd base URL", setDaemonURL)
+	fs.Func("daemon-token", "lanternd bearer token", func(v string) error {
+		opts.daemonToken = v
+		return nil
+	})
+	fs.StringVar(&opts.outDir, "out", opts.outDir, "receive output directory")
+	fs.IntVar(&opts.port, "port", opts.port, "in-process listen port (0 = random)")
+	fs.StringVar(&opts.dataDir, "data-dir", opts.dataDir, "in-process local advertisement directory")
+	fs.StringVar(&opts.tier, "tier", opts.tier, "access tier for trust add")
+	setRoots := func(v string) error {
+		opts.writableRoots = splitRoots(v)
+		return nil
+	}
+	fs.Func("writable-roots", "directories a paired device may write", setRoots)
+	// Short alias for --writable-roots.
+	fs.Func("roots", "directories a paired device may write", setRoots)
+	// Bool, but accepting "=false" for symmetry with the rest.
+	fs.BoolFunc("probe-peers", "real reachability checks in doctor", func(v string) error {
+		opts.probePeers = truthyFlag(v)
+		return nil
+	})
+	var helpRequested bool
+	fs.BoolVar(&helpRequested, "help", false, "show help")
+	fs.BoolVar(&helpRequested, "h", false, "shorthand for --help")
+
+	// The standard parser stops at the first non-flag argument, so parse what
+	// is left again each time round, taking the first as the command and any
+	// later ones as its arguments. This is what makes `send a.txt --json` work.
+	//
+	// A round never mixes the two: flag.FlagSet consumes only the leading flags
+	// and hands the rest back, so every argument it has seen came before
+	// whatever this round is about to take. That ordering is what --help needs,
+	// and it is why helpFirst below can be set from whether a command existed
+	// yet.
+	rest := args
+	helpFirst := false
+	for {
+		hadCommand := opts.command != ""
+		if err := fs.Parse(rest); err != nil {
+			return opts, err
+		}
+		if helpRequested && !hadCommand {
+			helpFirst = true
+		}
+		rest = fs.Args()
+		if len(rest) == 0 {
+			break
+		}
+		// A lone "-" is what a user means by stdin, not a misspelled flag.
+		if !helpFirst && opts.command == "" && rest[0] != "-" {
+			opts.command = rest[0]
+		} else {
+			opts.positional = append(opts.positional, rest[0])
+		}
+		rest = rest[1:]
+	}
+
+	// --help before any command means help, with whatever followed it as a
+	// topic. After a command it belongs to that command instead, so
+	// `lantern help daemon` and a command's own --help both keep working.
+	switch {
+	case helpFirst:
+		opts.command = "help"
+	case helpRequested:
+		opts.positional = append(opts.positional, "--help")
 	}
 	return opts, nil
 }
 
-// splitRoots parses a comma-separated root list, so a shell never has to be
-// trusted with quoting a single directory that contains a space.
 // truthyFlag reads a flag value written as text. Anything unrecognised is
 // false, so a mistyped or machine-generated value never turns a probe on by
 // accident — enabling it dials every paired device, which is not something to
@@ -359,6 +358,8 @@ func truthyFlag(v string) bool {
 	return false
 }
 
+// splitRoots parses a comma-separated root list, so a shell never has to be
+// trusted with quoting a single directory that contains a space.
 func splitRoots(v string) []string {
 	var out []string
 	for _, p := range strings.Split(v, ",") {
