@@ -87,6 +87,11 @@ func runCLI(t *testing.T, args ...string) (stdout, stderr string, code int) {
 // than an unreachable one: an unreachable port cannot tell you the request went
 // to the *right* daemon, only that it went somewhere that was closed.
 func TestDaemonCommandUsesTheDaemonWithoutLocalSetup(t *testing.T) {
+	// Skips the whole test under -short, where there is no binary to run. Without
+	// this the subtests each skip and the request count below still runs, against
+	// a daemon nothing ever contacted.
+	lanternBinary(t)
+
 	const marker = "test-daemon-was-contacted"
 
 	var requests int
