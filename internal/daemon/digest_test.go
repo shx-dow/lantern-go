@@ -103,7 +103,7 @@ func TestPushFailsWhenRemoteReportsNoDigest(t *testing.T) {
 	d, peerID, cleanup := lyingReceiverDaemon(t, "", content)
 	defer cleanup()
 
-	_, err := d.PushFile(context.Background(), peerID, src, "", false)
+	_, err := d.PushFile(dialContext(t), peerID, src, "", false)
 	if err == nil {
 		t.Fatal("a push to a receiver that reports no digest must fail")
 	}
@@ -120,7 +120,7 @@ func TestPushFailsWhenRemoteDigestIsWrong(t *testing.T) {
 	d, peerID, cleanup := lyingReceiverDaemon(t, strings.Repeat("b", 64), content)
 	defer cleanup()
 
-	_, err := d.PushFile(context.Background(), peerID, src, "", false)
+	_, err := d.PushFile(dialContext(t), peerID, src, "", false)
 	if err == nil {
 		t.Fatal("a push with a mismatched digest must fail")
 	}
@@ -138,7 +138,7 @@ func TestPushSucceedsWithCorrectDigest(t *testing.T) {
 	d, peerID, cleanup := lyingReceiverDaemon(t, testDigest(content), content)
 	defer cleanup()
 
-	res, err := d.PushFile(context.Background(), peerID, src, "", false)
+	res, err := d.PushFile(dialContext(t), peerID, src, "", false)
 	if err != nil {
 		t.Fatalf("an honest receiver must succeed: %v", err)
 	}
@@ -163,6 +163,30 @@ func writePayload(t *testing.T, content string) string {
 // The receiver never writes the bytes anywhere, which is the point: it is fully
 // in control of what it reports, and that is exactly the case the previous
 // check skipped.
+// dialContext gives a push enough time to complete.
+//
+// The receiver here is a real p2p node built by p2p.NewNode, which listens on
+// 0.0.0.0 and so advertises the runner's real interfaces. The trust store
+// correctly refuses to keep a loopback address — a peer is never on your own
+// loopback — so the dial goes out over the network stack. On a loaded Windows
+// runner under -race the security handshake on those addresses can outlast
+// libp2p's default dial timeout, and the test then fails on the dial instead of
+// on the digest it exists to check:
+//
+//	digest_test.go:111: the failure should say the copy is unverifiable:
+//	  connect: ... all dials failed
+//	    * [/ip4/10.1.0.136/tcp/64093] failed to negotiate security protocol:
+//	      context deadline exceeded
+//
+// context.Background() leaves that timeout at libp2p's default. The rest of the
+// suite passes an explicit one for the same reason.
+func dialContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
 func lyingReceiverDaemon(t *testing.T, reportedDigest, content string) (*Daemon, string, func()) {
 	t.Helper()
 	dir := t.TempDir()
