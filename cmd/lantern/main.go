@@ -111,6 +111,20 @@ type cliOptions struct {
 	positional    []string
 }
 
+// commandNeedsDaemon reports whether a command is served by runDaemonCommand.
+//
+// send and receive work locally against a fresh node, so they run whichever
+// route the CLI took. Everything else in runDaemonCommand needs a running
+// daemon, and asking for one without --daemon used to produce
+// "unknown command" followed by a usage text listing that same command.
+func commandNeedsDaemon(command string) bool {
+	switch command {
+	case "status", "discover", "peers", "list", "trust", "files", "remote-files":
+		return true
+	}
+	return false
+}
+
 func main() {
 	args := os.Args[1:]
 
@@ -186,6 +200,10 @@ func main() {
 	case "receive":
 		runReceive(cliCtx, ln, opts)
 	default:
+		if commandNeedsDaemon(opts.command) {
+			fatal(opts.jsonOut, fmt.Errorf(
+				"%q talks to a running daemon; pass --daemon, or --daemon-url=URL if it is not on the default port", opts.command))
+		}
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", opts.command)
 		usage()
 		os.Exit(2)
@@ -219,12 +237,16 @@ func parseArgs(args []string) (cliOptions, error) {
 			i++
 			opts.daemon = true
 			opts.daemonURL = normalizeBaseURL(args[i])
-		case strings.HasPrefix(a, "--daemon-url="):
+		case strings.HasPrefix(a, "--daemon-url="), strings.HasPrefix(a, "--daemon-addr="):
+			// An empty value means "not overriding", not "use the default".
+			// Without the guard these two spellings disagreed with --daemon=,
+			// and an empty flag silently discarded $LANTERND_URL — leaving the
+			// caller dialling a hardcoded port and reporting it as unreachable.
 			opts.daemon = true
-			opts.daemonURL = normalizeBaseURL(strings.TrimPrefix(a, "--daemon-url="))
-		case strings.HasPrefix(a, "--daemon-addr="):
-			opts.daemon = true
-			opts.daemonURL = normalizeBaseURL(strings.TrimPrefix(a, "--daemon-addr="))
+			_, v, _ := strings.Cut(a, "=")
+			if v != "" {
+				opts.daemonURL = normalizeBaseURL(v)
+			}
 		case a == "--daemon-token":
 			if i+1 >= len(args) {
 				return opts, fmt.Errorf("flag --daemon-token needs a value")
@@ -279,8 +301,12 @@ func parseArgs(args []string) (cliOptions, error) {
 			}
 			i++
 			opts.writableRoots = splitRoots(args[i])
-		case strings.HasPrefix(a, "--writable-roots="):
-			opts.writableRoots = splitRoots(strings.TrimPrefix(a, "--writable-roots="))
+		case strings.HasPrefix(a, "--writable-roots="), strings.HasPrefix(a, "--roots="):
+			// --roots is an alias, so it needs the "=" form too. It had only
+			// the space form, which made the two spellings non-interchangeable
+			// for anything generating flags programmatically.
+			_, v, _ := strings.Cut(a, "=")
+			opts.writableRoots = splitRoots(v)
 		case a == "--probe-peers":
 			opts.probePeers = true
 		case strings.HasPrefix(a, "--probe-peers="):
