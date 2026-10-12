@@ -145,10 +145,16 @@ func TestUnknownFlagIsRejected(t *testing.T) {
 		{"send", "a.txt", "--nope"},
 		{"-z"},
 	} {
-		if _, err := parseArgs(args); err == nil {
-			t.Errorf("parseArgs(%v) accepted an unknown flag", args)
-		} else if !strings.Contains(err.Error(), "unknown flag") {
-			t.Errorf("parseArgs(%v) = %v, want an unknown-flag error", args, err)
+		_, err := parseArgs(args)
+		if err == nil {
+			t.Fatalf("parseArgs(%v) accepted an unknown flag", args)
+		}
+		// The wording is flag.FlagSet's, and is not worth pinning; that the
+		// rejected spelling is named is.
+		last := args[len(args)-1]
+		name, _, _ := strings.Cut(strings.TrimLeft(last, "-"), "=")
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("parseArgs(%v) = %v, want the error to name %q", args, err, name)
 		}
 	}
 }
@@ -161,6 +167,16 @@ func TestLoneDashIsNotAFlag(t *testing.T) {
 	}
 	if opts.command != "send" || !reflect.DeepEqual(opts.positional, []string{"-"}) {
 		t.Errorf("parseArgs(send -) = %+v, want command send with [-]", opts)
+	}
+
+	// On its own it is not a command either — `lantern -` shows usage. The old
+	// parser took it as a command name and went on to report an unknown one.
+	opts, err = parseArgs([]string{"-"})
+	if err != nil {
+		t.Fatalf("a lone dash must not be an unknown flag: %v", err)
+	}
+	if opts.command != "" {
+		t.Errorf("parseArgs(-) = %+v, want no command", opts)
 	}
 }
 
@@ -255,6 +271,82 @@ func TestDaemonCommandsRouteRegardlessOfFlag(t *testing.T) {
 	for _, cmd := range []string{"send", "receive"} {
 		if commandNeedsDaemon(cmd) {
 			t.Errorf("%q also runs locally but is forced onto the daemon", cmd)
+		}
+	}
+}
+
+// Two behaviours the rewrite deliberately does not reproduce. The hand-rolled
+// parser treated `--` as an unknown flag and only ever recognised two-dash
+// spellings; flag.FlagSet does the opposite on both counts. Both are standard
+// Unix behaviour and neither had a test, so nothing depended on the old
+// reading — but they are pinned here so a later change to them is deliberate.
+func TestStandardTerminatorAndSingleDashForms(t *testing.T) {
+	// `--` ends flag parsing, so what follows is an argument even when it
+	// looks like a flag.
+	opts, err := parseArgs([]string{"send", "--", "--json"})
+	if err != nil {
+		t.Fatalf("`--` should end flag parsing: %v", err)
+	}
+	if opts.command != "send" {
+		t.Errorf("command = %q, want send", opts.command)
+	}
+	if !reflect.DeepEqual(opts.positional, []string{"--json"}) {
+		t.Errorf("positional = %v, want [--json]", opts.positional)
+	}
+	if opts.jsonOut {
+		t.Error("a flag after `--` must not be parsed as one")
+	}
+
+	// Single-dash spellings, accepted because that is what the flag package
+	// does and rejecting them helped nobody.
+	opts, err = parseArgs([]string{"-json", "send", "a.txt"})
+	if err != nil {
+		t.Fatalf("single-dash flags should be accepted: %v", err)
+	}
+	if !opts.jsonOut || opts.command != "send" {
+		t.Errorf("got %+v, want json output on command send", opts)
+	}
+}
+
+// A value-less `--flag=` falls back rather than clearing, for every flag that
+// takes a value. #32 fixed this for --daemon-url and the rewrite must not lose
+// it for the rest.
+func TestEmptyValueFallsBackRatherThanClearing(t *testing.T) {
+	t.Setenv("LANTERND_URL", "http://127.0.0.1:59999")
+
+	for _, args := range [][]string{
+		{"--daemon="},
+		{"--daemon-url="},
+		{"--daemon-addr="},
+	} {
+		opts, err := parseArgs(args)
+		if err != nil {
+			t.Fatalf("parseArgs(%v) = %v", args, err)
+		}
+		if !opts.daemon {
+			t.Errorf("parseArgs(%v): naming the flag should still route to the daemon", args)
+		}
+		if opts.daemonURL != "http://127.0.0.1:59999" {
+			t.Errorf("parseArgs(%v): daemonURL = %q, want the environment value", args, opts.daemonURL)
+		}
+	}
+}
+
+// `--help` wins when it comes before the command, and belongs to the command
+// when it comes after. The rewrite cannot read that off the parsed result, so
+// it is tracked while parsing; this is the case that gets it wrong.
+func TestHelpBeforeACommandIsNotSwallowed(t *testing.T) {
+	for _, args := range [][]string{
+		{"--help", "send", "a.txt"},
+		{"-h", "send", "a.txt"},
+		{"--json", "--help", "send", "a.txt"},
+	} {
+		opts, err := parseArgs(args)
+		if err != nil {
+			t.Fatalf("parseArgs(%v) = %v", args, err)
+		}
+		if opts.command != "help" {
+			t.Errorf("parseArgs(%v): command = %q, want help — it asked for help before naming a command", args, opts.command)
 		}
 	}
 }
