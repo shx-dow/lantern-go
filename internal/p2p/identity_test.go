@@ -106,6 +106,8 @@ func TestIdentityDefaultDirIsPersistent(t *testing.T) {
 }
 
 func TestIdentityKeyIsOwnerOnly(t *testing.T) {
+	posixOnly(t)
+
 	dir := t.TempDir()
 	if _, err := LoadOrCreatePrivKey(dir); err != nil {
 		t.Fatal(err)

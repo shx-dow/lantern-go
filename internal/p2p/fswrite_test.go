@@ -108,7 +108,9 @@ func TestFSWriteRejectsOutsideRoots(t *testing.T) {
 
 	for _, dst := range []string{
 		filepath.Join(outside, "escaped.txt"),
-		"/tmp/lantern-should-not-exist.txt",
+		// Built rather than written as a literal: "/tmp/..." is not a path on
+		// Windows, so the literal form made this case meaningless there.
+		filepath.Join(os.TempDir(), "lantern-should-not-exist.txt"),
 	} {
 		if _, _, err := requester.WriteFS(fsCtx(t), pi, dst, []byte("nope"), false); err == nil {
 			t.Fatalf("expected refusal for %q", dst)

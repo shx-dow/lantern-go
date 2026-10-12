@@ -37,9 +37,16 @@ func TestAuditWriteTraversalSpellingsAllRefused(t *testing.T) {
 		filepath.Join(root, "..", filepath.Base(outside), "victim.txt"),
 		filepath.Join(root, "..", "..", "etc", "passwd"),
 		filepath.Join(root, "sub", "..", "..", filepath.Base(outside), "victim.txt"),
-		root + "/../../etc/passwd",
 		filepath.Join(root, "a", "b", "..", "..", "..", filepath.Base(outside), "victim.txt"),
 	}
+	// The same traversal spelled out with a literal "/". This is a distinct case
+	// — the other entries are cleaned by filepath.Join before WriteFS sees them,
+	// so only this one exercises a caller handing over an unnormalised path.
+	//
+	// Kept on Windows too: os.IsPathSeparator returns true for "/" there
+	// ("NOTE: Windows accepts / as path separator"), so this is a real traversal
+	// input on that platform rather than a malformed string.
+	escapes = append(escapes, root+"/../../etc/passwd")
 	for _, dst := range escapes {
 		if _, _, err := requester.WriteFS(fsCtx(t), pi, dst, []byte("pwned"), true); err == nil {
 			t.Errorf("traversal accepted: %q", dst)
@@ -50,8 +57,9 @@ func TestAuditWriteTraversalSpellingsAllRefused(t *testing.T) {
 	if err != nil || string(got) != "original" {
 		t.Fatalf("traversal modified a file outside the root: %q %v", got, err)
 	}
-	if _, err := os.Stat("/etc/passwd"); err != nil {
-		t.Fatalf("/etc/passwd disturbed: %v", err)
+	systemFile := filepath.Join(string(filepath.Separator), "etc", "passwd")
+	if _, err := os.Stat(systemFile); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("%s disturbed: %v", systemFile, err)
 	}
 }
 

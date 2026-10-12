@@ -6,7 +6,11 @@ import (
 	"testing"
 )
 
-func TestResumeStateRoundTripIsPrivate(t *testing.T) {
+// The round-trip and the fact that a state file appears are checked on every
+// platform. Only the mode is POSIX-specific, so the guard used to sit at the top
+// of this test and took the whole thing with it — Windows ended up checking
+// nothing about resume state at all.
+func TestResumeStateRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	name := "photo.bin"
 	partial, err := PartialPath(dir, "code", name)
@@ -29,25 +33,38 @@ func TestResumeStateRoundTripIsPrivate(t *testing.T) {
 		t.Fatalf("got (%+v, %v), want (%+v, true)", got, ok, want)
 	}
 
-	entries, err := os.ReadDir(dir)
+	if _, err := os.Stat(statePathForTest(t, dir, "code")); err != nil {
+		t.Fatalf("resume state file was not created: %v", err)
+	}
+}
+
+// The mode is the only part that is meaningless on Windows, so it gets its own
+// test rather than switching the round-trip off with it.
+func TestResumeStateIsPrivate(t *testing.T) {
+	posixOnly(t)
+
+	dir := t.TempDir()
+	if err := SaveResume(dir, ResumeState{Code: "code", FileName: "f", FileSize: 1, Offset: 0}); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(statePathForTest(t, dir, "code"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var stateFile os.FileInfo
-	for _, e := range entries {
-		if e.Name() == ".code.lantern-state" {
-			stateFile, err = e.Info()
-			if err != nil {
-				t.Fatal(err)
-			}
-		}
+	if got := fi.Mode().Perm(); got != 0600 {
+		t.Errorf("resume state permissions are %o, want 600", got)
 	}
-	if stateFile == nil {
-		t.Fatal("resume state file was not created")
+}
+
+// statePathForTest reaches the unexported state path, so the tests can assert on
+// the file itself rather than on the directory listing it happens to sit in.
+func statePathForTest(t *testing.T, outputDir, code string) string {
+	t.Helper()
+	p, err := statePath(outputDir, code)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if stateFile.Mode().Perm() != 0600 {
-		t.Fatalf("resume state permissions are %o, want 600", stateFile.Mode().Perm())
-	}
+	return p
 }
 
 func TestLoadResumeDiscardsInvalidState(t *testing.T) {

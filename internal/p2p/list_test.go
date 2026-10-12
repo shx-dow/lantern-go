@@ -87,21 +87,30 @@ func TestListRemoteRejectsBreakout(t *testing.T) {
 	}
 }
 
+// Paths are built with filepath.Join rather than written as literals. The
+// comparison is separator-aware by design, so a hard-coded "/srv/root" is not a
+// Windows path at all — it does not match against "\\srv\\root" and the test
+// fails for a reason that has nothing to do with the logic under test.
 func TestPathWithin(t *testing.T) {
+	// Built from segments joined with the host separator, so each case is a real
+	// path on the platform running it. Hard-coded "/srv/root" literals are not
+	// Windows paths at all, and the comparison is separator-aware by design, so
+	// they fail for a reason unrelated to the logic under test.
+	root := filepath.Join(string(filepath.Separator), "srv", "root")
 	cases := []struct {
 		path, root string
 		want       bool
 		why        string
 	}{
-		{"/srv/root", "/srv/root", true, "the root itself"},
-		{"/srv/root/a.txt", "/srv/root", true, "a child"},
-		{"/srv/root/deep/a.txt", "/srv/root", true, "a grandchild"},
-		{"/srv/rooted/a.txt", "/srv/root", false, "a sibling with a shared prefix"},
-		{"/srv/root2", "/srv/root", false, "a similar name"},
-		{"/srv", "/srv/root", false, "a parent"},
-		{"/etc/passwd", "/srv/root", false, "an unrelated path"},
-		{"/srv/root", "/srv/root/deeper", false, "the other way round"},
-		{"/", "/", true, "filesystem root"},
+		{root, root, true, "the root itself"},
+		{filepath.Join(root, "a.txt"), root, true, "a child"},
+		{filepath.Join(root, "deep", "a.txt"), root, true, "a grandchild"},
+		{filepath.Join(string(filepath.Separator), "srv", "rooted", "a.txt"), root, false, "a sibling with a shared prefix"},
+		{filepath.Join(string(filepath.Separator), "srv", "root2"), root, false, "a similar name"},
+		{filepath.Join(string(filepath.Separator), "srv"), root, false, "a parent"},
+		{filepath.Join(string(filepath.Separator), "etc", "passwd"), root, false, "an unrelated path"},
+		{root, filepath.Join(root, "deeper"), false, "the other way round"},
+		{string(filepath.Separator), string(filepath.Separator), true, "filesystem root"},
 	}
 	for _, c := range cases {
 		if got := pathWithin(c.path, c.root); got != c.want {
@@ -113,10 +122,11 @@ func TestPathWithin(t *testing.T) {
 // The separator is what separates a child from a merely similar sibling, so
 // this must hold regardless of how the host compares casing.
 func TestPathWithinRejectsPrefixSiblingRegardlessOfCase(t *testing.T) {
-	if !pathWithin("/srv/root/a", "/srv/root") {
+	root := filepath.Join("/srv", "root")
+	if !pathWithin(filepath.Join(root, "a"), root) {
 		t.Fatal("a genuine child was rejected")
 	}
-	if pathWithin("/srv/rooted", "/srv/root") {
+	if pathWithin(filepath.Join("/srv", "rooted"), root) {
 		t.Fatal("a sibling directory sharing a prefix was accepted")
 	}
 	if pathWithin("/SRV/ROOTED/x", "/srv/root") {

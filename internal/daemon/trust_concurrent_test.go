@@ -80,6 +80,8 @@ func TestTokenIsStableAcrossCalls(t *testing.T) {
 
 // The token file holds a secret and must not be world-readable.
 func TestTokenFileIsOwnerOnly(t *testing.T) {
+	posixOnly(t)
+
 	dir := t.TempDir()
 	if _, err := LoadOrCreateToken(dir, ""); err != nil {
 		t.Fatal(err)

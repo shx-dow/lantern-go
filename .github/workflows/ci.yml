@@ -8,7 +8,12 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  # Linters and formatting are platform-independent, and running them once keeps
+  # the matrix cheap. They also stay on Linux deliberately: gofmt and
+  # git diff --check can disagree with themselves on a CRLF checkout, and a
+  # formatting failure reported on three platforms is noise, not signal.
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,9 +28,32 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - name: Check whitespace
         run: git diff --check
-      - name: Test
-        run: go test ./...
-      - name: Race test
-        run: go test -race ./...
+
+  # The test matrix exists because the code makes claims this used to leave
+  # unchecked. internal/paths, internal/doctor and internal/p2p all branch on
+  # runtime.GOOS — Windows resolves config and data directories differently,
+  # darwin and windows share case-insensitive path comparison — and README
+  # documents lantern.exe as a supported target. None of that was being
+  # exercised: a Linux-only runner cannot catch a test that asserts Unix
+  # permission bits, and one such test reached main in the download batch.
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      # Report every platform, not just the first to fail. A matrix that hides
+      # the other two is barely better than no matrix.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
       - name: Vet
         run: go vet ./...
+      - name: Test
+        run: go test ./...
+      # -race is supported on all three, though it needs cgo on Windows.
+      - name: Race test
+        run: go test -race ./...

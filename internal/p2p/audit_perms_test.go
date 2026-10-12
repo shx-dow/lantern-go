@@ -160,7 +160,14 @@ func TestAuditOddDestinationNamesAreContained(t *testing.T) {
 	root := t.TempDir()
 	requester, pi := fsPairWith(t, root, writePolicy(root, 0))
 
-	for _, base := range []string{"with space.txt", "with\nnewline.txt", "with\ttab.txt", "..hidden.txt", "a.b.c.txt"} {
+	// Names Windows rejects outright. A name the host cannot represent is not a
+	// containment question, so it is excluded there rather than asserted and
+	// failed; the separator check below is still exercised on every platform.
+	oddNames := []string{"with space.txt", "with\nnewline.txt", "with\ttab.txt", "..hidden.txt", "a.b.c.txt"}
+	if runtime.GOOS == "windows" {
+		oddNames = []string{"with space.txt", "..hidden.txt", "a.b.c.txt"}
+	}
+	for _, base := range oddNames {
 		dst := filepath.Join(root, base)
 		if strings.ContainsAny(base, "/\\") {
 			continue
@@ -227,6 +234,8 @@ func TestAuditPushInheritsPermissiveRoot(t *testing.T) {
 
 // The file mode is the directory mode minus execute: readable but not runnable.
 func TestAuditInheritedPermStripsExecuteFromFile(t *testing.T) {
+	posixOnly(t)
+
 	cases := []struct {
 		dir, file os.FileMode
 	}{

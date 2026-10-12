@@ -2,11 +2,13 @@ package doctor
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/shx-dow/lantern-go/pkg/lanternclient"
@@ -272,7 +274,18 @@ func TestRunWarnsWhenNothingIsPaired(t *testing.T) {
 // by answering. The warning matters because a daemon that starts without an
 // explicit --data-dir will mint a new identity and lose every pairing.
 func TestRunWarnsAboutMissingDataDir(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "never-created"))
+	// XDG_DATA_HOME is ignored on darwin — paths.Data() deliberately does not read
+	// it there — so setting it alone left this test asserting against the real
+	// ~/Library/Application Support, which exists and therefore passes the check.
+	// Point the variable the running platform actually honours at a path that was
+	// never created.
+	neverCreated := filepath.Join(t.TempDir(), "never-created")
+	t.Setenv("XDG_DATA_HOME", neverCreated)
+	if isWindows() {
+		t.Setenv("LOCALAPPDATA", neverCreated)
+	}
+	t.Setenv("HOME", filepath.Dir(neverCreated))
+	t.Setenv("USERPROFILE", filepath.Dir(neverCreated))
 	s := &stubDaemon{status: lanternclient.Status{PeerID: "p1", Addrs: []string{"/ip4/192.168.1.11/tcp/41001"}}}
 	srv := s.start(t)
 	defer srv.Close()
@@ -400,6 +413,21 @@ func TestSendMDNSQuerySucceeds(t *testing.T) {
 	}
 	defer conn.Close()
 	if err := sendMDNSQuery(conn); err != nil {
+		// Binding a multicast socket succeeds on runners that then refuse to route
+		// to the group — the macOS CI host, for one. That is an environment
+		// restriction rather than a defect in the query, so skip rather than fail.
+		//
+		// Matched on the errno rather than the operation name: the failure nests,
+		// arriving as a *net.OpError with Op "write" around an *os.SyscallError
+		// with Syscall "sendto". Matching "sendto" missed it.
+		for _, environmental := range []syscall.Errno{
+			syscall.ENETUNREACH, syscall.EHOSTUNREACH, syscall.ENETDOWN,
+			syscall.EPERM, syscall.EACCES, syscall.ENODEV,
+		} {
+			if errors.Is(err, environmental) {
+				t.Skipf("this environment cannot send multicast (%v): %v", environmental, err)
+			}
+		}
 		t.Fatalf("mDNS query should be sendable: %v", err)
 	}
 }
