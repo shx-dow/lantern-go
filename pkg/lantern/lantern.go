@@ -29,6 +29,15 @@ type Config struct {
 	// across a WSL2 NAT, Docker bridge, or multicast-blocking Wi-Fi — can
 	// still reach each other. Empty means discovery only.
 	StaticPeers []string
+	// DialTimeout bounds one dial to one address. Zero keeps go-libp2p's own
+	// limits: 15 seconds, and 5 for a private address.
+	//
+	// The swarm enforces these itself, so a caller cannot raise them by
+	// passing a longer context — every filesystem operation caps its own
+	// context, and a later deadline than the parent is discarded. Raise this
+	// instead, on a network where a handshake genuinely takes longer: a device
+	// waking from sleep on a busy LAN, for instance.
+	DialTimeout time.Duration
 }
 
 // ListEntry is one file or directory in a local or remote listing.
@@ -198,7 +207,7 @@ func New(cfg Config) (*Lantern, error) {
 	if err != nil {
 		return nil, fmt.Errorf("init identity: %w", err)
 	}
-	node, err := p2p.NewNode(cfg.Port, cfg.Bootstrap, key, cfg.DataDir)
+	node, err := p2p.NewNode(cfg.Port, cfg.Bootstrap, key, cfg.DataDir, p2p.WithDialTimeout(cfg.DialTimeout))
 	if err != nil {
 		return nil, fmt.Errorf("init p2p: %w", err)
 	}

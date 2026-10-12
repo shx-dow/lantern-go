@@ -198,7 +198,23 @@ func lyingReceiverDaemon(t *testing.T, reportedDigest, content string) (*Daemon,
 		})
 	})
 
-	ln, err := lantern.New(lantern.Config{Port: 0, DataDir: filepath.Join(dir, "sender")})
+	// The sender dials, so the sender carries the timeout. NewNode listens on
+	// 0.0.0.0, so the receiver advertises this runner's real interfaces and the
+	// trust store correctly refuses to keep a loopback address for it — which
+	// leaves the dial going over the network stack, on whatever private
+	// addresses the runner happens to have.
+	//
+	// Under -race on a loaded Windows runner the security handshake on those
+	// addresses outlasts go-libp2p's 5-second private-address limit, and the
+	// test then fails on the dial instead of on the digest it exists to check.
+	// Raising the swarm's limit is the only lever: it is enforced inside
+	// go-libp2p, and writeFS caps its own context at fsiOTimeout, so a longer
+	// caller context is discarded rather than honoured.
+	ln, err := lantern.New(lantern.Config{
+		Port:        0,
+		DataDir:     filepath.Join(dir, "sender"),
+		DialTimeout: 60 * time.Second,
+	})
 	if err != nil {
 		node.Close()
 		t.Fatal(err)

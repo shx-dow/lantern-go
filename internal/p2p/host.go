@@ -18,6 +18,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
+	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 	"github.com/multiformats/go-multiaddr"
 	"github.com/shx-dow/lantern-go/internal/paths"
 	"github.com/shx-dow/lantern-go/internal/storage"
@@ -62,11 +63,34 @@ type Node struct {
 	downloads   map[string]struct{}
 }
 
+// NodeOption configures a Node at construction.
+type NodeOption func(*nodeOptions)
+
+type nodeOptions struct {
+	dialTimeout time.Duration
+}
+
+// WithDialTimeout sets how long a single dial to one address may take.
+//
+// Zero, the default, leaves go-libp2p's own limits alone: 15 seconds, and 5
+// for a private address. Those limits apply inside the swarm and no context the
+// caller passes can raise them, because every FS operation already caps its
+// own context at fsiOTimeout — and context.WithTimeout with a later deadline
+// than its parent does nothing. So a caller that needs longer has to change
+// the option, not the context.
+func WithDialTimeout(d time.Duration) NodeOption {
+	return func(o *nodeOptions) { o.dialTimeout = d }
+}
+
 // NewNode brings up a TCP+QUIC host with relay, hole punching, DHT in
 // server mode, and mDNS. key is the host identity: pass a persisted key
 // (LoadOrCreatePrivKey) for a stable peer ID, or nil for an ephemeral
 // in-memory identity. dataDir holds local advertisements.
-func NewNode(port int, bootstrapPeers []string, key crypto.PrivKey, dataDir string) (*Node, error) {
+func NewNode(port int, bootstrapPeers []string, key crypto.PrivKey, dataDir string, opts ...NodeOption) (*Node, error) {
+	var o nodeOptions
+	for _, fn := range opts {
+		fn(&o)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	localDir := dataDir
 	if localDir == "" {
@@ -94,13 +118,24 @@ func NewNode(port int, bootstrapPeers []string, key crypto.PrivKey, dataDir stri
 		}
 	}
 
-	h, err := libp2p.New(
+	hostOpts := []libp2p.Option{
 		libp2p.Identity(priv),
 		libp2p.ListenAddrStrings(tcpAddr, quicAddr),
 		libp2p.EnableRelay(),
 		libp2p.EnableHolePunching(),
 		libp2p.NATPortMap(),
-	)
+	}
+	if o.dialTimeout > 0 {
+		// Both, not just the general timeout: the swarm picks the shorter of
+		// the two for a private address, and every device on the same LAN —
+		// which is the case Lantern is built for — has only private addresses.
+		hostOpts = append(hostOpts, libp2p.SwarmOpts(
+			swarm.WithDialTimeout(o.dialTimeout),
+			swarm.WithDialTimeoutLocal(o.dialTimeout),
+		))
+	}
+
+	h, err := libp2p.New(hostOpts...)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("create host: %w", err)
