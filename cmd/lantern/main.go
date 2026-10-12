@@ -321,7 +321,11 @@ func parseArgs(args []string) (cliOptions, error) {
 		case a == "--probe-peers":
 			opts.probePeers = true
 		case strings.HasPrefix(a, "--probe-peers="):
-			opts.probePeers = strings.TrimPrefix(a, "--probe-peers=") != "false"
+			// Only the literal "false" used to turn this off, so "no", "off" and
+			// "0" all enabled the probe — and enabling it dials every paired
+			// device. Read the value the same way the MCP shim reads the same
+			// flag rather than by exact string comparison.
+			opts.probePeers = truthyFlag(strings.TrimPrefix(a, "--probe-peers="))
 		case a == "-h" || a == "--help":
 			if opts.command == "" {
 				opts.command = "help"
@@ -343,6 +347,18 @@ func parseArgs(args []string) (cliOptions, error) {
 
 // splitRoots parses a comma-separated root list, so a shell never has to be
 // trusted with quoting a single directory that contains a space.
+// truthyFlag reads a flag value written as text. Anything unrecognised is
+// false, so a mistyped or machine-generated value never turns a probe on by
+// accident — enabling it dials every paired device, which is not something to
+// do because a flag was spelled unexpectedly.
+func truthyFlag(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
 func splitRoots(v string) []string {
 	var out []string
 	for _, p := range strings.Split(v, ",") {
