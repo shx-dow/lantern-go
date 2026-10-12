@@ -350,3 +350,115 @@ func TestHelpBeforeACommandIsNotSwallowed(t *testing.T) {
 		}
 	}
 }
+
+// `--` ends flag parsing for the whole command line, not just the argument
+// after it. The parse here is re-run on what is left over, so a `--` handed to
+// flag.FlagSet would protect one argument and then let the next round parse the
+// rest as flags again: `receive -- ABC12 --json` lost --json as an output
+// directory and downloaded into the default one instead.
+func TestTerminatorProtectsEveryArgumentAfterIt(t *testing.T) {
+	opts, err := parseArgs([]string{"receive", "--", "ABC12", "--json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.command != "receive" {
+		t.Errorf("command = %q, want receive", opts.command)
+	}
+	if !reflect.DeepEqual(opts.positional, []string{"ABC12", "--json"}) {
+		t.Errorf("positional = %v, want [ABC12 --json]", opts.positional)
+	}
+	if opts.jsonOut {
+		t.Error("a flag after `--` must not be parsed as one")
+	}
+
+	// More than one argument after the terminator, and one that looks like a
+	// value-taking flag.
+	opts, err = parseArgs([]string{"receive", "--", "ABC12", "--out", "/tmp/x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(opts.positional, []string{"ABC12", "--out", "/tmp/x"}) {
+		t.Errorf("positional = %v, want the terminator to cover them all", opts.positional)
+	}
+	if opts.outDir != "." {
+		t.Errorf("outDir = %q, want the default; --out after `--` is an argument", opts.outDir)
+	}
+
+	// The terminator may come first, leaving nothing to parse.
+	opts, err = parseArgs([]string{"--", "send", "a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.command != "send" || !reflect.DeepEqual(opts.positional, []string{"a.txt"}) {
+		t.Errorf("got %+v, want command send with [a.txt]", opts)
+	}
+}
+
+// A command's own --help keeps its position, so the arguments the command acts
+// on are the same ones it acted on before. Appending it at the end reordered
+// them, and `send --help a.txt` went from failing on a missing --help to
+// sharing a.txt — a transfer the user did not ask for.
+func TestHelpAfterACommandKeepsItsPosition(t *testing.T) {
+	for _, c := range []struct {
+		args []string
+		want []string
+	}{
+		{[]string{"send", "--help", "a.txt"}, []string{"--help", "a.txt"}},
+		{[]string{"send", "a.txt", "--help"}, []string{"a.txt", "--help"}},
+		// "add" is trust's own subcommand, so it is an argument here.
+		{[]string{"trust", "add", "--help", "peer"}, []string{"add", "--help", "peer"}},
+	} {
+		opts, err := parseArgs(c.args)
+		if err != nil {
+			t.Fatalf("parseArgs(%v) = %v", c.args, err)
+		}
+		if !reflect.DeepEqual(opts.positional, c.want) {
+			t.Errorf("parseArgs(%v): positional = %v, want %v", c.args, opts.positional, c.want)
+		}
+	}
+
+	// A flag before the --help is still read; only --help moved.
+	opts, err := parseArgs([]string{"trust", "add", "--tier", "read", "--help", "peer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.tier != "read" {
+		t.Errorf("tier = %q, want read", opts.tier)
+	}
+	if !reflect.DeepEqual(opts.positional, []string{"add", "--help", "peer"}) {
+		t.Errorf("positional = %v, want [add --help peer]", opts.positional)
+	}
+}
+
+// --port is decimal. flag.IntVar reads a leading zero as octal, which turned
+// `--port 04242` into 2210 and refused `--port 08080` as a bad octal digit —
+// a padded port would silently open a different one.
+func TestPortIsAlwaysDecimal(t *testing.T) {
+	for _, c := range []struct {
+		value string
+		want  int
+	}{
+		{"4242", 4242},
+		{"04242", 4242},
+		{"08080", 8080},
+		{"0", 0},
+		{"65535", 65535},
+	} {
+		opts, err := parseArgs([]string{"--port", c.value, "status"})
+		if err != nil {
+			t.Errorf("--port %s: %v", c.value, err)
+			continue
+		}
+		if opts.port != c.want {
+			t.Errorf("--port %s: port = %d, want %d", c.value, opts.port, c.want)
+		}
+	}
+
+	// A base prefix is not a port either. 0x10 is 16 and 0o10 is 8, and
+	// accepting them would mean two spellings for one value.
+	for _, value := range []string{"0x10", "0o10", "0b10", "notanumber"} {
+		if _, err := parseArgs([]string{"--port", value, "status"}); err == nil {
+			t.Errorf("--port %s was accepted; ports are decimal", value)
+		}
+	}
+}
