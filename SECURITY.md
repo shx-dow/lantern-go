@@ -52,8 +52,10 @@ not grant:
 - replacing an existing file or directory without an explicit overwrite request
 - placing content whose digest was never verified, or whose digest did not match
 - widening a pairing's writable roots past what the operator granted
-- accepting content from a peer that holds no pairing, or none at the tier the
-  operation needs
+- accepting content through an operation that needs a pairing, from a peer that
+  holds none, or none at the tier the operation needs. A valid **share code**
+  authorises a transfer on its own, so a share-code transfer from an unpaired
+  device is the design working, not this
 - placing partial content after a failure, so a reader sees a half-written file
 - making the permissions of placed content wider than the destination directory
 

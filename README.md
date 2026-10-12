@@ -111,12 +111,8 @@ go test ./...
 go test -race ./...
 ```
 
-CI runs `staticcheck` and the test suite on Linux, Windows, and macOS, each with
-`go test -race`.
-
-```sh
-go test -fuzz=FuzzReadMetadata -fuzztime=30s ./internal/protocol
-```
+CI runs `staticcheck` on Linux. The test suite runs on Linux, Windows, and
+macOS, each with `go test -race`.
 
 Design decisions that the code does not explain, and why they went that way, are
 in [`docs/adr/`](docs/adr/). Two to read first:

@@ -459,6 +459,7 @@ func usage() {
     remote-files <peer-id> [dir] list files on a connected peer
     doctor                       diagnose a setup and print the fix for each problem
                                 (lantern doctor --probe-peers for real reachability)
+    version                      version, commit, build date, toolchain, platform
 
 flags:
   --json            machine-readable JSONL on stdout (agents/MCP/GUI)
