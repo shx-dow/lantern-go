@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"time"
 
@@ -283,7 +284,19 @@ func parseArgs(args []string) (cliOptions, error) {
 		return nil
 	})
 	fs.StringVar(&opts.outDir, "out", opts.outDir, "receive output directory")
-	fs.IntVar(&opts.port, "port", opts.port, "in-process listen port (0 = random)")
+	// Deliberately not fs.IntVar. That parses base-prefixed and leading-zero
+	// values, so `--port 04242` became 2210 and `--port 08080` was rejected as a
+	// bad octal digit. A port is written in decimal by everything that produces
+	// one, and quietly listening on a different port is worse than a bad value
+	// being refused.
+	fs.Func("port", "in-process listen port (0 = random)", func(v string) error {
+		p, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("invalid --port %q", v)
+		}
+		opts.port = p
+		return nil
+	})
 	fs.StringVar(&opts.dataDir, "data-dir", opts.dataDir, "in-process local advertisement directory")
 	fs.StringVar(&opts.tier, "tier", opts.tier, "access tier for trust add")
 	setRoots := func(v string) error {
@@ -311,15 +324,37 @@ func parseArgs(args []string) (cliOptions, error) {
 	// whatever this round is about to take. That ordering is what --help needs,
 	// and it is why helpFirst below can be set from whether a command existed
 	// yet.
-	rest := args
+	// `--` ends flag parsing for the rest of the command line. The flag package
+	// applies it only to the remainder of the round it is parsing, and this
+	// parse is re-run on what is left, so handing it the whole list would let
+	// `receive -- ABC12 --json` take --json as a flag. Split the list here
+	// instead and never parse past it.
+	var trailing []string
+	parseable := args
+	for i, a := range args {
+		if a == "--" {
+			parseable, trailing = args[:i], args[i+1:]
+			break
+		}
+	}
+
+	rest := parseable
 	helpFirst := false
 	for {
 		hadCommand := opts.command != ""
+		hadHelp := helpRequested
 		if err := fs.Parse(rest); err != nil {
 			return opts, err
 		}
-		if helpRequested && !hadCommand {
+		switch {
+		case helpRequested && !hadCommand:
 			helpFirst = true
+		case helpRequested && !hadHelp:
+			// --help after a command belongs to it, and it belongs where it was
+			// written. Appending it at the end reordered the arguments —
+			// `send --help a.txt` went from failing on a missing --help to
+			// sharing a.txt.
+			opts.positional = append(opts.positional, "--help")
 		}
 		rest = fs.Args()
 		if len(rest) == 0 {
@@ -334,14 +369,19 @@ func parseArgs(args []string) (cliOptions, error) {
 		rest = rest[1:]
 	}
 
+	for _, a := range trailing {
+		if opts.command == "" && a != "-" && !helpFirst {
+			opts.command = a
+		} else {
+			opts.positional = append(opts.positional, a)
+		}
+	}
+
 	// --help before any command means help, with whatever followed it as a
-	// topic. After a command it belongs to that command instead, so
-	// `lantern help daemon` and a command's own --help both keep working.
-	switch {
-	case helpFirst:
+	// topic. `lantern help daemon` keeps working because it is handled before
+	// this is reached.
+	if helpFirst {
 		opts.command = "help"
-	case helpRequested:
-		opts.positional = append(opts.positional, "--help")
 	}
 	return opts, nil
 }
