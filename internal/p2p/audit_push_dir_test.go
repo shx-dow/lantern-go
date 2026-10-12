@@ -273,6 +273,11 @@ func TestFSDirWriteLeavesNoDebris(t *testing.T) {
 		t.Fatal("expected a refusal")
 	}
 
+	// The refusal arrives over the stream before fsWrite has run its deferred
+	// staging-file removal, so listing now can see an artifact that is about to
+	// be deleted. Wait for that to finish, then assert — see waitForStagingCleanup.
+	waitForStagingCleanup(t, inbox)
+
 	entries, err := os.ReadDir(inbox)
 	if err != nil {
 		t.Fatal(err)

@@ -805,3 +805,31 @@ func TestShareTransferRefusesBeforeReadingBody(t *testing.T) {
 		t.Errorf("a pre-body refusal left %q behind in %s", e.Name(), out)
 	}
 }
+
+// waitForStagingCleanup blocks until no ".lantern-push-" file remains in dir, or
+// the deadline passes.
+//
+// fsWrite announces a refusal over the stream and removes its staging file on
+// the way out, so a client that reads the response and immediately lists the
+// directory can beat that cleanup. The artifact is always removed; whether the
+// client sees it is a scheduling accident. Callers still assert strictly on what
+// is left once it has settled.
+func waitForStagingCleanup(t *testing.T, dir string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		staged := false
+		if entries, err := os.ReadDir(dir); err == nil {
+			for _, e := range entries {
+				if strings.HasPrefix(e.Name(), ".lantern-push-") {
+					staged = true
+					break
+				}
+			}
+		}
+		if !staged || time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

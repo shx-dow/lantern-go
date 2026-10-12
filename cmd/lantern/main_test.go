@@ -149,3 +149,113 @@ func TestFirstEnvSkipsBlanks(t *testing.T) {
 		t.Fatalf("firstEnv = %q, want empty", got)
 	}
 }
+
+// An explicitly empty --daemon-url= must not discard the environment. The
+// parser seeds the URL from $LANTERND_URL and falls back to the built-in
+// default, so "--daemon-url=" with nothing after the "=" should mean "I did not
+// override it" rather than "use the hardcoded default".
+//
+// The bug was visible: --daemon= carried an empty-value guard and --daemon-url=
+// did not, so the two spellings of the same idea behaved differently.
+func TestEmptyDaemonURLFlagKeepsEnvironment(t *testing.T) {
+	const fromEnv = "http://127.0.0.1:59999"
+	for _, flag := range []string{"--daemon-url=", "--daemon-addr="} {
+		t.Run(flag, func(t *testing.T) {
+			t.Setenv("LANTERND_URL", fromEnv)
+
+			opts, err := parseArgs([]string{flag})
+			if err != nil {
+				t.Fatalf("%s: %v", flag, err)
+			}
+			if opts.daemonURL != fromEnv {
+				t.Errorf("%s discarded $LANTERND_URL: got %q, want %q", flag, opts.daemonURL, fromEnv)
+			}
+			if !opts.daemon {
+				t.Errorf("%s should still mark the CLI as talking to a daemon", flag)
+			}
+		})
+	}
+}
+
+// With no environment to preserve, an empty value falls back to the built-in
+// default rather than becoming an empty string that would produce a broken URL.
+func TestEmptyDaemonURLFlagFallsBackToDefault(t *testing.T) {
+	t.Setenv("LANTERND_URL", "")
+
+	opts, err := parseArgs([]string{"--daemon-url="})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.daemonURL != defaultDaemonURL {
+		t.Errorf("got %q, want the built-in default %q", opts.daemonURL, defaultDaemonURL)
+	}
+}
+
+// A non-empty value still overrides the environment, in both spellings.
+func TestNonEmptyDaemonURLFlagOverridesEnvironment(t *testing.T) {
+	t.Setenv("LANTERND_URL", "http://127.0.0.1:59999")
+
+	for _, args := range [][]string{
+		{"--daemon-url=http://10.0.0.5:1234"},
+		{"--daemon-url", "http://10.0.0.5:1234"},
+		{"--daemon-addr=http://10.0.0.5:1234"},
+	} {
+		opts, err := parseArgs(args)
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if opts.daemonURL != "http://10.0.0.5:1234" {
+			t.Errorf("%v: got %q, want http://10.0.0.5:1234", args, opts.daemonURL)
+		}
+	}
+}
+
+// --roots is an alias for --writable-roots. It worked as a separate word and
+// not with "=", so the two spellings were not interchangeable — which is the
+// kind of asymmetry that only shows up as "unknown flag" in someone else's
+// script.
+func TestRootsAliasAcceptsBothForms(t *testing.T) {
+	for _, args := range [][]string{
+		{"--roots", "/srv/inbox,/tmp/out"},
+		{"--roots=/srv/inbox,/tmp/out"},
+		{"--writable-roots", "/srv/inbox,/tmp/out"},
+		{"--writable-roots=/srv/inbox,/tmp/out"},
+	} {
+		opts, err := parseArgs(args)
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		want := []string{"/srv/inbox", "/tmp/out"}
+		if len(opts.writableRoots) != len(want) {
+			t.Fatalf("%v: got %v, want %v", args, opts.writableRoots, want)
+		}
+		for i, w := range want {
+			if opts.writableRoots[i] != w {
+				t.Errorf("%v: got %v, want %v", args, opts.writableRoots, want)
+				break
+			}
+		}
+	}
+}
+
+// Every daemon-backed command must be recognised as one. Without --daemon the
+// CLI said `unknown command "status"` and then printed usage listing status
+// immediately below it — telling the user the command did not exist while
+// showing them that it does. The real problem is a missing flag, so that is
+// what the error should say.
+func TestDaemonCommandsAreRecognisedWithoutTheFlag(t *testing.T) {
+	// The commands runDaemonCommand handles other than the two that work
+	// without a daemon.
+	daemonOnly := []string{"status", "discover", "peers", "list", "trust", "files", "remote-files"}
+	for _, cmd := range daemonOnly {
+		if !commandNeedsDaemon(cmd) {
+			t.Errorf("%q is served by the daemon but is not recognised as needing one", cmd)
+		}
+	}
+	// And the local ones must not be misreported as daemon commands.
+	for _, cmd := range []string{"send", "receive", "version", "daemon", "doctor", "mcp"} {
+		if commandNeedsDaemon(cmd) {
+			t.Errorf("%q works without a daemon but is reported as needing one", cmd)
+		}
+	}
+}
