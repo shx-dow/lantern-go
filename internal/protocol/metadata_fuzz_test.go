@@ -104,39 +104,38 @@ func FuzzReadMetadata(f *testing.F) {
 	})
 }
 
-// FuzzMetadataRoundTrip checks that whatever WriteMetadata accepts, and the
-// length prefix it writes, ReadMetadata reads back exactly. A frame the writer
-// produces that the reader cannot parse is a bug in one of them.
+// FuzzMetadataRoundTrip checks that whatever WriteMetadata accepts, the
+// reader reads back exactly.
+//
+// The document and the path are separate arguments rather than one blob split
+// by a byte from the input. Splitting was the first version, and it was wrong
+// in a way no test noticed: every seed skipped before reaching a write,
+// because the split point landed inside the JSON and left an invalid suffix.
+// `go test` then ran none of this target. Two arguments make the shape of the
+// input something a seed can actually satisfy.
 func FuzzMetadataRoundTrip(f *testing.F) {
-	f.Add([]byte(`{"op":"read","path":"/x"}`))
-	f.Add([]byte(`{}`))
-	f.Add([]byte(`{"op":"write","path":"/a/deeply/nested/path/file.bin"}`))
-	f.Add([]byte(`{"op":"seek","offset":9223372036854775807}`))
-	f.Add([]byte(`{"op":"read","path":"relative/path","offset":-1}`))
+	f.Add([]byte(`{"op":"read","path":"/x"}`), "/x")
+	f.Add([]byte(`{}`), "")
+	f.Add([]byte(`{"op":"write"}`), "/a/deeply/nested/path/file.bin")
+	f.Add([]byte(`{"op":"seek","offset":9223372036854775807}`), "")
+	f.Add([]byte(`{"op":"read","offset":-1}`), "relative/path")
+	f.Add([]byte(`{}`), "a path with spaces and a \u00e9 in it")
 
-	f.Fuzz(func(t *testing.T, raw []byte) {
-		// A frame is a length then JSON, so build the two halves from the
-		// input rather than assuming either is valid.
-		if len(raw) < 3 {
-			t.Skip()
-		}
-		split := 1 + int(raw[0])%(len(raw)-1)
-		doc := raw[split:]
-		path := string(raw[:split])
-
-		var buf bytes.Buffer
+	f.Fuzz(func(t *testing.T, doc []byte, path string) {
 		var req remoteFrame
 		if err := json.Unmarshal(doc, &req); err != nil {
-			// The input is not a document this shape, so there is nothing
-			// meaningful to write. ReadMetadata's handling of arbitrary bytes
-			// is FuzzReadMetadata's job.
+			// Not a document of this shape, so there is nothing meaningful to
+			// write. ReadMetadata's handling of arbitrary bytes is
+			// FuzzReadMetadata's job.
 			t.Skip()
 		}
 		req.Path = path
+
+		var buf bytes.Buffer
 		if err := WriteMetadata(&buf, req); err != nil {
-			// Refusing to write is allowed. The cap and the empty case are
-			// the only reasons, and both arrive as an error rather than a
-			// panic, which is what this is here to catch.
+			// Refusing to write is allowed. The cap and the empty case are the
+			// only reasons, and both arrive as an error rather than a panic,
+			// which is what this is here to catch.
 			return
 		}
 
@@ -144,6 +143,15 @@ func FuzzMetadataRoundTrip(f *testing.F) {
 		if err := ReadMetadata(bytes.NewReader(buf.Bytes()), &got); err != nil {
 			t.Fatalf("wrote a frame of %d bytes that could not be read back: %v", buf.Len(), err)
 		}
+
+		// Every field, not just the path. A reader that dropped the op or the
+		// offset would leave a transfer aimed at the wrong thing, and comparing
+		// only the path would not notice.
+		if got.Op != req.Op || got.Offset != req.Offset {
+			t.Fatalf("metadata changed in transit: wrote op %q offset %d, read op %q offset %d",
+				req.Op, req.Offset, got.Op, got.Offset)
+		}
+
 		// A path survives the round trip when it is valid UTF-8, which every
 		// path on Windows and macOS is.
 		//

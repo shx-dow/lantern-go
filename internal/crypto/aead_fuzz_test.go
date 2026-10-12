@@ -16,7 +16,10 @@ import (
 func FuzzEncryptedChunk(f *testing.F) {
 	f.Add([]byte("hello"), []byte("0123456789abcdef"))
 	f.Add([]byte(""), []byte("0123456789abcdef"))
-	f.Add(bytes.Repeat([]byte("spanning several frames needs more than one chunk holds. "), 64), []byte("0123456789abcdef"))
+	// More than one chunk, so the case where a damaged final chunk follows
+	// already-authenticated ones runs in `go test`, not only when the fuzzer
+	// happens to generate something that large.
+	f.Add(bytes.Repeat([]byte("spanning more than one chunk takes real bytes to fill. "), 1500), []byte("0123456789abcdef"))
 
 	f.Fuzz(func(t *testing.T, plaintext, code []byte) {
 		if len(code) == 0 {
@@ -95,8 +98,17 @@ func FuzzEncryptedChunk(f *testing.F) {
 				if err == nil {
 					t.Fatalf("a frame with byte %d flipped read back %d bytes of plaintext", at, len(out))
 				}
-				if len(out) != 0 {
-					t.Fatalf("a frame with byte %d flipped returned %d bytes before failing", at, len(out))
+				// A reader may legitimately hand back chunks that already
+				// authenticated before it reaches the damaged one, so "nothing
+				// at all" is the wrong requirement. What it must never do is
+				// return anything that is not the genuine prefix of the
+				// plaintext, and it must return nothing when the whole input fit
+				// in one chunk and there is no earlier chunk.
+				if !bytes.HasPrefix(plaintext, out) {
+					t.Fatalf("a frame with byte %d flipped returned %d bytes that are not the start of the plaintext", at, len(out))
+				}
+				if len(out) != 0 && len(plaintext) <= ChunkSize {
+					t.Fatalf("a single-chunk frame with byte %d flipped returned %d bytes before failing", at, len(out))
 				}
 			}
 		}
@@ -176,6 +188,38 @@ func FuzzAuthProof(f *testing.F) {
 		// replaying a resume it did not earn.
 		if VerifyAuthProof(string(code), challenge, offset+1, proof) {
 			t.Fatal("a proof verified at a different offset")
+		}
+
+		// And a different challenge. This cannot be caught by comparing
+		// against AuthProof, because VerifyAuthProof calls the same function:
+		// an AuthProof that dropped the challenge from its input would leave
+		// both agreeing. Only a fresh proof with one challenge byte changed
+		// shows it.
+		altered := append([]byte(nil), challenge...)
+		altered[0] ^= 0x01
+		over, err := AuthProof(string(code), challenge, offset)
+		if err != nil {
+			t.Fatalf("AuthProof: %v", err)
+		}
+		alt, err := AuthProof(string(code), altered, offset)
+		if err != nil {
+			t.Fatalf("AuthProof: %v", err)
+		}
+		// Each verifies against the challenge it was made over.
+		if !VerifyAuthProof(string(code), challenge, offset, over) {
+			t.Fatal("a proof failed to verify against its own challenge")
+		}
+		if !VerifyAuthProof(string(code), altered, offset, alt) {
+			t.Fatal("a proof failed to verify against its own altered challenge")
+		}
+		// And neither verifies against the other's. This is the one that
+		// matters: if AuthProof stopped mixing the challenge into its input,
+		// the two proofs would be identical and this pair would both hold.
+		if VerifyAuthProof(string(code), altered, offset, over) {
+			t.Fatal("a proof verified against a challenge it was not made over")
+		}
+		if VerifyAuthProof(string(code), challenge, offset, alt) {
+			t.Fatal("a proof made over an altered challenge verified against the original")
 		}
 	})
 }
