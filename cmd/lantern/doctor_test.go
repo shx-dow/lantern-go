@@ -27,10 +27,27 @@ func TestDoctorReportsEachCheckAndItsFix(t *testing.T) {
 	if out == "" {
 		t.Fatal("doctor printed nothing")
 	}
-	// Every check gets a mark and a name.
-	for _, want := range []string{"ok", "warn", "FAIL", "skip", "daemon"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("doctor output is missing %q:\n%s", want, out)
+	// Which checks run depends on the platform: internal/paths branches on
+	// GOOS, so a Windows runner does not produce the same set as a Linux one.
+	// Asserting that all four marks appear held on Linux and failed on Windows.
+	// What has to hold everywhere is that every line is a mark, a name and a
+	// detail, and that the daemon is among the things checked.
+	if !strings.Contains(out, "daemon") {
+		t.Errorf("doctor did not check the daemon:\n%s", out)
+	}
+	// The renderer prints a blank line between the checks and the closing
+	// summary, so only what comes before that blank line is a check row. The
+	// summary is prose and would otherwise read as a malformed row.
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			break
+		}
+		if strings.Contains(line, "fix:") {
+			continue
+		}
+		if !strings.HasPrefix(line, "ok  ") && !strings.HasPrefix(line, "warn") &&
+			!strings.HasPrefix(line, "FAIL") && !strings.HasPrefix(line, "skip") {
+			t.Errorf("a line does not begin with a status mark: %q", line)
 		}
 	}
 	// A healthy run says so rather than leaving the reader to infer it.
