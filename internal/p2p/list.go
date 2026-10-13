@@ -32,7 +32,7 @@ type ListEntry struct {
 }
 
 func (e *ListEntry) name() (string, error) {
-	return protocol.FromBase64(e.Name, e.NameB64)
+	return protocol.FromBase64(e.Name, e.NameB64, "name_b64")
 }
 
 func (e *ListEntry) setName(n string) {
@@ -202,7 +202,7 @@ func (n *Node) serveList(s network.Stream) {
 	// A directory name JSON could not carry arrives in DirB64. A companion that
 	// does not decode is reported rather than ignored: ignoring it would list
 	// the shared roots, answering a different question than the one asked.
-	restored, err := protocol.FromBase64(req.Dir, req.DirB64)
+	restored, err := protocol.FromBase64(req.Dir, req.DirB64, "dir_b64")
 	if err != nil {
 		_ = protocol.WriteMetadata(s, ListResponse{Error: fmt.Sprintf("bad request: %v", err)})
 		return

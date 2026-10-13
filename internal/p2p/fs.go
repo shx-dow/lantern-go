@@ -94,7 +94,7 @@ type FSRequest struct {
 
 // path returns the request's path as bytes, preferring the base64 companion.
 func (r *FSRequest) path() (string, error) {
-	return protocol.FromBase64(r.Path, r.PathB64)
+	return protocol.FromBase64(r.Path, r.PathB64, "path_b64")
 }
 
 // setPath records p on the request, choosing the field that can hold it.
@@ -117,7 +117,7 @@ type FSEntry struct {
 
 // name returns the entry's name as bytes, preferring the base64 companion.
 func (e *FSEntry) name() (string, error) {
-	return protocol.FromBase64(e.Name, e.NameB64)
+	return protocol.FromBase64(e.Name, e.NameB64, "name_b64")
 }
 
 // setName records n on the entry, choosing the field that can hold it.
@@ -366,7 +366,7 @@ func (n *Node) ResolveShare(ctx context.Context, pi peer.AddrInfo, code string) 
 	// peer sent them alongside. Restore them here: every later read is built
 	// from this value, so a lost byte here asks for the wrong file for the
 	// rest of the fetch.
-	sharedPath, err := protocol.FromBase64(resp.Path, resp.PathB64)
+	sharedPath, err := protocol.FromBase64(resp.Path, resp.PathB64, "path_b64")
 	if err != nil {
 		return nil, fmt.Errorf("remote share path: %w", err)
 	}

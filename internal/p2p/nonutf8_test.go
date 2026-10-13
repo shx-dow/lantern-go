@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shx-dow/lantern-go/internal/protocol"
@@ -319,6 +320,11 @@ func TestMalformedCompanionIsReportedNotIgnored(t *testing.T) {
 	}
 	if resp.Error == "" {
 		t.Fatal("a malformed DirB64 was ignored and the shared roots listed instead")
+	}
+	// The refusal has to name the field a peer actually got wrong. Naming
+	// path_b64 here would send a reader looking at the wrong one.
+	if !strings.Contains(resp.Error, "dir_b64") {
+		t.Errorf("refusal does not name dir_b64: %q", resp.Error)
 	}
 	if len(resp.Files) != 0 {
 		t.Errorf("files came back alongside the error: %+v", resp.Files)

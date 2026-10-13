@@ -36,19 +36,21 @@ func Base64Of(v string) string {
 	return base64.StdEncoding.EncodeToString([]byte(v))
 }
 
-// FromBase64 restores a value carried by Base64Of.
+// FromBase64 restores a value carried by Base64Of. field names the companion
+// being decoded, so a refusal says which one a peer got wrong rather than
+// naming whichever field this call site happened to be written for first.
 //
 // b64 wins over plain when both are present, because a sender that set it knew
 // the plain value was not faithful. The value is still confined by the caller,
 // which resolves it against its own roots, so choosing between two spellings
 // of the same path cannot widen anything.
-func FromBase64(plain, b64 string) (string, error) {
+func FromBase64(plain, b64, field string) (string, error) {
 	if b64 == "" {
 		return plain, nil
 	}
 	raw, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
-		return "", fmt.Errorf("path_b64 is not valid base64: %w", err)
+		return "", fmt.Errorf("%s is not valid base64: %w", field, err)
 	}
 	return string(raw), nil
 }
