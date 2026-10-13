@@ -1080,6 +1080,12 @@ func runTransfer(ctx context.Context, session *lantern.Session, enc *json.Encode
 	}
 }
 
+// exit is os.Exit, indirected so a test can drive a command that would
+// otherwise take the whole test process down with it. Every command below
+// reports failure through fatal, so without this seam none of them is reachable
+// from a test at all.
+var exit = os.Exit
+
 func fatal(jsonOut bool, err error) {
 	if jsonOut {
 		enc := json.NewEncoder(os.Stdout)
@@ -1087,7 +1093,7 @@ func fatal(jsonOut bool, err error) {
 	} else {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 	}
-	os.Exit(1)
+	exit(1)
 }
 
 func handleSignal(cancel context.CancelFunc, jsonOut bool) {
