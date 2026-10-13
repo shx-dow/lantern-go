@@ -4,11 +4,11 @@ name: Fuzz
 # nonce, a share code, a companion field. Nothing else in CI exercises them
 # beyond their seed corpus, which is the right trade for a pull request and the
 # wrong one for a codebase that has already had this class of defect.
-
-# A crash is not the only possible result worth reporting. A fuzz target that
-# stops finding anything for days has usually stopped being interesting, which
-# is its own kind of problem: the corpus is pinned, and a change to the code
-# under it may have made every stored input trivial.
+#
+# A crash is not the only result worth reporting. A target that stops finding
+# anything for days has usually stopped being interesting, which is its own kind
+# of problem: the corpus is pinned, and a change to the code under it may have
+# made every stored input trivial.
 
 on:
   schedule:
@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   fuzz:
-    name: Fuzz ${{ matrix.package }}
+    name: Fuzz ${{ matrix.label }}
     # A schedule on a public repository is queued heavily at :00, and a job
     # that times out waiting is not a job. ubuntu-latest is also the only
     # platform where the whole corpus is affordable: Windows cannot hold a
@@ -37,9 +37,13 @@ jobs:
       # Report every target, not just the first to fail.
       fail-fast: false
       matrix:
-        package:
-          - ./internal/protocol
-          - ./internal/crypto
+        # label is separate from package because an artifact name may not
+        # contain a slash, and every package path here has one.
+        include:
+          - package: ./internal/protocol
+            label: protocol
+          - package: ./internal/crypto
+            label: crypto
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -50,42 +54,53 @@ jobs:
       # input from a previous run is in testdata/fuzz, and go test runs it
       # before -fuzz does, so this also replays anything already found.
       - name: Seed corpus
-        run: go test ./${{ matrix.package }}
+        run: go test "${{ matrix.package }}"
 
       - name: Discover targets
         id: targets
+        env:
+          PKG: ${{ matrix.package }}
         run: |
           # Ask go which targets exist rather than listing them here, so a new
           # target is fuzzed the day it is written instead of the day someone
-          # remembers to add a line.
-          targets=$(go test -list 'Fuzz.*' "${{ matrix.package }}" | grep '^Fuzz' || true)
+          # remembers to edit this file.
+          targets=$(go test -list 'Fuzz.*' "$PKG" | grep '^Fuzz' || true)
           if [ -z "$targets" ]; then
-            echo "No fuzz targets in ${{ matrix.package }}; nothing to do."
+            echo "No fuzz targets in $PKG; nothing to do."
             echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "list=" >> "$GITHUB_OUTPUT"
           else
-            echo "$targets" | tr '\n' ' ' 
+            echo "$targets"
             echo "found=true" >> "$GITHUB_OUTPUT"
-          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+            # One space-separated line. GITHUB_OUTPUT takes name=value, so an
+            # embedded newline would make every target after the first an
+            # invalid output line.
+            echo "list=$(echo "$targets" | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+          fi
 
-      # One target per job, so a single failure names the target rather than
-      # the first one that happened to be running.
+      # One target per step, so a single failure names the target rather than
+      # whichever one happened to be running.
       - name: Fuzz each target
         if: steps.targets.outputs.found == 'true'
+        env:
+          PKG: ${{ matrix.package }}
+          LIST: ${{ steps.targets.outputs.list }}
+          FUZZTIME: ${{ inputs.fuzztime || '10m' }}
         run: |
-          status=0
-          for t in ${{ steps.targets.outputs.targets }}; do
+          rc=0
+          for t in $LIST; do
             echo "=== $t ==="
-            go test -run XXX -fuzz "^$t\$" -fuzztime "${{ inputs.fuzztime || '10m' }}" \
-              "${{ matrix.package }}" || status=1
+            go test -run XXX -fuzz "^${t}\$" -fuzztime "$FUZZTIME" "$PKG" || rc=1
           done
-          exit $status
+          exit $rc
 
       # go test writes a failing input to testdata/fuzz. Uploading it means a
       # red run leaves something to download rather than only a log line.
+      # The name uses matrix.label, since matrix.package contains slashes.
       - name: Upload any failing input
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: fuzz-corpus-${{ matrix.package }}
+          name: fuzz-corpus-${{ matrix.label }}
           path: ${{ matrix.package }}/testdata/fuzz/
           if-no-files-found: ignore

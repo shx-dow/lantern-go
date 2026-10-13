@@ -91,12 +91,13 @@ func TestFromBase64RefusalNamesTheField(t *testing.T) {
 // to itself. A value that is valid UTF-8 carries no companion and comes back
 // as-is; a value that is not carries one and comes back byte for byte.
 func FuzzBase64RoundTrip(f *testing.F) {
-	f.Add("report.txt", "")
-	f.Add("report�.txt", "cmVwb3J0�4udHh0")
-	f.Add("café/日本語", "")
-	f.Add("a", "YQ==")
+	f.Add("report.txt", "", "report\xff.txt")
+	f.Add("report�.txt", "cmVwb3J0�4udHh0", "")
+	f.Add("café/日本語", "", "")
 
-	f.Fuzz(func(t *testing.T, plain, b64 string) {
+	f.Fuzz(func(t *testing.T, plain, b64, value string) {
+		// Half one: a companion that arrived on the wire decodes, or is
+		// refused. It is never quietly replaced by the plain value.
 		got, err := FromBase64(plain, b64, "path_b64")
 
 		if b64 == "" {
@@ -106,37 +107,47 @@ func FuzzBase64RoundTrip(f *testing.F) {
 			if got != plain {
 				t.Fatalf("an absent companion changed the value: %q became %q", plain, got)
 			}
-			return
-		}
-
-		raw, decErr := base64.StdEncoding.DecodeString(b64)
-		if decErr != nil {
-			// Refusing a malformed companion is the point. Falling back to the
-			// plain value would resolve against a name the sender never meant.
+		} else if raw, decErr := base64.StdEncoding.DecodeString(b64); decErr != nil {
 			if err == nil {
 				t.Fatalf("a malformed companion was accepted, returning %q", got)
 			}
 			if got != "" {
 				t.Fatalf("returned %q alongside an error", got)
 			}
-			return
+		} else {
+			if err != nil {
+				t.Fatalf("a well-formed companion was refused: %v", err)
+			}
+			if got != string(raw) {
+				t.Fatalf("decoded %q, want %q", got, string(raw))
+			}
 		}
 
+		// Half two: this build's own encoding of an arbitrary value survives
+		// the pair the wire actually uses.
+		//
+		// The two halves are not the same check. Half one never calls
+		// Base64Of, so a change to the encoder could have broken every value
+		// it produces while half one stayed green. What has to hold is that
+		// the value comes back whether the pair carries it in the plain field
+		// or in the companion:
+		//
+		//   valid UTF-8    -> plain field, no companion
+		//   not valid      -> companion, plain field empty
+		//
+		// An earlier version of this target asserted only half one, with a
+		// Base64Of call inside a block that had no assertion in it at all.
+		encoded := Base64Of(value)
+		plainField := value
+		if encoded != "" {
+			plainField = ""
+		}
+		back, err := FromBase64(plainField, encoded, "path_b64")
 		if err != nil {
-			t.Fatalf("a well-formed companion was refused: %v", err)
+			t.Fatalf("the encoder's own output was refused: %v", err)
 		}
-		if got != string(raw) {
-			t.Fatalf("decoded %q, want %q", got, string(raw))
-		}
-		// A well-formed companion always decodes faithfully. It is not
-		// required to be the companion this build would have chosen: a sender
-		// may carry a value that the plain field would have held fine, and
-		// refusing to decode it would be worse than decoding it.
-		if utf8.ValidString(got) && Base64Of(got) == "" && b64 != "" {
-			// Allowed, and nothing to assert. Recorded because the obvious
-			// assertion here, that Base64Of(decoded) == b64, is false here and
-			// was briefly asserted.
-			_ = got
+		if back != value {
+			t.Fatalf("round trip of %q gave %q (plain %q, companion %q)", value, back, plainField, encoded)
 		}
 	})
 }
