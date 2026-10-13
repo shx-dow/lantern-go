@@ -114,6 +114,18 @@ go test -race ./...
 CI runs `staticcheck` on Linux. The test suite runs on Linux, Windows, and
 macOS, each with `go test -race`.
 
+The framing and the AEAD have fuzz targets, because both trust a length or a
+nonce that arrived over a connection. They run their seed corpus as part of
+`go test`, and search nightly:
+
+```sh
+go test -run XXX -fuzz FuzzReadMetadata -fuzztime 30s ./internal/protocol
+```
+
+A nightly run is a workflow you can start by hand from the Actions tab. It
+discovers targets with `go test -list`, so a new one is covered the day it is
+written rather than the day someone remembers to add it.
+
 Design decisions that the code does not explain, and why they went that way, are
 in [`docs/adr/`](docs/adr/). Two to read first:
 

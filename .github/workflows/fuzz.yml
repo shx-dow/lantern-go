@@ -1,0 +1,91 @@
+name: Fuzz
+
+# The targets here are where a peer chooses the input: a framing length, a
+# nonce, a share code, a companion field. Nothing else in CI exercises them
+# beyond their seed corpus, which is the right trade for a pull request and the
+# wrong one for a codebase that has already had this class of defect.
+
+# A crash is not the only possible result worth reporting. A fuzz target that
+# stops finding anything for days has usually stopped being interesting, which
+# is its own kind of problem: the corpus is pinned, and a change to the code
+# under it may have made every stored input trivial.
+
+on:
+  schedule:
+    # 03:17 UTC. GitHub starts scheduled runs from the top of the hour, and
+    # :00 is the busiest slot for everyone. An arbitrary offset avoids the
+    # queue without needing a reason.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: How long each target runs
+        default: "10m"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.package }}
+    # A schedule on a public repository is queued heavily at :00, and a job
+    # that times out waiting is not a job. ubuntu-latest is also the only
+    # platform where the whole corpus is affordable: Windows cannot hold a
+    # name that is not valid UTF-8, so those inputs skip there anyway.
+    runs-on: ubuntu-latest
+    strategy:
+      # Report every target, not just the first to fail.
+      fail-fast: false
+      matrix:
+        package:
+          - ./internal/protocol
+          - ./internal/crypto
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The seed corpus must pass before any search starts. A stored crashing
+      # input from a previous run is in testdata/fuzz, and go test runs it
+      # before -fuzz does, so this also replays anything already found.
+      - name: Seed corpus
+        run: go test ./${{ matrix.package }}
+
+      - name: Discover targets
+        id: targets
+        run: |
+          # Ask go which targets exist rather than listing them here, so a new
+          # target is fuzzed the day it is written instead of the day someone
+          # remembers to add a line.
+          targets=$(go test -list 'Fuzz.*' "${{ matrix.package }}" | grep '^Fuzz' || true)
+          if [ -z "$targets" ]; then
+            echo "No fuzz targets in ${{ matrix.package }}; nothing to do."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$targets" | tr '\n' ' ' 
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+
+      # One target per job, so a single failure names the target rather than
+      # the first one that happened to be running.
+      - name: Fuzz each target
+        if: steps.targets.outputs.found == 'true'
+        run: |
+          status=0
+          for t in ${{ steps.targets.outputs.targets }}; do
+            echo "=== $t ==="
+            go test -run XXX -fuzz "^$t\$" -fuzztime "${{ inputs.fuzztime || '10m' }}" \
+              "${{ matrix.package }}" || status=1
+          done
+          exit $status
+
+      # go test writes a failing input to testdata/fuzz. Uploading it means a
+      # red run leaves something to download rather than only a log line.
+      - name: Upload any failing input
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus-${{ matrix.package }}
+          path: ${{ matrix.package }}/testdata/fuzz/
+          if-no-files-found: ignore
