@@ -870,9 +870,11 @@ func (n *Node) FetchFS(ctx context.Context, pi peer.AddrInfo, code string, outpu
 		if err := ctx.Err(); err != nil {
 			return errors.Join(err, saveCheckpoint())
 		}
-		_, entry, data, eof, err := n.ReadFS(ctx, pi, FSRequest{
-			Op: OpRead, Path: info.Path, Offset: received, Length: fetchChunkBytes,
-		})
+		readReq := FSRequest{Op: OpRead, Offset: received, Length: fetchChunkBytes}
+		// setPath rather than a plain field: the path can hold bytes JSON
+		// cannot, and the asking device still has them here.
+		readReq.setPath(info.Path)
+		_, entry, data, eof, err := n.ReadFS(ctx, pi, readReq)
 		if err != nil {
 			return errors.Join(fmt.Errorf("read from peer: %w", err), saveCheckpoint())
 		}

@@ -22,15 +22,30 @@ const ListProtocolID = "/lantern/list/1.0.0"
 
 // ListEntry describes one file or directory in a listing.
 type ListEntry struct {
-	Name    string `json:"name"`
+	Name string `json:"name"`
+	// NameB64 carries Name when it is not valid UTF-8, which encoding/json
+	// would otherwise silently replace with U+FFFD.
+	NameB64 string `json:"name_b64,omitempty"`
 	Size    int64  `json:"size"`
 	ModTime string `json:"mod_time"`
 	IsDir   bool   `json:"is_dir"`
 }
 
+func (e *ListEntry) name() (string, error) {
+	return protocol.FromBase64(e.Name, e.NameB64)
+}
+
+func (e *ListEntry) setName(n string) {
+	e.Name = n
+	e.NameB64 = protocol.Base64Of(n)
+}
+
 // ListRequest asks for one level of dir ("": list the shared roots).
 type ListRequest struct {
 	Dir string `json:"dir,omitempty"`
+	// DirB64 carries Dir when it is not valid UTF-8. Empty otherwise, so the
+	// ordinary case costs nothing on the wire.
+	DirB64 string `json:"dir_b64,omitempty"`
 }
 
 // ListResponse carries the listing or an error string.
@@ -184,6 +199,15 @@ func (n *Node) serveList(s network.Stream) {
 		_ = protocol.WriteMetadata(s, ListResponse{Error: "bad request"})
 		return
 	}
+	// A directory name JSON could not carry arrives in DirB64. A companion that
+	// does not decode is reported rather than ignored: ignoring it would list
+	// the shared roots, answering a different question than the one asked.
+	restored, err := protocol.FromBase64(req.Dir, req.DirB64)
+	if err != nil {
+		_ = protocol.WriteMetadata(s, ListResponse{Error: fmt.Sprintf("bad request: %v", err)})
+		return
+	}
+	req.Dir = restored
 	files, err := listRootsLocal(roots, req.Dir)
 	if err != nil {
 		_ = protocol.WriteMetadata(s, ListResponse{Error: err.Error()})
@@ -207,7 +231,7 @@ func (n *Node) ListRemote(ctx context.Context, pi peer.AddrInfo, dir string) ([]
 	if err := s.SetDeadline(time.Now().Add(listIOTimeout)); err != nil {
 		return nil, err
 	}
-	if err := protocol.WriteMetadata(s, ListRequest{Dir: dir}); err != nil {
+	if err := protocol.WriteMetadata(s, ListRequest{Dir: dir, DirB64: protocol.Base64Of(dir)}); err != nil {
 		return nil, fmt.Errorf("send request: %w", err)
 	}
 	var resp ListResponse
@@ -216,6 +240,17 @@ func (n *Node) ListRemote(ctx context.Context, pi peer.AddrInfo, dir string) ([]
 	}
 	if resp.Error != "" {
 		return nil, fmt.Errorf("remote: %s", resp.Error)
+	}
+	// Restore names the serving device could not put in JSON. A companion that
+	// does not decode is an error: the serving device set it because the plain
+	// name was not faithful, so using the plain one would report a file the
+	// peer never named.
+	for i := range resp.Files {
+		n, err := resp.Files[i].name()
+		if err != nil {
+			return nil, fmt.Errorf("remote file %d: %w", i, err)
+		}
+		resp.Files[i].setName(n)
 	}
 	return resp.Files, nil
 }
@@ -233,7 +268,10 @@ func listRootsLocal(roots []string, dir string) ([]ListEntry, error) {
 			if err != nil {
 				continue
 			}
-			out = append(out, ListEntry{Name: abs, ModTime: fi.ModTime().UTC().Format(time.RFC3339), IsDir: fi.IsDir()})
+			var le ListEntry
+			le.setName(abs)
+			le.ModTime, le.IsDir = fi.ModTime().UTC().Format(time.RFC3339), fi.IsDir()
+			out = append(out, le)
 		}
 		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 		return out, nil
@@ -255,7 +293,10 @@ func listRootsLocal(roots []string, dir string) ([]ListEntry, error) {
 		if err != nil {
 			continue
 		}
-		out = append(out, ListEntry{Name: e.Name(), Size: fi.Size(), ModTime: fi.ModTime().UTC().Format(time.RFC3339), IsDir: e.IsDir()})
+		var le ListEntry
+		le.setName(e.Name())
+		le.Size, le.ModTime, le.IsDir = fi.Size(), fi.ModTime().UTC().Format(time.RFC3339), e.IsDir()
+		out = append(out, le)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
