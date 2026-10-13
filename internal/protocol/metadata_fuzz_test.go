@@ -156,13 +156,14 @@ func FuzzMetadataRoundTrip(f *testing.F) {
 		// path on Windows and macOS is.
 		//
 		// A path that is not survives it as U+FFFD, because encoding/json
-		// replaces invalid UTF-8 rather than erroring. Linux filenames are
-		// byte strings, so such a name is legal there and this corrupts it.
-		// That is pre-existing behaviour of framing paths as JSON, not
-		// something this target introduced, and fixing it means changing what
-		// goes on the wire rather than changing a test. Asserted here so the
-		// limitation is written down instead of being rediscovered: a path
-		// carrying a byte that is not valid UTF-8 comes back altered.
+		// replaces invalid UTF-8 rather than erroring. That is a property of
+		// the framing itself and it still holds for any plain string field.
+		//
+		// The FS protocol no longer relies on it: every path and name it sends
+		// carries a base64 companion (FSRequest.PathB64, FSEntry.NameB64,
+		// ListRequest.DirB64, ListEntry.NameB64) used when the plain field is
+		// not representable. remoteFrame here has no such companion, so it
+		// demonstrates the rule rather than contradicting it.
 		if utf8.ValidString(req.Path) && got.Path != req.Path {
 			t.Fatalf("path changed in transit: wrote %q, read %q", req.Path, got.Path)
 		}

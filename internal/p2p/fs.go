@@ -67,8 +67,12 @@ const (
 // Overwrite says whether replacing an existing file is permitted. The caller
 // cannot widen scope and cannot force a replace it was not granted.
 type FSRequest struct {
-	Op         Op     `json:"op"`
-	Path       string `json:"path"`
+	Op   Op     `json:"op"`
+	Path string `json:"path"`
+	// PathB64 carries Path when Path is not valid UTF-8, which encoding/json
+	// cannot represent exactly. Empty when Path is representable, so the
+	// common case costs nothing on the wire. See protocol.Base64Of.
+	PathB64    string `json:"path_b64,omitempty"`
 	Offset     int64  `json:"offset,omitempty"`
 	Length     int64  `json:"length,omitempty"`
 	Overwrite  bool   `json:"overwrite,omitempty"`
@@ -88,12 +92,38 @@ type FSRequest struct {
 	Unpack bool `json:"unpack,omitempty"`
 }
 
+// path returns the request's path as bytes, preferring the base64 companion.
+func (r *FSRequest) path() (string, error) {
+	return protocol.FromBase64(r.Path, r.PathB64)
+}
+
+// setPath records p on the request, choosing the field that can hold it.
+func (r *FSRequest) setPath(p string) {
+	r.Path = p
+	r.PathB64 = protocol.Base64Of(p)
+}
+
 // FSEntry describes one path: a file or a directory.
 type FSEntry struct {
-	Name    string `json:"name"`
+	Name string `json:"name"`
+	// NameB64 carries Name when it is not valid UTF-8. Without it a listing
+	// hands the asking device a name it cannot ask for again, because the
+	// replacement character is not in the file.
+	NameB64 string `json:"name_b64,omitempty"`
 	Size    int64  `json:"size"`
 	ModTime string `json:"mod_time"`
 	IsDir   bool   `json:"is_dir"`
+}
+
+// name returns the entry's name as bytes, preferring the base64 companion.
+func (e *FSEntry) name() (string, error) {
+	return protocol.FromBase64(e.Name, e.NameB64)
+}
+
+// setName records n on the entry, choosing the field that can hold it.
+func (e *FSEntry) setName(n string) {
+	e.Name = n
+	e.NameB64 = protocol.Base64Of(n)
 }
 
 // FSResponse is the reply header, written as one length-delimited JSON
@@ -104,6 +134,10 @@ type FSResponse struct {
 	Entry   *FSEntry  `json:"entry,omitempty"`
 	Bytes   int64     `json:"bytes,omitempty"`
 	EOF     bool      `json:"eof,omitempty"`
+	// PathB64 carries Path when Path is not valid UTF-8, which encoding/json
+	// would silently replace with U+FFFD. Only OpResolveShare sets it, and a
+	// fetch is built from it, so a lost byte there asks for the wrong file.
+	PathB64 string `json:"path_b64,omitempty"`
 	// SHA256 is the lowercase hex digest of what was stored, returned on a
 	// successful OpWrite so the sender can confirm what landed.
 	//
@@ -175,6 +209,15 @@ func (n *Node) serveFS(s network.Stream) {
 	if err := protocol.ReadMetadata(s, &req); err != nil {
 		_ = protocol.WriteMetadata(s, fail("bad request"))
 		return
+	}
+	// A path that JSON could not carry arrives in PathB64. Restore it before
+	// anything resolves it, so the receiver never works from a name that has
+	// already lost bytes.
+	if restored, err := req.path(); err != nil {
+		_ = protocol.WriteMetadata(s, fail(fmt.Sprintf("bad request: %v", err)))
+		return
+	} else {
+		req.setPath(restored)
 	}
 
 	// Reads are bounded per peer as well as per device: an empty root list
@@ -255,10 +298,13 @@ func (n *Node) fsResolveShare(s network.Stream, remote string, req FSRequest) {
 		_ = protocol.WriteMetadata(s, stamped(FSResponse{}))
 		return
 	}
+	entry := &FSEntry{Size: info.Size}
+	entry.setName(info.Name)
 	_ = protocol.WriteMetadata(s, stamped(FSResponse{
-		Path:   info.Path,
-		Entry:  &FSEntry{Name: info.Name, Size: info.Size},
-		SHA256: info.SHA256,
+		Path:    info.Path,
+		PathB64: protocol.Base64Of(info.Path),
+		Entry:   entry,
+		SHA256:  info.SHA256,
 	}))
 }
 
@@ -313,13 +359,28 @@ func (n *Node) ResolveShare(ctx context.Context, pi peer.AddrInfo, code string) 
 		// fetch, only of this shortcut, so it is reported as "not resolvable".
 		return nil, nil
 	}
-	if resp.Path == "" {
+	if resp.Path == "" && resp.PathB64 == "" {
 		return nil, nil
 	}
+	// The shared path may hold bytes JSON could not carry, in which case the
+	// peer sent them alongside. Restore them here: every later read is built
+	// from this value, so a lost byte here asks for the wrong file for the
+	// rest of the fetch.
+	sharedPath, err := protocol.FromBase64(resp.Path, resp.PathB64)
+	if err != nil {
+		return nil, fmt.Errorf("remote share path: %w", err)
+	}
+	if resp.Entry != nil {
+		n, err := resp.Entry.name()
+		if err != nil {
+			return nil, fmt.Errorf("remote entry: %w", err)
+		}
+		resp.Entry.setName(n)
+	}
 	out := &SharedFile{
-		Path:   resp.Path,
+		Path:   sharedPath,
 		SHA256: resp.SHA256,
-		Name:   filepath.Base(resp.Path),
+		Name:   filepath.Base(sharedPath),
 	}
 	// The size matters: the fetch uses it to detect a truncated read and to
 	// write valid resume state, and a zero here would silently invalidate
@@ -335,12 +396,13 @@ func (n *Node) ResolveShare(ctx context.Context, pi peer.AddrInfo, code string) 
 }
 
 func entryFor(fi os.FileInfo) *FSEntry {
-	return &FSEntry{
-		Name:    fi.Name(),
+	e := &FSEntry{
 		Size:    fi.Size(),
 		ModTime: fi.ModTime().UTC().Format(time.RFC3339),
 		IsDir:   fi.IsDir(),
 	}
+	e.setName(fi.Name())
+	return e
 }
 
 func (n *Node) fsStat(roots []string, path string) FSResponse {
@@ -362,12 +424,10 @@ func (n *Node) fsList(roots []string, path string) FSResponse {
 	}
 	entries := make([]FSEntry, 0, len(files))
 	for _, f := range files {
-		entries = append(entries, FSEntry{
-			Name:    filepath.Base(f.Name),
-			Size:    f.Size,
-			ModTime: f.ModTime,
-			IsDir:   f.IsDir,
-		})
+		var e FSEntry
+		e.setName(filepath.Base(f.Name))
+		e.Size, e.ModTime, e.IsDir = f.Size, f.ModTime, f.IsDir
+		entries = append(entries, e)
 	}
 	return stamped(FSResponse{Entries: entries})
 }
@@ -941,6 +1001,7 @@ func (n *Node) writeFS(ctx context.Context, pi peer.AddrInfo, path string, conte
 	req := FSRequest{
 		Op:         OpWrite,
 		Path:       path,
+		PathB64:    protocol.Base64Of(path),
 		ContentLen: int64(len(content)),
 		Overwrite:  overwrite,
 		Unpack:     unpack,
@@ -975,6 +1036,11 @@ func (n *Node) writeFS(ctx context.Context, pi peer.AddrInfo, path string, conte
 	}
 	var entry FSEntry
 	if resp.Entry != nil {
+		n, err := resp.Entry.name()
+		if err != nil {
+			return FSEntry{}, nil, "", fmt.Errorf("remote entry: %w", err)
+		}
+		resp.Entry.setName(n)
 		entry = *resp.Entry
 	}
 	return entry, resp.Entries, resp.SHA256, nil
@@ -997,6 +1063,10 @@ func (n *Node) ReadFS(ctx context.Context, pi peer.AddrInfo, req FSRequest) ([]F
 	if err := s.SetDeadline(time.Now().Add(fsiOTimeout)); err != nil {
 		return nil, nil, nil, false, err
 	}
+	// Fill the base64 companion here rather than trusting the caller. Callers
+	// live in another package and cannot reach the setter, and a path that
+	// loses a byte here is lost for the whole transfer.
+	req.setPath(req.Path)
 	if err := protocol.WriteMetadata(s, req); err != nil {
 		return nil, nil, nil, false, fmt.Errorf("send request: %w", err)
 	}
@@ -1006,6 +1076,26 @@ func (n *Node) ReadFS(ctx context.Context, pi peer.AddrInfo, req FSRequest) ([]F
 	}
 	if resp.Error != "" {
 		return nil, nil, nil, false, fmt.Errorf("remote: %s", resp.Error)
+	}
+	// Names the serving device could not put in JSON arrive in NameB64.
+	// Restore them, or a listing hands back a name the asking device cannot
+	// ask for again. A companion that does not decode is an error rather than
+	// a silent fall back to the plain name: the sender set it precisely
+	// because the plain one was not faithful, so trusting it would resolve
+	// against a path the sender never meant.
+	for i := range resp.Entries {
+		n, err := resp.Entries[i].name()
+		if err != nil {
+			return nil, nil, nil, false, fmt.Errorf("remote entry %d: %w", i, err)
+		}
+		resp.Entries[i].setName(n)
+	}
+	if resp.Entry != nil {
+		n, err := resp.Entry.name()
+		if err != nil {
+			return nil, nil, nil, false, fmt.Errorf("remote entry: %w", err)
+		}
+		resp.Entry.setName(n)
 	}
 	if resp.Bytes == 0 {
 		return resp.Entries, resp.Entry, nil, resp.EOF, nil
