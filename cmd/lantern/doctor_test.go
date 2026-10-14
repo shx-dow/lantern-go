@@ -81,6 +81,12 @@ func TestRenderDoctorPairsFixesAndSaysWhatFailed(t *testing.T) {
 	renderDoctorReport(report, false, &buf)
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 
+	// The fix is printed at all, before anything about where. A renderer that
+	// stopped printing fixes would leave the loop below checking nothing.
+	if !strings.Contains(buf.String(), "fix: "+report.Checks[1].Fix) {
+		t.Fatalf("the expected fix is missing:\n%s", buf.String())
+	}
+
 	// Each fix sits directly under the check it belongs to.
 	for i, l := range lines {
 		if !strings.Contains(l, "fix:") {
@@ -148,34 +154,55 @@ func TestDoctorJSONIsOneObjectWithEveryCheck(t *testing.T) {
 // doctor's own flag set is separate from the CLI parser, so `lantern --daemon-url
 // X doctor` and `lantern doctor --daemon-url X` have to agree. They are two
 // routes into the same report and used to be tested by neither.
+//
+// Comparing check counts is not enough. Measured: two live fake daemons both
+// produce a nine-check report, identical but for the address in the daemon
+// check, so a count-only assertion passes while the command is talking to the
+// wrong one. Both routes have to name the address they were pointed at.
 func TestDoctorResolvesItsDaemonTheSameWayEitherWay(t *testing.T) {
 	d := newFakeDaemon(t)
+	// The address doctor reports is host:port, not the scheme it was given,
+	// so the assertion below matches on that rather than on the full URL.
+	host := strings.TrimPrefix(d.URL, "http://")
 	t.Setenv("LANTERND_URL", d.URL)
 
-	var viaSub, viaFlag bytes.Buffer
-	_ = runDoctorFlags(t.Context(), cliOptions{daemonURL: d.URL, command: "doctor", jsonOut: true}, &viaSub)
-	err := runDoctor(t.Context(), []string{"--json"}, &viaFlag)
-	if err != nil && err.Error() != "" {
+	var viaFlags bytes.Buffer
+	_ = runDoctorFlags(t.Context(), cliOptions{daemonURL: d.URL, command: "doctor", jsonOut: true}, &viaFlags)
+	var viaEnv, viaArg bytes.Buffer
+	if err := runDoctor(t.Context(), []string{"--json"}, &viaEnv); err != nil && err.Error() != "" {
 		t.Fatalf("runDoctor: %v", err)
 	}
+	if err := runDoctor(t.Context(), []string{"--json", "--daemon-url", d.URL}, &viaArg); err != nil && err.Error() != "" {
+		t.Fatalf("runDoctor --daemon-url: %v", err)
+	}
 
-	var a, b map[string]any
-	if err := json.Unmarshal(viaSub.Bytes(), &a); err != nil {
-		t.Fatalf("flag route is not JSON: %v", err)
+	for name, body := range map[string][]byte{
+		"cli flags":   viaFlags.Bytes(),
+		"environment": viaEnv.Bytes(),
+		"doctor flag": viaArg.Bytes(),
+	} {
+		var report struct {
+			Checks []struct {
+				Name   string `json:"name"`
+				Detail string `json:"detail"`
+			} `json:"checks"`
+		}
+		if err := json.Unmarshal(body, &report); err != nil {
+			t.Fatalf("%s route is not JSON: %v", name, err)
+		}
+		if len(report.Checks) == 0 {
+			t.Fatalf("%s route reported no checks", name)
+		}
+		found := false
+		for _, c := range report.Checks {
+			if c.Name == "daemon" && strings.Contains(c.Detail, host) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("the %s route did not report the daemon it was pointed at (%s): %s", name, host, body)
+		}
 	}
-	if err := json.Unmarshal(viaFlag.Bytes(), &b); err != nil {
-		t.Fatalf("env route is not JSON: %v", err)
-	}
-	if len(aChecks(a)) != len(aChecks(b)) {
-		t.Errorf("the two routes reported %d and %d checks", len(aChecks(a)), len(aChecks(b)))
-	}
-}
-
-// aChecks pulls the check list out of a decoded report, so the comparison
-// above does not depend on the concrete report type.
-func aChecks(m map[string]any) []any {
-	list, _ := m["checks"].([]any)
-	return list
 }
 
 // An unknown flag is a usage error, not a run with the flag ignored.
@@ -203,6 +230,26 @@ func TestFirstEnvSkipsBlanksAndKeepsOrder(t *testing.T) {
 	for _, c := range cases {
 		if got := firstEnv(c.in...); got != c.want {
 			t.Errorf("firstEnv(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// Every mark the renderer can produce, against a known report. Which checks
+// run depends on the platform, so a real run cannot be used to assert that a
+// particular mark ever appears: that is what failed on Windows.
+func TestRenderDoctorProducesEveryMark(t *testing.T) {
+	report := doctor.Report{Healthy: false, Checks: []doctor.Check{
+		{Name: "a", Status: doctor.Pass},
+		{Name: "b", Status: doctor.Warn},
+		{Name: "c", Status: doctor.Fail},
+		{Name: "d", Status: doctor.Status("future-status")},
+	}}
+	var buf bytes.Buffer
+	renderDoctorReport(report, false, &buf)
+
+	for _, want := range []string{"ok  ", "warn", "FAIL", "skip"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("no %q mark in the output:\n%s", want, buf.String())
 		}
 	}
 }

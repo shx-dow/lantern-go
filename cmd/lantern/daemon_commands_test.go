@@ -40,6 +40,18 @@ func (d *fakeDaemon) record(r *http.Request) {
 	d.mu.Unlock()
 }
 
+// failureFor reports whether path matches a configured failure, and which.
+func (d *fakeDaemon) failureFor(path string) (int, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for prefix, code := range d.failures {
+		if strings.HasPrefix(path, prefix) {
+			return code, true
+		}
+	}
+	return 0, false
+}
+
 func (d *fakeDaemon) fail(prefix string, code int) {
 	d.mu.Lock()
 	d.failures[prefix] = code
@@ -60,18 +72,17 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 			_ = json.NewEncoder(w).Encode(body)
 		}
 
-		d.mu.Lock()
-		d.requests = append(d.requests, r.Method+" "+r.URL.Path)
-		for prefix, code := range d.failures {
-			if strings.HasPrefix(r.URL.Path, prefix) {
-				d.mu.Unlock()
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(code)
-				_, _ = w.Write([]byte(`{"error":"refused on purpose"}`))
-				return
-			}
+		// A snapshot under the lock rather than unlocking here. The old shape
+		// unlocked inside the failure branch and again after the loop, and
+		// removing the duplicate append below the loop removed one of those two
+		// unlocks, so the balance broke.
+		code, failing := d.failureFor(r.URL.Path)
+		if failing {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(code)
+			_, _ = w.Write([]byte(`{"error":"refused on purpose"}`))
+			return
 		}
-		d.mu.Unlock()
 
 		switch r.URL.Path {
 		case "/v1/status":
@@ -232,6 +243,36 @@ func TestEachDaemonCommandReachesItsRoute(t *testing.T) {
 			}
 			if strings.TrimSpace(stdout) == "" {
 				t.Errorf("%v printed nothing", c.args)
+			}
+		})
+	}
+}
+
+// The recorded list has to be one entry per HTTP call. It used to hold two for
+// every call — the handler recorded the request and then appended it again —
+// which is invisible to a test that only asks whether a route was reached, and
+// makes any count-based assertion wrong by a factor of two. A command that
+// polled a route five times would look like ten.
+func TestEachCallIsRecordedOnce(t *testing.T) {
+	for _, command := range []string{"status", "peers", "files"} {
+		t.Run(command, func(t *testing.T) {
+			d := newFakeDaemon(t)
+			if _, stderr, code := d.runAgainst(t, command); code != 0 {
+				t.Fatalf("exit %d: %s", code, stderr)
+			}
+			calls := d.called()
+			if len(calls) == 0 {
+				t.Fatalf("%s made no recorded calls at all", command)
+			}
+			seen := map[string]int{}
+			for _, c := range calls {
+				seen[c]++
+			}
+			for call, n := range seen {
+				if n != 1 {
+					t.Errorf("%s made %d calls to %s; one command should not repeat a route:\n%v",
+						command, n, call, calls)
+				}
 			}
 		})
 	}

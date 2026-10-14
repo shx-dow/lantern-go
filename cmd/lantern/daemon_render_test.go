@@ -27,14 +27,20 @@ type exitPanic struct{ code int }
 func capture(t *testing.T, fn func()) (stdout, stderr string, code int) {
 	t.Helper()
 
+	// Both ends of both pipes are closed, and t.Cleanup rather than defer,
+	// so a t.Fatal on the second pipe still releases the first. Two handles
+	// leaked per call, which on a long run is a real limit rather than a leak
+	// you would notice.
 	outR, outW, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { outR.Close(); outW.Close() })
 	errR, errW, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { errR.Close(); errW.Close() })
 	realOut, realErr, realExit := os.Stdout, os.Stderr, exit
 	os.Stdout, os.Stderr = outW, errW
 	exit = func(c int) { panic(exitPanic{code: c}) }
@@ -226,12 +232,10 @@ func newEmptyDaemon(t *testing.T, body string) *fakeDaemon {
 	d := &fakeDaemon{failures: map[string]int{}, body: body}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.record(r)
-		for prefix, code := range d.failures {
-			if strings.HasPrefix(r.URL.Path, prefix) {
-				w.WriteHeader(code)
-				_, _ = w.Write([]byte(`{"error":"refused on purpose"}`))
-				return
-			}
+		if code, failing := d.failureFor(r.URL.Path); failing {
+			w.WriteHeader(code)
+			_, _ = w.Write([]byte(`{"error":"refused on purpose"}`))
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(body))
