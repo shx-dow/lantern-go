@@ -786,10 +786,19 @@ func runDaemonTransfer(ctx context.Context, c *daemonClient, enc *json.Encoder, 
 	if rec, err := daemonGet(c, id); err == nil && isTerminal(rec.State) {
 		return emitDaemonRecord(enc, jsonOut, rec, doneVerb, doneName)
 	}
-	if err := streamDaemonEvents(ctx, c, enc, jsonOut, id, doneVerb, doneName); err == nil {
-		return false // stream saw terminal (or ctx cancelled, handled inside)
+	// A frame that says the transfer ended IS the ending. The stream reports
+	// the outcome as it reads it, so the only case worth polling is a stream
+	// that closed without ever saying.
+	//
+	// Treating an error or cancelled frame as a dropped stream used to send
+	// this into the polling loop below, where a record the daemon no longer
+	// has — it restarted, or history rolled past it — was an endless 404. The
+	// command hung until its context was cancelled, and the caller was told
+	// the transfer had been cancelled, overwriting the reason the daemon gave.
+	if failed, err := streamDaemonEvents(ctx, c, enc, jsonOut, id, doneVerb, doneName); err == nil {
+		return failed
 	}
-	// Stream dropped without terminal: poll until terminal or ctx done.
+	// Stream closed without terminal: poll until terminal or ctx done.
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -822,27 +831,37 @@ func isTerminal(state string) bool {
 	return state == "done" || state == "failed" || state == "canceled"
 }
 
-func streamDaemonEvents(ctx context.Context, c *daemonClient, enc *json.Encoder, jsonOut bool, id, doneVerb, doneName string) error {
+// streamDaemonEvents reads transfer events until one of them ends the
+// transfer, reporting whether that ending was a failure.
+//
+// A nil error means a frame ended the transfer — done, error or cancelled — and
+// the outcome has already been emitted. That is an answer, not a stream fault,
+// and the caller must not fall back to polling on it. A non-nil error means the
+// stream closed without ever saying, which is the only case polling improves on.
+func streamDaemonEvents(ctx context.Context, c *daemonClient, enc *json.Encoder, jsonOut bool, id, doneVerb, doneName string) (failed bool, err error) {
 	resp, err := c.OpenEventsStream(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer resp.Body.Close()
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	var eventName, data string
-	flush := func() (bool, error) {
+	// flush reports (ended, failed). A frame that ends the transfer is an
+	// answer already emitted above, so it returns a nil error and the caller
+	// stops. Only the stream closing without an ending is a non-nil error.
+	flush := func() (bool, bool) {
 		defer func() { eventName, data = "", "" }()
 		if data == "" {
-			return false, nil
+			return false, false
 		}
 		var e sseEvent
 		if err := json.Unmarshal([]byte(data), &e); err != nil {
-			return false, nil
+			return false, false
 		}
 		if e.ID != "" && e.ID != id {
-			return false, nil
+			return false, false
 		}
 		switch e.Type {
 		case "progress":
@@ -852,7 +871,7 @@ func streamDaemonEvents(ctx context.Context, c *daemonClient, enc *json.Encoder,
 				pct := progressPercent(e.Bytes, e.Total)
 				fmt.Fprintf(os.Stderr, "\rprogress: %.1f%% (%s / %s)", pct, format.Bytes(e.Bytes), format.Bytes(e.Total))
 			}
-			return false, nil
+			return false, false
 		case "done":
 			name := doneName
 			if name == "" {
@@ -863,32 +882,32 @@ func streamDaemonEvents(ctx context.Context, c *daemonClient, enc *json.Encoder,
 			} else {
 				fmt.Fprintf(os.Stderr, "\n%s %s\n", doneVerb, name)
 			}
-			return true, nil
+			return true, false
 		case "error":
 			if jsonOut {
 				enc.Encode(map[string]any{"type": "error", "id": e.ID, "error": e.Error})
 			} else {
 				fmt.Fprintf(os.Stderr, "\nerror: %s\n", e.Error)
 			}
-			return true, fmt.Errorf("transfer failed")
+			return true, true
 		case "cancelled":
 			if jsonOut {
 				enc.Encode(map[string]any{"type": "cancelled", "id": e.ID})
 			} else {
 				fmt.Fprintln(os.Stderr, "\ncancelled")
 			}
-			return true, fmt.Errorf("transfer cancelled")
+			return true, true
 		default:
 			_ = eventName
-			return false, nil
+			return false, false
 		}
 	}
 
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
-			if done, err := flush(); err != nil || done {
-				return err
+			if ended, failed := flush(); ended {
+				return failed, nil
 			}
 			continue
 		}
@@ -909,9 +928,9 @@ func streamDaemonEvents(ctx context.Context, c *daemonClient, enc *json.Encoder,
 		}
 	}
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {
-		return err
+		return false, err
 	}
-	return fmt.Errorf("stream closed")
+	return false, fmt.Errorf("stream closed")
 }
 
 func emitDaemonProgress(enc *json.Encoder, jsonOut bool, rec daemonRecord) {
