@@ -109,6 +109,20 @@ func recordsOf(t *testing.T, out string) []map[string]any {
 	return events
 }
 
+// bounded is a context with a deadline for calls that are meant to finish on
+// their own.
+//
+// Without one, a regression that stops the CLI recognising a terminal frame
+// does not fail an assertion — it sends the command into the polling fallback,
+// where a daemon holding no record is an endless 404, and the test waits out
+// the package timeout saying nothing. A failing test should name what broke.
+func bounded(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
 // A transfer that finishes must say so, and the stream is the fast path a real
 // caller is waiting on. If a "done" frame stops being honoured the command
 // hangs until the context is cancelled and the caller learns nothing.
@@ -121,7 +135,7 @@ func TestStreamReportsDoneAndReportsItOnce(t *testing.T) {
 
 	var out strings.Builder
 	enc := json.NewEncoder(&out)
-	failed := runDaemonTransfer(context.Background(), d.dial(t), enc, true, "t1", "sent", "")
+	failed := runDaemonTransfer(bounded(t), d.dial(t), enc, true, "t1", "sent", "")
 
 	if failed {
 		t.Error("a completed transfer was reported as failed")
@@ -157,7 +171,7 @@ func TestStreamIgnoresFramesForAnotherTransfer(t *testing.T) {
 
 	var out strings.Builder
 	enc := json.NewEncoder(&out)
-	runDaemonTransfer(context.Background(), d.dial(t), enc, true, "mine", "sent", "")
+	runDaemonTransfer(bounded(t), d.dial(t), enc, true, "mine", "sent", "")
 
 	events := recordsOf(t, out.String())
 	last := events[len(events)-1]
@@ -180,7 +194,7 @@ func TestStreamReportsFailureWithTheDaemonsReason(t *testing.T) {
 
 	var out strings.Builder
 	enc := json.NewEncoder(&out)
-	failed := runDaemonTransfer(context.Background(), d.dial(t), enc, true, "t1", "sent", "")
+	failed := runDaemonTransfer(bounded(t), d.dial(t), enc, true, "t1", "sent", "")
 
 	if !failed {
 		t.Error("a failed transfer was reported as successful")
@@ -205,7 +219,7 @@ func TestStreamReportsCancellationDistinctly(t *testing.T) {
 
 	var out strings.Builder
 	enc := json.NewEncoder(&out)
-	failed := runDaemonTransfer(context.Background(), d.dial(t), enc, true, "t1", "sent", "")
+	failed := runDaemonTransfer(bounded(t), d.dial(t), enc, true, "t1", "sent", "")
 
 	if !failed {
 		t.Error("a cancelled transfer was reported as successful")
@@ -226,7 +240,7 @@ func TestStreamIgnoresCommentLines(t *testing.T) {
 
 	var out strings.Builder
 	enc := json.NewEncoder(&out)
-	runDaemonTransfer(context.Background(), d.dial(t), enc, true, "t1", "sent", "")
+	runDaemonTransfer(bounded(t), d.dial(t), enc, true, "t1", "sent", "")
 
 	events := recordsOf(t, out.String())
 	if len(events) != 1 || events[0]["type"] != "done" {
@@ -250,7 +264,7 @@ func TestStreamFallsBackToPollingWhenItDropsEarly(t *testing.T) {
 
 	var out strings.Builder
 	enc := json.NewEncoder(&out)
-	failed := runDaemonTransfer(context.Background(), d.dial(t), enc, true, "t1", "sent", "")
+	failed := runDaemonTransfer(bounded(t), d.dial(t), enc, true, "t1", "sent", "")
 
 	if failed {
 		t.Errorf("a transfer that completed while polling was reported as failed: %s", out.String())
@@ -278,7 +292,7 @@ func TestAlreadyTerminalTransferSkipsTheStream(t *testing.T) {
 
 	var out strings.Builder
 	enc := json.NewEncoder(&out)
-	failed := runDaemonTransfer(context.Background(), d.dial(t), enc, true, "t1", "sent", "")
+	failed := runDaemonTransfer(bounded(t), d.dial(t), enc, true, "t1", "sent", "")
 
 	if failed {
 		t.Error("an already-completed transfer was reported as failed")
@@ -363,7 +377,7 @@ func TestHumanStreamSaysWhatHappened(t *testing.T) {
 
 			_, stderr, _ := capture(t, func() {
 				var sink strings.Builder
-				runDaemonTransfer(context.Background(), d.dial(t), json.NewEncoder(&sink), false, "t1", "sent", "")
+				runDaemonTransfer(bounded(t), d.dial(t), json.NewEncoder(&sink), false, "t1", "sent", "")
 			})
 
 			if !strings.Contains(stderr, tc.want) {
@@ -386,16 +400,31 @@ func TestHumanProgressOverwritesRatherThanAppends(t *testing.T) {
 
 	_, stderr, _ := capture(t, func() {
 		var sink strings.Builder
-		runDaemonTransfer(context.Background(), d.dial(t), json.NewEncoder(&sink), false, "t1", "sent", "")
+		runDaemonTransfer(bounded(t), d.dial(t), json.NewEncoder(&sink), false, "t1", "sent", "")
 	})
 
-	if !strings.Contains(stderr, "\r") {
-		t.Errorf("progress lines are not written in place:\n%q", stderr)
+	// Split on the carriage return: what is left in each segment is what the
+	// screen showed, in order. Asserting that some figure appears anywhere
+	// would pass with the last update dropped, since the earlier ones are on
+	// the way up and carry their own percentages.
+	var shown []string
+	for _, seg := range strings.Split(stderr, "\r") {
+		if strings.Contains(seg, "progress:") {
+			shown = append(shown, seg)
+		}
 	}
-	// The last progress is a quarter-to-half on, so it must be the one left on
-	// screen; if the file did not grow the final figure is the full 100%.
-	if !strings.Contains(stderr, "50.0%") {
-		t.Errorf("the final progress figure is not the last one emitted:\n%q", stderr)
+	if len(shown) < 3 {
+		t.Fatalf("expected three progress updates, got %d: %q", len(shown), stderr)
+	}
+	// The final update is the full file, so it is the one left on screen.
+	last := shown[len(shown)-1]
+	if !strings.Contains(last, "100.0%") {
+		t.Errorf("the last update shown is %q, want the completed 100.0%%", strings.TrimSpace(last))
+	}
+	// And the first is a quarter, so the sequence really is climbing rather
+	// than repeating one figure.
+	if !strings.Contains(shown[0], "25.0%") {
+		t.Errorf("the first update is %q, want 25.0%%", strings.TrimSpace(shown[0]))
 	}
 }
 
@@ -412,7 +441,7 @@ func TestTheCompletionVerbComesFromTheCaller(t *testing.T) {
 
 			_, stderr, _ := capture(t, func() {
 				var sink strings.Builder
-				runDaemonTransfer(context.Background(), d.dial(t), json.NewEncoder(&sink), false, "t1", verb, "")
+				runDaemonTransfer(bounded(t), d.dial(t), json.NewEncoder(&sink), false, "t1", verb, "")
 			})
 
 			if !strings.Contains(stderr, verb+" a.txt") {
@@ -536,7 +565,7 @@ func TestStreamSurvivesAMalformedFrame(t *testing.T) {
 
 	var out strings.Builder
 	enc := json.NewEncoder(&out)
-	runDaemonTransfer(context.Background(), d.dial(t), enc, true, "t1", "sent", "")
+	runDaemonTransfer(bounded(t), d.dial(t), enc, true, "t1", "sent", "")
 
 	events := recordsOf(t, out.String())
 	if len(events) == 0 || events[len(events)-1]["type"] != "done" {
@@ -556,7 +585,7 @@ func TestStreamIgnoresAnEventItDoesNotKnow(t *testing.T) {
 
 	var out strings.Builder
 	enc := json.NewEncoder(&out)
-	runDaemonTransfer(context.Background(), d.dial(t), enc, true, "t1", "sent", "")
+	runDaemonTransfer(bounded(t), d.dial(t), enc, true, "t1", "sent", "")
 
 	events := recordsOf(t, out.String())
 	if len(events) != 1 || events[0]["type"] != "done" {
@@ -568,25 +597,36 @@ func TestStreamIgnoresAnEventItDoesNotKnow(t *testing.T) {
 // daemon's EventDTO has a `type` field, so the marshalled data names the event
 // and the `event:` line merely mirrors it. The CLI reads the payload.
 //
-// This is pinned because getting it wrong is silent rather than loud: a frame
-// whose name says "done" and whose payload has no type is skipped like any
-// other unknown event, so the command waits rather than reporting a transfer
-// that actually finished.
+// The two frames carry different file names and different byte counts, because
+// the first one is *named* done and must be skipped. If the CLI read the event
+// name instead it would stop on that first frame — and an assertion that only
+// counted a single "done" event would still pass, since only one would be
+// emitted either way. The outcome has to identify which frame was used.
 func TestTheEventTypeComesFromThePayloadNotTheEventName(t *testing.T) {
 	d := &eventDaemon{events: sse(
-		// An event name with no type in the data: skipped, as the contract says.
-		"event: done\ndata: {\"id\":\"t1\",\"file_name\":\"a.txt\"}",
-		frame("done", map[string]any{"id": "t1", "file_name": "a.txt", "bytes": 1, "total": 1}),
+		// Named done, but the payload says nothing about it: skipped.
+		"event: done\ndata: {\"id\":\"t1\",\"file_name\":\"skipped.txt\",\"bytes\":7,\"total\":7}",
+		frame("done", map[string]any{"id": "t1", "file_name": "honoured.txt", "bytes": 3, "total": 3}),
 	)}
 	d.start(t)
 
 	var out strings.Builder
 	enc := json.NewEncoder(&out)
-	runDaemonTransfer(context.Background(), d.dial(t), enc, true, "t1", "sent", "")
+	runDaemonTransfer(bounded(t), d.dial(t), enc, true, "t1", "sent", "")
 
 	events := recordsOf(t, out.String())
-	if len(events) != 1 || events[0]["type"] != "done" {
-		t.Errorf("the unnamed frame was not skipped, or the named one was:\n%s", out.String())
+	if len(events) != 1 {
+		t.Fatalf("expected exactly one event, got %d: %s", len(events), out.String())
+	}
+	got := events[0]
+	if got["type"] != "done" {
+		t.Errorf("the ending is not a completion: %v", got)
+	}
+	if got["file_name"] != "honoured.txt" {
+		t.Errorf("ended on the frame named by its event name, not its payload: %v", got)
+	}
+	if got["bytes"].(float64) != 3 {
+		t.Errorf("the wrong frame supplied the result: %v", got)
 	}
 }
 func TestTheKnownFileNameOverridesTheStream(t *testing.T) {
@@ -604,7 +644,7 @@ func TestTheKnownFileNameOverridesTheStream(t *testing.T) {
 
 			var out strings.Builder
 			enc := json.NewEncoder(&out)
-			runDaemonTransfer(context.Background(), d.dial(t), enc, true, "t1", "sent", tc.known)
+			runDaemonTransfer(bounded(t), d.dial(t), enc, true, "t1", "sent", tc.known)
 
 			events := recordsOf(t, out.String())
 			if got := events[len(events)-1]["file_name"]; got != tc.want {
