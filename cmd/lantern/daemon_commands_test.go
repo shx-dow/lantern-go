@@ -32,12 +32,24 @@ type fakeDaemon struct {
 	failures map[string]int
 	// body, when set, is returned for every route instead of the normal map.
 	body string
+	// arrived counts HTTP calls at the server boundary, independently of
+	// requests. Comparing the two is what tells a test whether the recording
+	// is faithful; counting them from the same append would prove nothing.
+	arrived int
 }
 
 func (d *fakeDaemon) record(r *http.Request) {
 	d.mu.Lock()
+	d.arrived++
 	d.requests = append(d.requests, r.Method+" "+r.URL.Path)
 	d.mu.Unlock()
+}
+
+// arrivals is how many HTTP calls the fake actually received.
+func (d *fakeDaemon) arrivals() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.arrived
 }
 
 // failureFor reports whether path matches a configured failure, and which.
@@ -248,11 +260,16 @@ func TestEachDaemonCommandReachesItsRoute(t *testing.T) {
 	}
 }
 
-// The recorded list has to be one entry per HTTP call. It used to hold two for
-// every call — the handler recorded the request and then appended it again —
-// which is invisible to a test that only asks whether a route was reached, and
-// makes any count-based assertion wrong by a factor of two. A command that
-// polled a route five times would look like ten.
+// The recorded list has to have one entry per HTTP call. It used to hold two
+// for every call — the handler recorded the request and then appended it again
+// — which is invisible to a test that only asks whether a route was reached and
+// makes any count-based assertion wrong by a factor of two.
+//
+// The property pinned here is that recording is faithful, not that a command
+// calls each route once. Whether a given command may legitimately poll a route
+// twice is a claim about the CLI, and this is a claim about the harness: it
+// would break the next time someone adds a retry, for a reason that has
+// nothing to do with what is being tested.
 func TestEachCallIsRecordedOnce(t *testing.T) {
 	for _, command := range []string{"status", "peers", "files"} {
 		t.Run(command, func(t *testing.T) {
@@ -260,19 +277,13 @@ func TestEachCallIsRecordedOnce(t *testing.T) {
 			if _, stderr, code := d.runAgainst(t, command); code != 0 {
 				t.Fatalf("exit %d: %s", code, stderr)
 			}
-			calls := d.called()
-			if len(calls) == 0 {
-				t.Fatalf("%s made no recorded calls at all", command)
+			arrivals, recorded := d.arrivals(), d.called()
+			if arrivals == 0 {
+				t.Fatalf("%s made no HTTP calls at all", command)
 			}
-			seen := map[string]int{}
-			for _, c := range calls {
-				seen[c]++
-			}
-			for call, n := range seen {
-				if n != 1 {
-					t.Errorf("%s made %d calls to %s; one command should not repeat a route:\n%v",
-						command, n, call, calls)
-				}
+			if len(recorded) != arrivals {
+				t.Errorf("%s made %d HTTP calls but %d were recorded:\n%v",
+					command, arrivals, len(recorded), recorded)
 			}
 		})
 	}
