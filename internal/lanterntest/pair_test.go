@@ -49,6 +49,59 @@ func TestAPairMovesAFileBetweenTwoDevices(t *testing.T) {
 	}
 }
 
+// The read and list routes, addressed by peer ID, with no share code anywhere.
+//
+// The two transfer tests both redeem a code, and a code is a capability of its
+// own — so if the helper stopped granting read access, or stopped serving the
+// list route, either test could still pass by falling back to the transfer
+// protocol. That fallback is correct behaviour and a poor control: it hides a
+// broken helper. These go straight at the read path by peer ID, so removing
+// SetReadAccess, RegisterListHandler or WithKnownAddrs fails here.
+func TestOneDeviceReadsAndListsFromTheOther(t *testing.T) {
+	shared := t.TempDir()
+	const content = "read by peer id, no code involved"
+	if err := os.WriteFile(filepath.Join(shared, "notes.txt"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewPair(t, shared)
+	ctx := Ctx(t)
+
+	// resolvePeer consults known addresses, so this needs no discovery.
+	res, err := p.Receiver.Lantern.ReadRemote(ctx, p.Sender.ID, filepath.Join(shared, "notes.txt"), 0, 0)
+	if err != nil {
+		t.Fatalf("a paired read by peer ID must work without a share code: %v", err)
+	}
+	if string(res.Data) != content {
+		t.Errorf("read returned %q, want %q", res.Data, content)
+	}
+
+	entries, err := p.Receiver.Lantern.RemoteFiles(ctx, p.Sender.ID, shared)
+	if err != nil {
+		t.Fatalf("the list route must be served: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Name == "notes.txt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the listing did not include notes.txt: %+v", entries)
+	}
+}
+
+// A device that grants no read access serves nothing, which is what makes the
+// read route a real control rather than one that always answers.
+func TestADeviceServingNoRootsRefusesARead(t *testing.T) {
+	p := NewPair(t) // no shared roots
+
+	_, err := p.Receiver.Lantern.ReadRemote(Ctx(t), p.Sender.ID, "/etc/hostname", 0, 0)
+	if err == nil {
+		t.Error("a device serving no roots must not answer a read")
+	}
+}
+
 // Each device keeps its own data directory, which is what gives them separate
 // identities. Two devices sharing one would be the same device, and a test that
 // accidentally collapsed them would pass while testing nothing.

@@ -9,10 +9,15 @@
 // stream was negotiated. None of that is reachable with a double, and none of
 // it was covered until this package existed.
 //
-// Two real nodes on the loopback interface, wired so each can dial the other
-// before discovery runs. That last part matters: without it a test depends on
-// mDNS or the DHT finding a peer, which is slow, flaky, and tests a different
-// thing.
+// Two real nodes wired so each can dial the other before discovery runs. That
+// last part matters: without it a test depends on mDNS or the DHT finding a
+// peer, which is slow, flaky, and tests a different thing.
+//
+// What the nodes are NOT is loopback-only. NewNode listens on 0.0.0.0 and
+// offers no way to narrow it, so each device here is a listener on every
+// interface of the machine running the tests. What can be narrowed is
+// discovery, and is: these devices select LAN-only mode, so they join no
+// public bootstrap and never reach the public DHT. mDNS still runs.
 package lanterntest
 
 import (
@@ -53,8 +58,9 @@ type Pair struct {
 	Sender, Receiver *Device
 }
 
-// Close tears both devices down. Registered with the test, so a test that fails
-// early does not leave two hosts running for the rest of the package.
+// Close tears both devices down. New already registers each one, so a test
+// does not need to call this; it exists for a caller that wants the pair shut
+// down before the test ends.
 func (p Pair) Close() {
 	if p.Receiver != nil && p.Receiver.Lantern != nil {
 		p.Receiver.Lantern.Close()
@@ -75,13 +81,25 @@ func New(t *testing.T, roots ...string) *Device {
 	t.Helper()
 
 	dataDir := t.TempDir()
-	ln, err := lantern.New(lantern.Config{Port: 0, DataDir: dataDir})
+	ln, err := lantern.New(lantern.Config{
+		Port: 0,
+		// LAN-only. The default joins the public libp2p DHT, which for a test
+		// means every device here competes with every other node on the planet
+		// for the same routing table — slow, and the reason a transfer test
+		// could fail under load and pass when run alone.
+		Bootstrap: []string{"none"},
+		DataDir:   dataDir,
+	})
 	if err != nil {
 		t.Fatalf("bringing up a lantern device: %v", err)
 	}
+	// Registered here rather than left to NewPair: a direct caller of New gets
+	// no cleanup otherwise, and a pair whose second device fails to start would
+	// leave the first running until the test process exited.
+	t.Cleanup(func() { _ = ln.Close() })
+
 	node := ln.Node()
 	if node == nil || node.Host == nil {
-		ln.Close()
 		t.Fatal("the device did not expose a host")
 	}
 
@@ -124,9 +142,10 @@ func NewPair(t *testing.T, senderRoots ...string) Pair {
 		return nil
 	})
 
-	p := Pair{Sender: sender, Receiver: receiver}
-	t.Cleanup(p.Close)
-	return p
+	// Each device already closed itself through New's own cleanup; this only
+	// has to run first if anything below panics, which the deferred Close in
+	// New already covers. Kept for the direct callers who use Close themselves.
+	return Pair{Sender: sender, Receiver: receiver}
 }
 
 // Ctx is a context bounded by DialTimeout, for calls that should finish on
