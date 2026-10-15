@@ -471,6 +471,24 @@ func (l *Lantern) tryFetchViaRead(ctx context.Context, pi peer.AddrInfo, code st
 		l.readPathFetches++
 		return nil
 	case <-ctx.Done():
+		// The caller may have gone. Or this session may have cancelled itself:
+		// a fetch that fails reports an EventError carrying the transfer ID,
+		// which finishes the session, which cancels the very context being
+		// selected on here. When that happens both arms are ready at once and
+		// Go picks between them at random, so roughly half the time a real
+		// failure was reported to the caller as "context canceled" -- a reason
+		// that invites a retry and names none of what went wrong.
+		//
+		// So if the failure has already landed, it is the truer answer.
+		select {
+		case err := <-done:
+			if err != nil {
+				return fmt.Errorf("read-path fetch: %w", err)
+			}
+			l.readPathFetches++
+			return nil
+		default:
+		}
 		return ctx.Err()
 	}
 }
