@@ -37,16 +37,8 @@ func newDirPair(t *testing.T) dirPair {
 		t.Fatal(err)
 	}
 
-	sender, err := New(Config{DataDir: filepath.Join(dir, "sender")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { sender.Close() })
-	receiver, err := New(Config{DataDir: filepath.Join(dir, "receiver")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { receiver.Close() })
+	sender := newTestNode(t, dir, "sender")
+	receiver := newTestNode(t, dir, "receiver")
 
 	// A peer has to be paired for reads before it can be reached for a write
 	// at all, so grant that too. It is the ordinary state of a paired device.

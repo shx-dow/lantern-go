@@ -68,6 +68,24 @@ type NodeOption func(*nodeOptions)
 
 type nodeOptions struct {
 	dialTimeout time.Duration
+	noMDNS      bool
+}
+
+// WithoutMDNS brings the node up with no multicast announcement.
+//
+// A node normally announces itself on the LAN so other devices can find it,
+// which is what mDNS is for. That is wrong for a host a test brings up: it
+// advertises a throwaway identity on whatever network the machine running the
+// tests happens to be on, and it competes for the same multicast traffic as
+// every other test process. Two consequences, both observed -- tests that pass
+// alone failing in a loop, and a laptop running the suite visible to the rest
+// of the office.
+//
+// Nothing that does not already announce can find this node, so a caller using
+// this is expected to address the node directly, by a known address or by a
+// share code.
+func WithoutMDNS() NodeOption {
+	return func(o *nodeOptions) { o.noMDNS = true }
 }
 
 // WithDialTimeout sets how long a single dial to one address may take.
@@ -185,11 +203,21 @@ func NewNode(port int, bootstrapPeers []string, key crypto.PrivKey, dataDir stri
 		localDir: localDir,
 	}
 
-	node.setupMDNS()
+	if !o.noMDNS {
+		startMDNS(node)
+	}
 	return node, nil
 }
 
-func (n *Node) setupMDNS() {
+// startMDNS announces a node on the LAN. It is a variable so a test can see
+// whether the option reached it.
+//
+// The first version of this asserted on a field the starter set, which broke on
+// any runner where mDNS fails to start: the announcement never began, the field
+// stayed false, and the test failed even though WithoutMDNS had done its job.
+// Asking whether the starter was called does not depend on multicast working
+// where the test runs.
+var startMDNS = func(n *Node) {
 	s := mdns.NewMdnsService(n.Host, "lantern", &mdnsDiscovery{node: n})
 	if err := s.Start(); err != nil {
 		fmt.Printf("mDNS warning: %v\n", err)
