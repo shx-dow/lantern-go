@@ -535,21 +535,32 @@ func (l *Lantern) Close() error {
 	return l.closeErr
 }
 
+// emit fans an event out to every subscriber.
+//
+// The lock is held across the whole fan-out, not just the snapshot. A snapshot
+// read the subscriber list safely but left the sends outside the lock, and
+// unsubscribe closes a subscriber's channel while holding that same lock — so
+// an emit could send on a channel another goroutine had just closed. That is a
+// data race, and worse than that: sending on a closed channel panics.
+//
+// It is reachable in normal use rather than only under stress. Closing a
+// session unsubscribes it, and both CLI commands do `defer session.Close()` on
+// the line after a transfer finishes — while the goroutine forwarding that
+// transfer's progress may still be emitting.
+//
+// Nothing called from here re-enters this lock. The terminal callback runs
+// under it, but it only finishes the session, which unsubscribes on a separate
+// goroutine and so waits rather than deadlocks.
 func (l *Lantern) emit(e Event) {
 	l.mu.Lock()
-	subs := make([]subscription, 0, len(l.subscribers))
-	for _, sub := range l.subscribers {
-		subs = append(subs, sub)
-	}
-	events := l.events
-	l.mu.Unlock()
+	defer l.mu.Unlock()
 
 	select {
-	case events <- e:
+	case l.events <- e:
 	default:
 	}
 	terminal := e.Type == EventTransferDone || e.Type == EventError
-	for _, sub := range subs {
+	for _, sub := range l.subscribers {
 		if terminal {
 			select {
 			case sub.channel <- e:
