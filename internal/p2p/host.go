@@ -46,11 +46,6 @@ type Node struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	localDir string
-	// mdnsStarted records whether this node is announcing itself on the LAN.
-	// Read by tests only: WithoutMDNS exists so a node can opt out, and the
-	// only honest way to assert it worked is to check whether the announcement
-	// started, rather than to query the network and hope something answers.
-	mdnsStarted bool
 
 	mu          sync.Mutex
 	shares      map[string]*shareState
@@ -209,18 +204,24 @@ func NewNode(port int, bootstrapPeers []string, key crypto.PrivKey, dataDir stri
 	}
 
 	if !o.noMDNS {
-		node.setupMDNS()
+		startMDNS(node)
 	}
 	return node, nil
 }
 
-func (n *Node) setupMDNS() {
+// startMDNS announces a node on the LAN. It is a variable so a test can see
+// whether the option reached it.
+//
+// The first version of this asserted on a field the starter set, which broke on
+// any runner where mDNS fails to start: the announcement never began, the field
+// stayed false, and the test failed even though WithoutMDNS had done its job.
+// Asking whether the starter was called does not depend on multicast working
+// where the test runs.
+var startMDNS = func(n *Node) {
 	s := mdns.NewMdnsService(n.Host, "lantern", &mdnsDiscovery{node: n})
 	if err := s.Start(); err != nil {
 		fmt.Printf("mDNS warning: %v\n", err)
-		return
 	}
-	n.mdnsStarted = true
 }
 
 // SeenAddressTTL bounds how long an address learned from a network
