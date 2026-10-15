@@ -20,6 +20,14 @@ type Config struct {
 	Port      int
 	DataDir   string
 	Bootstrap []string
+	// NoMDNS brings the node up without announcing itself on the LAN.
+	//
+	// A node normally advertises itself so other devices can find it, which is
+	// what mDNS is for. That is wrong for a host a test brings up: it publishes
+	// a throwaway identity on whatever network the machine running the tests
+	// happens to be on, and competes for the same multicast traffic as every
+	// other test process.
+	NoMDNS bool
 	// Relay holds static relay/circuit multiaddrs dialed after boot for
 	// NAT traversal. Empty means no static relays.
 	Relay []string
@@ -207,7 +215,11 @@ func New(cfg Config) (*Lantern, error) {
 	if err != nil {
 		return nil, fmt.Errorf("init identity: %w", err)
 	}
-	node, err := p2p.NewNode(cfg.Port, cfg.Bootstrap, key, cfg.DataDir, p2p.WithDialTimeout(cfg.DialTimeout))
+	opts := []p2p.NodeOption{p2p.WithDialTimeout(cfg.DialTimeout)}
+	if cfg.NoMDNS {
+		opts = append(opts, p2p.WithoutMDNS())
+	}
+	node, err := p2p.NewNode(cfg.Port, cfg.Bootstrap, key, cfg.DataDir, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("init p2p: %w", err)
 	}

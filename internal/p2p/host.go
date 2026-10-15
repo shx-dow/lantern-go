@@ -46,6 +46,11 @@ type Node struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	localDir string
+	// mdnsStarted records whether this node is announcing itself on the LAN.
+	// Read by tests only: WithoutMDNS exists so a node can opt out, and the
+	// only honest way to assert it worked is to check whether the announcement
+	// started, rather than to query the network and hope something answers.
+	mdnsStarted bool
 
 	mu          sync.Mutex
 	shares      map[string]*shareState
@@ -68,6 +73,24 @@ type NodeOption func(*nodeOptions)
 
 type nodeOptions struct {
 	dialTimeout time.Duration
+	noMDNS      bool
+}
+
+// WithoutMDNS brings the node up with no multicast announcement.
+//
+// A node normally announces itself on the LAN so other devices can find it,
+// which is what mDNS is for. That is wrong for a host a test brings up: it
+// advertises a throwaway identity on whatever network the machine running the
+// tests happens to be on, and it competes for the same multicast traffic as
+// every other test process. Two consequences, both observed -- tests that pass
+// alone failing in a loop, and a laptop running the suite visible to the rest
+// of the office.
+//
+// Nothing that does not already announce can find this node, so a caller using
+// this is expected to address the node directly, by a known address or by a
+// share code.
+func WithoutMDNS() NodeOption {
+	return func(o *nodeOptions) { o.noMDNS = true }
 }
 
 // WithDialTimeout sets how long a single dial to one address may take.
@@ -185,7 +208,9 @@ func NewNode(port int, bootstrapPeers []string, key crypto.PrivKey, dataDir stri
 		localDir: localDir,
 	}
 
-	node.setupMDNS()
+	if !o.noMDNS {
+		node.setupMDNS()
+	}
 	return node, nil
 }
 
@@ -193,7 +218,9 @@ func (n *Node) setupMDNS() {
 	s := mdns.NewMdnsService(n.Host, "lantern", &mdnsDiscovery{node: n})
 	if err := s.Start(); err != nil {
 		fmt.Printf("mDNS warning: %v\n", err)
+		return
 	}
+	n.mdnsStarted = true
 }
 
 // SeenAddressTTL bounds how long an address learned from a network

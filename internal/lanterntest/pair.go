@@ -88,7 +88,11 @@ func New(t *testing.T, roots ...string) *Device {
 		// for the same routing table — slow, and the reason a transfer test
 		// could fail under load and pass when run alone.
 		Bootstrap: []string{"none"},
-		DataDir:   dataDir,
+		// No LAN announcement either. Two devices in a test reach each other by
+		// known address or by a bridged share code, so mDNS buys nothing here
+		// and costs every other device on the network a packet.
+		NoMDNS:  true,
+		DataDir: dataDir,
 	})
 	if err != nil {
 		t.Fatalf("bringing up a lantern device: %v", err)
