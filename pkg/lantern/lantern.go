@@ -461,36 +461,31 @@ func (l *Lantern) tryFetchViaRead(ctx context.Context, pi peer.AddrInfo, code st
 		done <- l.node.FetchFS(ctx, pi, code, outputDir, progress)
 	}()
 
-	select {
-	case err := <-done:
-		if err != nil {
-			// The read path was committed to. A failure here is a real failure
-			// and must not silently restart as a transfer.
-			return fmt.Errorf("read-path fetch: %w", err)
-		}
-		l.readPathFetches++
-		return nil
-	case <-ctx.Done():
-		// The caller may have gone. Or this session may have cancelled itself:
-		// a fetch that fails reports an EventError carrying the transfer ID,
-		// which finishes the session, which cancels the very context being
-		// selected on here. When that happens both arms are ready at once and
-		// Go picks between them at random, so roughly half the time a real
-		// failure was reported to the caller as "context canceled" -- a reason
-		// that invites a retry and names none of what went wrong.
-		//
-		// So if the failure has already landed, it is the truer answer.
-		select {
-		case err := <-done:
-			if err != nil {
-				return fmt.Errorf("read-path fetch: %w", err)
-			}
-			l.readPathFetches++
-			return nil
-		default:
-		}
-		return ctx.Err()
+	// Wait for the fetch, and only for the fetch. Selecting against ctx.Done()
+	// here was wrong twice over.
+	//
+	// First: a fetch that fails reports an EventError carrying the transfer ID,
+	// which finishes the session, which calls s.cancel(). Both arms are then
+	// ready at once and Go picks between them at random, so about half the
+	// time a real failure reached the caller as "context canceled" -- a reason
+	// that invites a retry and names none of what went wrong.
+	//
+	// Second, which is worse: FetchFS reports Done before it returns, so a
+	// *successful* fetch can finish the session and cancel this context before
+	// the goroutine has sent its result. A file saved on disk was reported as
+	// cancelled.
+	//
+	// Racing is unnecessary. The goroutine always sends, and FetchFS takes
+	// this context, so it returns when the caller goes away as surely as it
+	// returns when the transfer ends. There is nothing to wait for except the
+	// fetch itself, and its error already says why if the context is why.
+	if err := <-done; err != nil {
+		// The read path was committed to. A failure here is a real failure
+		// and must not silently restart as a transfer.
+		return fmt.Errorf("read-path fetch: %w", err)
 	}
+	l.readPathFetches++
+	return nil
 }
 
 // RemoteFiles lists one level of dir on a connected peer. The remote side
