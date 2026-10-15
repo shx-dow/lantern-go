@@ -10,6 +10,7 @@ import (
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 	"github.com/shx-dow/lantern-go/internal/crypto"
 	"github.com/shx-dow/lantern-go/internal/storage"
 )
@@ -27,12 +28,18 @@ func TestTransferRoundTripAcrossTwoHosts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	senderHost, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	senderHost, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.SwarmOpts(swarm.WithDialTimeout(testDialTimeout)),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer senderHost.Close()
-	receiverHost, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	receiverHost, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.SwarmOpts(swarm.WithDialTimeout(testDialTimeout)),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,12 +96,18 @@ func TestTransferResumesAndVerifiesExistingPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	senderHost, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	senderHost, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.SwarmOpts(swarm.WithDialTimeout(testDialTimeout)),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer senderHost.Close()
-	receiverHost, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	receiverHost, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.SwarmOpts(swarm.WithDialTimeout(testDialTimeout)),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,12 +147,18 @@ func TestTwoSharesOnOneHostDispatchIndependently(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	senderHost, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	senderHost, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.SwarmOpts(swarm.WithDialTimeout(testDialTimeout)),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer senderHost.Close()
-	receiverHost, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	receiverHost, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.SwarmOpts(swarm.WithDialTimeout(testDialTimeout)),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,12 +206,18 @@ func TestTransferWrongCodeIsRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	senderHost, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	senderHost, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.SwarmOpts(swarm.WithDialTimeout(testDialTimeout)),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer senderHost.Close()
-	receiverHost, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	receiverHost, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.SwarmOpts(swarm.WithDialTimeout(testDialTimeout)),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,12 +268,18 @@ func TestTransferCorruptPrefixFailsHashCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	senderHost, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	senderHost, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.SwarmOpts(swarm.WithDialTimeout(testDialTimeout)),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer senderHost.Close()
-	receiverHost, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	receiverHost, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.SwarmOpts(swarm.WithDialTimeout(testDialTimeout)),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

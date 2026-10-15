@@ -36,16 +36,8 @@ func newRoutePair(t *testing.T, content string) routePair {
 		t.Fatal(err)
 	}
 
-	sender, err := New(Config{DataDir: filepath.Join(dir, "sender")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { sender.Close() })
-	receiver, err := New(Config{DataDir: filepath.Join(dir, "receiver")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { receiver.Close() })
+	sender := newTestNode(t, dir, "sender")
+	receiver := newTestNode(t, dir, "receiver")
 
 	if err := os.WriteFile(filepath.Join(root, "gift.txt"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)

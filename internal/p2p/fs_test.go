@@ -10,6 +10,7 @@ import (
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 )
 
 // fsPair brings up a provider serving root and a requester, trusting it.
@@ -19,7 +20,10 @@ import (
 // unrelated tests on a two-core CI runner.
 func fsHost(t *testing.T) *Node {
 	t.Helper()
-	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	h, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.SwarmOpts(swarm.WithDialTimeout(testDialTimeout)),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,3 +250,11 @@ func allowRootsFor(roots []string, allowed ...string) ReadRoots {
 		return nil
 	}
 }
+
+// testDialTimeout is what every host in this package's tests is given for one
+// dial. Zero leaves go-libp2p's own limits -- 15 seconds, and 5 for a private
+// address -- and under -race on a loaded Windows runner a security handshake
+// over loopback can outlast the 5s cap, failing a connection that was never
+// wrong. The same limit already bit internal/daemon, which is why Config
+// carries a dial timeout at all.
+const testDialTimeout = 60 * time.Second
