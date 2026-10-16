@@ -413,6 +413,24 @@ func (l *Lantern) receive(ctx context.Context, code string, outputDir string) (*
 	progress := make(chan p2p.TransferProgress, broadcastBufferSize)
 	go l.forwardProgress(ctx, progress, code)
 
+	// progress has exactly one owner, and this is where that is decided.
+	//
+	// Both routes below want to close it, because each ends by signalling "no
+	// more progress". Only one of them runs -- but receive cannot know that in
+	// advance, so both used to close it. When the read path failed and the
+	// transfer path took over, the second close panicked, and it sent on the
+	// already-closed channel before that. `lantern receive` could crash the
+	// process on any fetch that failed on the read path.
+	//
+	// So the rule is: tryFetchViaRead does not close, RegisterReceive does,
+	// and every path that does not hand over to RegisterReceive closes here.
+	// Handing over is the one case where receive must keep its hands off.
+	closeUnlessHandingOver := func(handedOver bool) {
+		if !handedOver {
+			close(progress)
+		}
+	}
+
 	// A paired sender is asked whether it will serve this code over the read
 	// path. If it will, the bytes come from the fs protocol and the transfer
 	// protocol is never opened, so a fetch between paired devices uses one
@@ -422,13 +440,19 @@ func (l *Lantern) receive(ctx context.Context, code string, outputDir string) (*
 	// code, and only it can say whether that path is inside its shared roots.
 	// A refusal here is not an error, it is the transfer path's turn.
 	if err := l.tryFetchViaRead(ctx, pi, code, outputDir, progress); err == nil {
+		closeUnlessHandingOver(false)
 		return &Peer{ID: pi.ID.String(), Code: code}, nil
 	} else if ctx.Err() != nil {
 		// The caller went away mid-decision. Falling through would open a
 		// transfer that cannot finish.
+		//
+		// Safe to close here: tryFetchViaRead returns only once its goroutine
+		// has sent its result, and that goroutine does nothing else.
+		closeUnlessHandingOver(false)
 		return nil, err
 	}
 
+	// Handing over. RegisterReceive closes progress when the transfer ends.
 	l.node.RegisterReceive(ctx, pi, code, outputDir, progress)
 
 	return &Peer{
@@ -457,7 +481,9 @@ func (l *Lantern) tryFetchViaRead(ctx context.Context, pi peer.AddrInfo, code st
 
 	done := make(chan error, 1)
 	go func() {
-		defer close(progress)
+		// Deliberately does not close progress. receive owns that channel and
+		// decides once, before either route starts, which of them is
+		// responsible for closing it -- see the comment there.
 		done <- l.node.FetchFS(ctx, pi, code, outputDir, progress)
 	}()
 

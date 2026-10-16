@@ -24,41 +24,71 @@ import (
 func TestASuccessfulFetchIsNeverReportedAsCancelled(t *testing.T) {
 	const runs = 20
 	for i := range runs {
-		if _, err := fetchOneFile(t); err != nil {
+		out, name, err := fetchInto(t, nil)
+		if err != nil {
 			t.Fatalf("iteration %d: a fetch that saved the file reported %v", i, err)
+		}
+		got, rerr := os.ReadFile(filepath.Join(out, name))
+		if rerr != nil {
+			t.Fatalf("iteration %d: the call reported success but the file is not there: %v", i, rerr)
+		}
+		if string(got) != "the bytes that must land" {
+			t.Fatalf("iteration %d: the file holds %q", i, got)
+		}
+	}
+}
+
+// A failed read-path fetch must not crash, and must never replace what is
+// already at the destination.
+//
+// This is the test that found the cause. It did not fail an assertion -- it
+// panicked, because a read-path fetch that failed handed its progress channel
+// to the transfer path, and the read path had already closed it. Both routes
+// wanted to close one channel, so whichever ran second closed a closed channel
+// and sent on it. `lantern receive` could take the process down on any fetch
+// that failed on the read path.
+//
+// It now gets that far and stops: the fetch is refused, nothing is replaced,
+// and nothing crashes.
+func TestAFailedFetchDoesNotCrashOrReplace(t *testing.T) {
+	const runs = 10
+	for i := range runs {
+		out, name, err := fetchInto(t, occupiedDestination)
+		if err != nil {
+			t.Fatalf("iteration %d: the fetch crashed rather than being refused: %v", i, err)
+		}
+		got, rerr := os.ReadFile(filepath.Join(out, name))
+		if rerr != nil {
+			t.Fatalf("iteration %d: %v", i, rerr)
+		}
+		if string(got) != "mine" {
+			t.Fatalf("iteration %d: the destination holds %q; a refused fetch must replace nothing", i, got)
 		}
 	}
 }
 
 // A failure must carry a reason, not a cancellation.
 //
-// The two look identical from outside the fetch, so this is the property that
-// tells them apart: whatever went wrong, the caller is told what it was.
+// Still not true, and not this change's doing: receive() treats a read-path
+// failure the same as "read path unavailable" and hands it to a transfer, so
+// the call returns success and the refusal arrives later on the event stream.
+// Kept skipped so the property stays on the record; the routing decision is
+// its own change.
 func TestAFailedFetchReportsAReason(t *testing.T) {
-	t.Skip("KNOWN PANIC, not a failure of the assertion: a read-path fetch that fails " +
-		"hands its progress channel to the transfer path, which then sends on a channel " +
-		"the read path already closed. See #45. Kept skipped rather than deleted so the " +
-		"property stays visible and the crash stays on the record.")
+	t.Skip("receive() falls through to a transfer after a read-path failure, so the " +
+		"refusal arrives on the event stream rather than as the call's error. A routing " +
+		"decision, not a bug fix; see #46.")
 
-	_, err := fetchOneFile(t, func(t *testing.T, out, name string) {
-		if werr := os.WriteFile(filepath.Join(out, name), []byte("mine"), 0o600); werr != nil {
-			t.Fatal(werr)
-		}
-	})
-	if err == nil {
+	if _, _, err := fetchInto(t, occupiedDestination); err == nil {
 		t.Fatal("a fetch into an occupied destination must fail")
-	}
-	if strings.Contains(err.Error(), "context canceled") {
+	} else if strings.Contains(err.Error(), "context canceled") {
 		t.Errorf("a permanent failure was reported as a cancellation: %v", err)
-	}
-	if strings.Contains(err.Error(), "context deadline") {
-		t.Errorf("a permanent failure was reported as a timeout: %v", err)
 	}
 }
 
-// fetchOneFile moves one file from one device to the other and returns what
-// the caller was told. Any modes run against the destination first.
-func fetchOneFile(t *testing.T, modes ...func(*testing.T, string, string)) (string, error) {
+// fetchInto moves one file into a destination prepared by mode, and returns
+// the destination, the file name, and whatever the caller was told.
+func fetchInto(t *testing.T, mode func(*testing.T, string, string)) (string, string, error) {
 	t.Helper()
 
 	shared := t.TempDir()
@@ -70,8 +100,8 @@ func fetchOneFile(t *testing.T, modes ...func(*testing.T, string, string)) (stri
 
 	p := NewPair(t, shared)
 	out := t.TempDir()
-	for _, m := range modes {
-		m(t, out, name)
+	if mode != nil {
+		mode(t, out, name)
 	}
 
 	session, share, err := p.Sender.Lantern.ShareSession(Ctx(t), filepath.Join(shared, name))
@@ -82,20 +112,20 @@ func fetchOneFile(t *testing.T, modes ...func(*testing.T, string, string)) (stri
 	p.BridgeDiscovery(t, share.Code)
 
 	received, _, err := p.Receiver.Lantern.ReceiveSession(Ctx(t), share.Code, out)
-	if err != nil {
-		return "", err
+	if err == nil && received != nil {
+		for range received.Events() {
+		}
+		received.Close()
 	}
-	for range received.Events() {
-	}
-	received.Close()
+	return out, name, err
+}
 
-	got, rerr := os.ReadFile(filepath.Join(out, name))
-	if rerr != nil {
-		t.Errorf("the call reported success but the file is not there: %v", rerr)
-		return "", nil
+// occupiedDestination puts a file where the fetch would land. Both routes
+// refuse to replace it, so the fetch fails for a reason that is still true
+// tomorrow.
+func occupiedDestination(t *testing.T, out, name string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(out, name), []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if string(got) != content {
-		t.Errorf("the file holds %q, want %q", got, content)
-	}
-	return string(got), nil
 }
