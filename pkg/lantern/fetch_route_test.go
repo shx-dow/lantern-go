@@ -10,6 +10,7 @@ package lantern
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -206,8 +207,15 @@ func TestReadPathFailureIsNotSilentlyRetried(t *testing.T) {
 	if err == nil {
 		t.Fatal("a hash mismatch inside the read path must be reported")
 	}
-	if !strings.Contains(err.Error(), "read-path fetch") {
+	// Asserted with errors.Is rather than on the wording: what matters is that
+	// receive can tell this apart from "the sender will not serve this over
+	// the read path", which is the transfer path's turn and not a failure.
+	// Matching a phrase in the message tested the message.
+	if !errors.Is(err, errReadPathCommitted) {
 		t.Errorf("the failure should be attributed to the read path, not swallowed: %v", err)
+	}
+	if !strings.Contains(err.Error(), "hash mismatch") {
+		t.Errorf("the reason should survive to the caller: %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(p.out, "gift.txt")); !os.IsNotExist(statErr) {
 		t.Error("a failed read-path fetch must not leave a completed file")
