@@ -38,25 +38,39 @@ func TestASuccessfulFetchIsNeverReportedAsCancelled(t *testing.T) {
 	}
 }
 
-// A failed read-path fetch must not crash, and must never replace what is
-// already at the destination.
+// A fetch that fails on the read path reports why, and replaces nothing.
 //
-// This is the test that found the cause. It did not fail an assertion -- it
-// panicked, because a read-path fetch that failed handed its progress channel
-// to the transfer path, and the read path had already closed it. Both routes
-// wanted to close one channel, so whichever ran second closed a closed channel
-// and sent on it. `lantern receive` could take the process down on any fetch
-// that failed on the read path.
+// Three properties, and the test that found them is why all three are here at
+// once.
 //
-// It now gets that far and stops: the fetch is refused, nothing is replaced,
-// and nothing crashes.
-func TestAFailedFetchDoesNotCrashOrReplace(t *testing.T) {
+// It did not fail an assertion -- it panicked. A read-path fetch that failed
+// handed its progress channel to the transfer path, and the read path had
+// already closed it. Both routes wanted to close one channel.
+//
+// Then it stopped crashing and started lying: receive() treated a read-path
+// failure the same as "read path unavailable" and handed it to a transfer, so
+// the call returned success, nothing was placed, and the refusal arrived later
+// on the event stream. A caller watching for the call's error never learns the
+// fetch failed.
+//
+// Now the caller is told, in words it can act on:
+//
+//	read path started and failed: ... already exists; remove or rename it,
+//	or fetch into a different directory
+func TestAFailedFetchReportsAReasonAndReplacesNothing(t *testing.T) {
 	const runs = 10
 	for i := range runs {
 		out, name, err := fetchInto(t, occupiedDestination)
-		if err != nil {
-			t.Fatalf("iteration %d: the fetch crashed rather than being refused: %v", i, err)
+		if err == nil {
+			t.Fatalf("iteration %d: a fetch into an occupied destination reported success", i)
 		}
+		if strings.Contains(err.Error(), "context canceled") {
+			t.Fatalf("iteration %d: a permanent failure was reported as a cancellation: %v", i, err)
+		}
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("iteration %d: the refusal does not name the file it is about: %v", i, err)
+		}
+
 		got, rerr := os.ReadFile(filepath.Join(out, name))
 		if rerr != nil {
 			t.Fatalf("iteration %d: %v", i, rerr)
@@ -67,22 +81,45 @@ func TestAFailedFetchDoesNotCrashOrReplace(t *testing.T) {
 	}
 }
 
-// A failure must carry a reason, not a cancellation.
-//
-// Still not true, and not this change's doing: receive() treats a read-path
-// failure the same as "read path unavailable" and hands it to a transfer, so
-// the call returns success and the refusal arrives later on the event stream.
-// Kept skipped so the property stays on the record; the routing decision is
-// its own change.
-func TestAFailedFetchReportsAReason(t *testing.T) {
-	t.Skip("receive() falls through to a transfer after a read-path failure, so the " +
-		"refusal arrives on the event stream rather than as the call's error. A routing " +
-		"decision, not a bug fix; see #46.")
+// A share the sender will not serve over the read path is still the transfer
+// path's turn. That is the other half of the distinction, and the change above
+// must not swallow it: a device serving no roots cannot answer a resolve, so
+// every fetch from it takes the transfer path. Refusing those outright would
+// break fetching from any unpaired device.
+func TestAShareTheSenderWillNotServeFallsBackToATransfer(t *testing.T) {
+	shared := t.TempDir()
+	const name = "gift.txt"
+	const content = "served without the read path"
+	if err := os.WriteFile(filepath.Join(shared, name), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
-	if _, _, err := fetchInto(t, occupiedDestination); err == nil {
-		t.Fatal("a fetch into an occupied destination must fail")
-	} else if strings.Contains(err.Error(), "context canceled") {
-		t.Errorf("a permanent failure was reported as a cancellation: %v", err)
+	// No read access granted: the sender will not serve this over the read
+	// path, which is not a failure -- it is the transfer path's turn.
+	p := NewPair(t)
+
+	session, share, err := p.Sender.Lantern.ShareSession(Ctx(t), filepath.Join(shared, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	p.BridgeDiscovery(t, share.Code)
+
+	out := t.TempDir()
+	received, _, err := p.Receiver.Lantern.ReceiveSession(Ctx(t), share.Code, out)
+	if err != nil {
+		t.Fatalf("a sender that will not serve the read path must not fail the call: %v", err)
+	}
+	for range received.Events() {
+	}
+	received.Close()
+
+	got, err := os.ReadFile(filepath.Join(out, name))
+	if err != nil {
+		t.Fatalf("the file did not arrive by the transfer path: %v", err)
+	}
+	if string(got) != content {
+		t.Errorf("arrived as %q, want %q", got, content)
 	}
 }
 

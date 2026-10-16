@@ -2,6 +2,7 @@ package lantern
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -402,6 +403,16 @@ func (l *Lantern) ReceiveSession(ctx context.Context, code string, outputDir str
 	return session, peer, nil
 }
 
+// errReadPathCommitted marks a fetch that was started on the read path and
+// then failed, as distinct from one that never got off the ground.
+//
+// The difference decides what happens next. A share the sender will not serve
+// over the read path is the transfer path's turn. A share the sender *did*
+// start serving and that then failed is a failure, and asking for the same
+// bytes again over the transfer protocol is a retry dressed up as a route
+// choice.
+var errReadPathCommitted = errors.New("read path started and failed")
+
 func (l *Lantern) receive(ctx context.Context, code string, outputDir string) (*Peer, error) {
 	pi, err := l.node.Discover(ctx, code)
 	if err != nil {
@@ -439,17 +450,28 @@ func (l *Lantern) receive(ctx context.Context, code string, outputDir string) (*
 	// The sender decides, not the receiver: only it knows the path behind a
 	// code, and only it can say whether that path is inside its shared roots.
 	// A refusal here is not an error, it is the transfer path's turn.
-	if err := l.tryFetchViaRead(ctx, pi, code, outputDir, progress); err == nil {
+	readErr := l.tryFetchViaRead(ctx, pi, code, outputDir, progress)
+	switch {
+	case readErr == nil:
 		closeUnlessHandingOver(false)
 		return &Peer{ID: pi.ID.String(), Code: code}, nil
-	} else if ctx.Err() != nil {
+
+	case errors.Is(readErr, errReadPathCommitted):
+		// The read path was chosen, started, and failed. That is a failure,
+		// not the transfer path's turn: falling through would ask for the
+		// same bytes a second time over a different protocol, having already
+		// refused them once. The bytes may well be what is wrong.
+		closeUnlessHandingOver(false)
+		return nil, readErr
+
+	case ctx.Err() != nil:
 		// The caller went away mid-decision. Falling through would open a
 		// transfer that cannot finish.
 		//
 		// Safe to close here: tryFetchViaRead returns only once its goroutine
 		// has sent its result, and that goroutine does nothing else.
 		closeUnlessHandingOver(false)
-		return nil, err
+		return nil, readErr
 	}
 
 	// Handing over. RegisterReceive closes progress when the transfer ends.
@@ -508,7 +530,7 @@ func (l *Lantern) tryFetchViaRead(ctx context.Context, pi peer.AddrInfo, code st
 	if err := <-done; err != nil {
 		// The read path was committed to. A failure here is a real failure
 		// and must not silently restart as a transfer.
-		return fmt.Errorf("read-path fetch: %w", err)
+		return fmt.Errorf("%w: %w", errReadPathCommitted, err)
 	}
 	l.readPathFetches++
 	return nil
