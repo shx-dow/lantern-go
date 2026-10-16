@@ -25,8 +25,23 @@ func (n *Node) peerFilePath(code string) (string, error) {
 	return filepath.Join(dir, "lantern-"+code+".peer"), nil
 }
 
-// AdvertiseLocal publishes this node's addresses for code to the local
-// advertisement dir so same-machine discovery skips the DHT.
+// AdvertiseLocal publishes this node's addresses for code into this node's own
+// data directory, and DiscoverLocal looks in that same directory.
+//
+// It therefore only helps a lookup that reads the same directory, which in
+// ordinary use is this node's own -- and a device is not looking up its own
+// share. Two Lanterns on one machine, each with its own data directory, do not
+// find each other here; they fall through to the DHT.
+//
+// The comment on this function used to say it let "same-machine discovery skip
+// the DHT", which is not something it does. It is kept because a test that
+// brings up two devices can bridge the advertisement across, which is how
+// internal/lanterntest reaches the share-code route without a DHT.
+//
+// Whether two devices on one machine should find each other locally is a
+// product question this comment does not answer: either the rendezvous
+// directory should be shared rather than per-device, or the wording should
+// stop promising it.
 func (n *Node) AdvertiseLocal(code string) error {
 	info := peer.AddrInfo{
 		ID:    n.Host.ID(),
