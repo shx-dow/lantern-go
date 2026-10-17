@@ -301,10 +301,11 @@ func (n *Node) fsResolveShare(s network.Stream, remote string, req FSRequest) {
 	entry := &FSEntry{Size: info.Size}
 	entry.setName(info.Name)
 
-	// Record who asked. A read by this peer of this path is then a fetch of
-	// this share, and a read by anyone else is not -- so an unrelated reader
-	// of the same file cannot complete a share it never asked for.
-	n.noteShareResolved(info.Path, remote)
+	// Record who asked, against the code they asked with. A read by this peer
+	// of this file is then a fetch of this share, and a read by anyone else is
+	// not -- so an unrelated reader of the same file cannot complete a share it
+	// never asked for.
+	n.noteShareResolved(req.Code, remote)
 
 	_ = protocol.WriteMetadata(s, stamped(FSResponse{
 		Path:    info.Path,

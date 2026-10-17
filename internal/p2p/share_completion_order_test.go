@@ -187,3 +187,141 @@ func TestCompletingAShareClosesItsProgressChannel(t *testing.T) {
 		t.Fatal("the progress channel was never closed after completion")
 	}
 }
+
+// A share reserved by one reader is not taken by a second resolve.
+//
+// A later resolve used to overwrite readPeer. So if peer A resolved the code
+// and started downloading, and peer B then resolved the same code and stopped
+// before reading, A's final read no longer matched anything: no completion, and
+// the sender waited forever. A bystander who never read a byte was enough to
+// hang the device that actually served the file.
+func TestASecondResolveDoesNotStealTheShareFromItsReader(t *testing.T) {
+	root := t.TempDir()
+	const content = "the bytes that must land"
+	path := filepath.Join(root, "notes.txt")
+	writeFile(t, path, content)
+
+	provider, readers, pi := providerWithReaders(t, root, 2)
+
+	const code = "reserved"
+	progress := make(chan TransferProgress, 8)
+	if err := provider.RegisterShareHandler(fsCtx(t), code, path, progress); err != nil {
+		t.Fatalf("share: %v", err)
+	}
+	a, b := readers[0], readers[1]
+
+	// A resolves and is the reader.
+	info, err := a.ResolveShare(fsCtx(t), pi, code)
+	if err != nil {
+		t.Fatalf("A resolve: %v", err)
+	}
+	// B resolves the same code, then goes away without reading.
+	//
+	// A must not resolve again to fetch: a second resolve re-marks the
+	// reservation and hides the overwrite this test exists to catch. The path
+	// from A's first resolve is what A reads.
+	if _, err := b.ResolveShare(fsCtx(t), pi, code); err != nil {
+		t.Fatalf("B resolve: %v", err)
+	}
+
+	// A fetches, and must still be credited with it.
+	if _, _, data, eof, err := a.ReadFS(fsCtx(t), pi, FSRequest{Op: OpRead, Path: info.Path}); err != nil {
+		t.Fatalf("A read: %v", err)
+	} else if !eof || string(data) != content {
+		t.Fatalf("A short read: eof=%v data=%q", eof, data)
+	}
+
+	select {
+	case p := <-progress:
+		if p.Done {
+			return
+		}
+		t.Fatalf("unexpected progress before completion: %+v", p)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the peer that actually fetched the share was not credited, after a second peer resolved it")
+	}
+}
+
+// Two codes for one file are two shares. Resolving one must not spend the
+// other.
+//
+// Marking by path marked both, so the completion could land on either, and
+// map order decided which. The receiver would be told a code was spent that it
+// never presented, while the share it did resolve was left waiting.
+//
+// Run repeatedly because the original behaviour was a coin flip: whichever
+// share the ranging found first was the one spent. Twenty rounds miss that
+// about once in a million.
+func TestResolvingOneCodeDoesNotSpendAnotherForTheSameFile(t *testing.T) {
+	const rounds = 20
+	for round := range rounds {
+		root := t.TempDir()
+		const content = "the bytes that must land"
+		path := filepath.Join(root, "notes.txt")
+		writeFile(t, path, content)
+
+		requester, provider, pi := sharePair(t, root)
+
+		first := make(chan TransferProgress, 8)
+		second := make(chan TransferProgress, 8)
+		if err := provider.RegisterShareHandler(fsCtx(t), "code-one", path, first); err != nil {
+			t.Fatalf("share one: %v", err)
+		}
+		if err := provider.RegisterShareHandler(fsCtx(t), "code-two", path, second); err != nil {
+			t.Fatalf("share two: %v", err)
+		}
+
+		info, err := requester.ResolveShare(fsCtx(t), pi, "code-one")
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if _, _, _, _, err := requester.ReadFS(fsCtx(t), pi, FSRequest{Op: OpRead, Path: info.Path}); err != nil {
+			t.Fatalf("read: %v", err)
+		}
+
+		// The share that was presented is spent.
+		select {
+		case p := <-first:
+			if !p.Done {
+				t.Fatalf("round %d: code-one reported %+v instead of a completion", round, p)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("round %d: code-one was never completed", round)
+		}
+
+		// The share that was not is untouched: silent, still open, still live.
+		select {
+		case p, ok := <-second:
+			if !ok {
+				t.Fatalf("round %d: the share that was never resolved was closed", round)
+			}
+			t.Fatalf("round %d: the share that was never resolved reported %+v", round, p)
+		default:
+		}
+		again, err := requester.ResolveShare(fsCtx(t), pi, "code-two")
+		if err != nil {
+			t.Fatalf("round %d: the untouched share stopped resolving: %v", round, err)
+		}
+		if again == nil {
+			t.Fatalf("round %d: the untouched share no longer resolves", round)
+		}
+	}
+}
+
+// providerWithReaders brings up a provider serving root, trusted by n
+// requesters, and returns those requesters alongside its address.
+func providerWithReaders(t *testing.T, root string, n int) (*Node, []*Node, peer.AddrInfo) {
+	t.Helper()
+	provider := fsHost(t)
+	readers := make([]*Node, 0, n)
+	allowed := make([]string, 0, n)
+	for range n {
+		r := fsHost(t)
+		readers = append(readers, r)
+		allowed = append(allowed, r.Host.ID().String())
+	}
+	provider.SetReadAccess(allowRootsFor([]string{root}, allowed...))
+	provider.SetWriteAccess(grantEveryone(nil))
+	provider.RegisterFSHandler()
+	return provider, readers, peer.AddrInfo{ID: provider.Host.ID(), Addrs: provider.Host.Addrs()}
+}
