@@ -240,6 +240,11 @@ type shareState struct {
 	fileHash string
 	handled  atomic.Bool
 	progress chan TransferProgress
+	// readPeer is the remote that resolved this code over the read path, and
+	// so the only peer whose reads count as fetching this share. Empty until
+	// the code is resolved. Guarded by n.mu, not by its own lock, because the
+	// map holding it is guarded by that.
+	readPeer string
 	// ctx governs the share's lifetime. It is the same context the advertisement
 	// runs under, so cancelling it means nobody is reporting progress any more.
 	ctx  context.Context
@@ -454,6 +459,88 @@ func (n *Node) matchShare(req protocol.TransferRequest) *shareState {
 		}
 	}
 	return nil
+}
+
+// sameFile reports whether two paths are the same file on disk.
+//
+// By identity, never as strings. A share holds the path the caller passed to
+// ShareSession, while every path reaching the correlation has been through
+// resolveWithinRoots, which calls EvalSymlinks. Those differ wherever the
+// caller's path is not already canonical -- macOS temp directories live under
+// /var, which is a symlink to /private/var -- and a string comparison then
+// matches nothing at all. Linux agrees, which is how that passed there and
+// failed on two other platforms.
+func sameFile(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(ai, bi)
+}
+
+// noteShareResolved records that remote resolved the share held at path, so a
+// later read of that path by that peer can be recognised as fetching it.
+//
+// Nothing is recorded on a code that does not resolve: an unanswered resolve is
+// the receiver's signal to use the transfer path, and that path reports its own
+// progress through serveShare.
+func (n *Node) noteShareResolved(path string, remote string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for _, state := range n.shares {
+		if sameFile(state.filePath, path) {
+			state.readPeer = remote
+		}
+	}
+}
+
+// completeShareRead reports that remote has finished reading path, when that
+// read was the fetch of a share remote resolved.
+//
+// A share is served once. serveShare already refuses a second transfer of one
+// code, and the read path had no such guard, so two receivers holding the same
+// code could each complete it. This matches the transfer path: the first
+// fetcher gets the file, and a second one is told the code is spent.
+//
+// The share is forgotten afterwards, as serveShare forgets it. Nothing else
+// does on this path, so without that the share would stay advertised for the
+// life of the process.
+//
+// The advertisement context is deliberately not consulted. It is cancelled
+// routinely, the moment DHT advertising returns, which says nothing about
+// whether the share was served; treating that as teardown would refuse exactly
+// the fetches that arrive soon after advertising finishes.
+func (n *Node) completeShareRead(remote string, path string) {
+	n.mu.Lock()
+	var found *shareState
+	for _, state := range n.shares {
+		if state.readPeer == remote && sameFile(state.filePath, path) {
+			found = state
+			break
+		}
+	}
+	if found != nil {
+		delete(n.shares, found.code)
+	}
+	n.mu.Unlock()
+
+	if found == nil || !found.handled.CompareAndSwap(false, true) {
+		return
+	}
+	reportProgress(context.Background(), found.progress, TransferProgress{
+		FileName: found.fileName,
+		Bytes:    found.fileSize,
+		Total:    found.fileSize,
+		Done:     true,
+	})
+	found.done()
 }
 
 func (n *Node) forgetShare(code string) {

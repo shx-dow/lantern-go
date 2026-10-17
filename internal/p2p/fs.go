@@ -255,7 +255,7 @@ func (n *Node) serveFS(s network.Stream) {
 	case OpList:
 		_ = protocol.WriteMetadata(s, n.fsList(roots, req.Path))
 	case OpRead:
-		n.fsRead(s, roots, req)
+		n.fsRead(s, remote, roots, req)
 	case OpResolveShare:
 		n.fsResolveShare(s, remote, req)
 	case OpWrite:
@@ -300,6 +300,12 @@ func (n *Node) fsResolveShare(s network.Stream, remote string, req FSRequest) {
 	}
 	entry := &FSEntry{Size: info.Size}
 	entry.setName(info.Name)
+
+	// Record who asked. A read by this peer of this path is then a fetch of
+	// this share, and a read by anyone else is not -- so an unrelated reader
+	// of the same file cannot complete a share it never asked for.
+	n.noteShareResolved(info.Path, remote)
+
 	_ = protocol.WriteMetadata(s, stamped(FSResponse{
 		Path:    info.Path,
 		PathB64: protocol.Base64Of(info.Path),
@@ -432,7 +438,7 @@ func (n *Node) fsList(roots []string, path string) FSResponse {
 	return stamped(FSResponse{Entries: entries})
 }
 
-func (n *Node) fsRead(s network.Stream, roots []string, req FSRequest) {
+func (n *Node) fsRead(s network.Stream, remote string, roots []string, req FSRequest) {
 	if req.Offset < 0 {
 		_ = protocol.WriteMetadata(s, fail("offset must not be negative"))
 		return
@@ -486,6 +492,22 @@ func (n *Node) fsRead(s network.Stream, roots []string, req FSRequest) {
 	if err := protocol.WriteMetadata(s, stamped(FSResponse{Entry: entryFor(fi), Bytes: length, EOF: eof})); err != nil {
 		return
 	}
+
+	// This read finished a share, if it is the read that finishes one.
+	//
+	// A paired receiver resolving a share code is answered by this node, and
+	// then reads the file over this protocol rather than taking the transfer
+	// protocol at all. Nothing else reported that: serveShare never runs, so
+	// the sender's session saw no progress and no completion, and `lantern
+	// send` waited for an event that could never arrive.
+	//
+	// Correlated by peer, not by path. A peer that merely reads the same file
+	// without ever presenting the code is not fetching the share, and must not
+	// complete it.
+	if eof && fi.Size() == req.Offset+length {
+		n.completeShareRead(remote, resolved)
+	}
+
 	if length == 0 {
 		return
 	}
