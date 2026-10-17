@@ -101,7 +101,15 @@ jobs:
                      "-F", f"number={number}"]
               if cursor:
                   cmd += ["-F", f"cursor={cursor}"]
-              out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+              # stdout captured, stderr left alone.
+              #
+              # capture_output takes both, and with check=True a failure raises
+              # CalledProcessError -- carrying the command, not the reason. A
+              # permission failure, a rate limit or an API error then shows as
+              # a bare exception with none of GitHub's explanation, which is the
+              # one thing that would tell whoever is reading the failed job
+              # what to fix. Inheriting stderr keeps gh's own message in the log.
+              out = subprocess.run(cmd, stdout=subprocess.PIPE, text=True, check=True).stdout
               rt = json.loads(out)["data"]["repository"]["pullRequest"]["reviewThreads"]
               nodes += rt["nodes"]
               if not rt["pageInfo"]["hasNextPage"] or not rt["pageInfo"]["endCursor"]:
@@ -213,7 +221,7 @@ jobs:
           pr = os.environ["PR"]
           out = subprocess.run(
               ["gh", "api", f"repos/{repo}/issues/{pr}/comments", "--paginate"],
-              capture_output=True, text=True, check=True).stdout
+              stdout=subprocess.PIPE, text=True, check=True).stdout
           # Only this bot's own comments: the marker is a plain string and
           # anyone can write it.
           for c in json.loads(out):
