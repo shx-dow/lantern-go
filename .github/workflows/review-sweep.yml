@@ -1,0 +1,126 @@
+name: Review sweep
+
+# Reads a merged pull request's review comments and reports anything still
+# unresolved on it.
+#
+# This exists because of a specific, repeated failure. On four separate pull
+# requests the Greptile review *check* reported "pass" while P0-P2 findings sat
+# in the same pull request's comment thread, and in every case the findings
+# were only found by a person reading the comments after the merge. The check
+# is not evidence that a review found nothing.
+#
+# Advisory by design. A comment on a merged pull request cannot un-merge
+# anything, and pretending otherwise would only produce a gate that blocks
+# releases on a stale comment nobody has triaged. What it does is make the
+# gap visible on the pull request itself, where it is still cheap to act on.
+#
+# Findings here are a prompt to read the thread, not a verdict. This workflow
+# cannot tell a real defect from a mistaken one, and it does not try.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  sweep:
+    name: Sweep ${{ github.event.pull_request.number }}
+    # Only merges. A closed-unmerged pull request has no release to worry about.
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report unresolved findings
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          MARKER: "<!-- review-sweep -->"
+        run: |
+          set -euo pipefail
+
+          # Posted once per pull request. A re-run is a manual thing to ask for,
+          # and it should refresh the list rather than stack a second copy.
+          if gh pr view "$PR" --json comments --jq '.comments[].body' \
+               | grep -qF "$MARKER"; then
+            echo "a sweep has already been posted on #$PR; not posting again"
+            exit 0
+          fi
+
+          # The review comments, which is where a bot's findings live. Issue
+          # comments are summaries and badges, not findings, and including them
+          # would report every sweep and every retrigger as an open problem.
+          gh api "repos/$GH_REPO/pulls/$PR/comments" --paginate > /tmp/opencode/raw.json
+
+          python3 - "$MARKER" <<'PY' > /tmp/opencode/body.md
+          import json, os, re, sys
+
+          marker = sys.argv[1]
+          repo = os.environ["GH_REPO"]
+          pr = os.environ["PR"]
+
+          findings = []
+          with open("/tmp/opencode/raw.json") as fh:
+              comments = json.load(fh)
+
+          for c in comments:
+              body = c.get("body") or ""
+              # A severity badge is what distinguishes a finding from prose.
+              # Anything else in a review comment is commentary.
+              m = re.search(r'badges/(p[0-2])\.svg', body)
+              if not m:
+                  continue
+              severity = m.group(1).upper()
+              title = ""
+              t = re.search(r'\*\*([^*]+)\*\*', body)
+              if t:
+                  title = t.group(1).strip()
+              if not title:
+                  title = (body.strip().splitlines() or ["(no title)"])[-1][:120]
+              findings.append({
+                  "severity": severity,
+                  "title": title,
+                  "path": c.get("path") or "",
+                  "line": c.get("line") or c.get("original_line") or "",
+                  "user": (c.get("user") or {}).get("login", "?"),
+                  "url": c.get("html_url", ""),
+              })
+
+          severity_order = {"P0": 0, "P1": 1, "P2": 2}
+          findings.sort(key=lambda f: (severity_order.get(f["severity"], 9), f["path"]))
+
+          out = [marker, "", "## Post-merge review sweep", ""]
+          if not findings:
+              out += [
+                  "No P0-P2 review findings on this pull request.",
+                  "",
+                  "Findings can still be raised after this comment; this sweep only",
+                  "reports what the review threads contained when it ran.",
+              ]
+          else:
+              out += [
+                  f"**{len(findings)} review finding(s) were left on this merged pull request.**",
+                  "",
+                  "These were present when the pull request merged and were not part of",
+                  "what CI checked. They need triage: each is either a real defect now on",
+                  f"`main`, or a mistaken finding. Nothing here is verified.",
+                  "",
+                  "| severity | where | finding | raised by |",
+                  "| --- | --- | --- | --- |",
+              ]
+              for f in findings:
+                  where = f"`{f['path']}`" + (f":{f['line']}" if f["line"] else "")
+                  link = f"[{f['title']}]({f['url']})"
+                  out.append(f"| {f['severity']} | {where} | {link} | {f['user']} |")
+              out += [
+                  "",
+                  "This comment is posted by a workflow that matches severity badges in",
+                  "review comments. It does not judge whether a finding is real.",
+              ]
+          print("\n".join(out))
+          PY
+
+          cat /tmp/opencode/body.md
+          gh pr comment "$PR" --body-file /tmp/opencode/body.md

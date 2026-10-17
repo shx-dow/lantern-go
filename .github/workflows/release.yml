@@ -1,0 +1,193 @@
+name: Release
+
+# Builds a GitHub release from a version tag.
+#
+# Deliberately hand-rolled rather than delegated to a release action. A release
+# action is a third-party dependency that runs with the repository token and
+# decides what ends up in a published artifact; `gh` ships with the runner and
+# this file is the whole of what happens. For a pre-alpha tool that is the
+# better trade, and it is a trade that can be revisited when there is a
+# maintainer to review a dependency's updates.
+#
+# The binaries are CGO-free. Every dependency is pure Go, so there is no
+# toolchain to install per platform and no C library for a user to be missing.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  # The tag without its leading v, which is what the binary reports.
+  VERSION: ${{ github.ref_name }}
+  MODULE: github.com/shx-dow/lantern-go
+
+jobs:
+  # A tag that is not a commit on main is a mistyped or stale tag, and
+  # publishing one is worse than failing. This runs before anything is built.
+  verify:
+    name: Verify tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: check
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          if [ "$version" = "$tag" ]; then
+            echo "::error::tag $tag does not start with v"
+            exit 1
+          fi
+          if [ -z "$version" ]; then
+            echo "::error::tag $tag carries no version"
+            exit 1
+          fi
+
+          # Reachable from an origin branch, rather than only from some commit
+          # that happens to exist. An unreferenced tag is a mistake worth
+          # stopping for.
+          found=no
+          for ref in origin/main origin/release; do
+            if git merge-base --is-ancestor "$GITHUB_SHA" "$ref" 2>/dev/null; then
+              echo "tag $tag is on $ref"
+              found=yes
+              break
+            fi
+          done
+          if [ "$found" = no ]; then
+            echo "::error::tag $tag ($GITHUB_SHA) is not on main or release"
+            exit 1
+          fi
+
+          # A version with a hyphen is a pre-release. The project is pre-alpha,
+          # so those are expected rather than exceptional, and GitHub's
+          # prerelease flag is what keeps them out of "latest release".
+          #
+          # Decided into a variable first and echoed once, because writing two
+          # branches to two different files is how a prerelease flag ends up
+          # unset on exactly the tags that need it.
+          if [[ "$version" == *-* ]]; then
+            prerelease=true
+          else
+            prerelease=false
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "building $version (prerelease=$prerelease)"
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      # One failure should not hide the state of the others.
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/${{ matrix.goos }}-${{ matrix.goarch }}"
+          go build -trimpath \
+            -ldflags "-s -w \
+              -X $MODULE/internal/version.Version=${{ needs.verify.outputs.version }} \
+              -X $MODULE/internal/version.Commit=$GITHUB_SHA \
+              -X $MODULE/internal/version.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o "dist/${{ matrix.goos }}-${{ matrix.goarch }}/lantern${{ if eq matrix.goos == 'windows' && '.exe' }}" \
+            ./cmd/lantern
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          stage="dist/${{ matrix.goos }}-${{ matrix.goarch }}"
+          base="lantern_${GITHUB_REF_NAME}_${{ matrix.goos }}-${{ matrix.goarch }}"
+          cp LICENSE README.md "$stage/"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            (cd dist && zip -q -r "$base.zip" "${{ matrix.goos }}-${{ matrix.goarch }}")
+          else
+            # The directory name inside the archive becomes the top-level
+            # entry, so unpacking cannot scatter files into the cwd.
+            tar -czf "dist/$base.tar.gz" -C dist "${{ matrix.goos }}-${{ matrix.goarch }}"
+          fi
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: "lantern-${{ matrix.goos }}-${{ matrix.goarch }}"
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: "lantern-${{ matrix.goos }}-${{ matrix.goarch }}-zip"
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Publish release
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -l
+          # Only the archives, so the checksum file describes what a user
+          # downloads rather than what this job happened to produce.
+          sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          args=(--title "$GITHUB_REF_NAME" --generate-notes --verify-tag)
+          if [ "${{ needs.verify.outputs.prerelease }}" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # A re-run after a partial failure replaces the assets it already
+            # published. Deleting the release instead would fail --verify-tag,
+            # because --cleanup-tag removes the tag that triggered this run.
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${args[@]}" dist/*
+          fi
