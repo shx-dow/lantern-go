@@ -3,22 +3,31 @@ name: Review sweep
 # Reads a merged pull request's review comments and reports anything still
 # unresolved on it.
 #
-# This exists because of a specific, repeated failure. On four separate pull
-# requests the Greptile review *check* reported "pass" while P0-P2 findings sat
-# in the same pull request's comment thread, and in every case the findings
-# were only found by a person reading the comments after the merge. The check
-# is not evidence that a review found nothing.
+# This exists because of a specific, repeated failure. On several pull requests
+# the Greptile review *check* reported "pass" while P0-P2 findings sat in the
+# same pull request's comment thread, and in every case the findings were only
+# found by reading the comments after the merge. The check is not evidence that
+# a review found nothing.
 #
 # Advisory by design. A comment on a merged pull request cannot un-merge
 # anything, and pretending otherwise would only produce a gate that blocks
-# releases on a stale comment nobody has triaged. What it does is make the
-# gap visible on the pull request itself, where it is still cheap to act on.
+# releases on a stale comment nobody has triaged. What it does is make the gap
+# visible on the pull request itself, where it is still cheap to act on.
 #
 # Findings here are a prompt to read the thread, not a verdict. This workflow
 # cannot tell a real defect from a mistaken one, and it does not try.
 
 on:
-  pull_request:
+  # pull_request_target, not pull_request, because a pull request from a fork
+  # runs with a read-only token no matter what `permissions` says, and this
+  # workflow's only job is to write a comment. Without this, every merged fork
+  # contribution loses its report silently.
+  #
+  # pull_request_target runs the workflow from the base branch with a write
+  # token, which is only safe because nothing here checks out or executes the
+  # contribution: the job reads review comments and posts a comment. If that
+  # ever changes, this trigger must change with it.
+  pull_request_target:
     types: [closed]
 
 permissions:
@@ -28,55 +37,76 @@ permissions:
 jobs:
   sweep:
     name: Sweep ${{ github.event.pull_request.number }}
-    # Only merges. A closed-unmerged pull request has no release to worry about.
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
       - name: Report unresolved findings
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
+          REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           MARKER: "<!-- review-sweep -->"
         run: |
           set -euo pipefail
 
-          # Posted once per pull request. A re-run is a manual thing to ask for,
-          # and it should refresh the list rather than stack a second copy.
-          if gh pr view "$PR" --json comments --jq '.comments[].body' \
-               | grep -qF "$MARKER"; then
-            echo "a sweep has already been posted on #$PR; not posting again"
-            exit 0
-          fi
-
-          # The review comments, which is where a bot's findings live. Issue
-          # comments are summaries and badges, not findings, and including them
-          # would report every sweep and every retrigger as an open problem.
-          # Created here rather than hardcoded. A path baked in from whatever
-          # machine wrote this file does not exist on a runner, and the failure
-          # is a confusing "No such file or directory" several steps later.
+          # Created here rather than hardcoded, because a path baked in from
+          # whatever machine wrote this file does not exist on a runner.
           work="$(mktemp -d)"
-          echo "working in $work"
 
-          gh api "repos/$GH_REPO/pulls/$PR/comments" --paginate > "$work/raw.json"
+          # GraphQL rather than REST, because REST has no notion of a resolved
+          # review thread: it returns the comments of resolved threads exactly
+          # like open ones. Reporting a finding the author already resolved --
+          # before the merge even -- is worse than useless, because it reads as
+          # an accusation about code that is fine.
+          cat > "$work/query.graphql" <<'GQL'
+          query($owner:String!,$name:String!,$number:Int!){
+            repository(owner:$owner,name:$name){
+              pullRequest(number:$number){
+                reviewThreads(first:100){
+                  nodes{
+                    isResolved
+                    isOutdated
+                    comments(first:1){ nodes{ body path line originalLine url author{ login } } }
+                  }
+                }
+              }
+            }
+          }
+          GQL
 
-          python3 - "$MARKER" "$work" <<'PY' > "$work/body.md"
+          owner="${REPO%/*}"; name="${REPO#*/}"
+          gh api graphql \
+            --input "$work/query.graphql" \
+            -F owner="$owner" -F name="$name" -F number="$PR" \
+            > "$work/threads.json"
+
+          MARKER="$MARKER" python3 - "$work" <<'PY' > "$work/body.md"
           import json, os, re, sys
 
-          marker, work = sys.argv[1], sys.argv[2]
+          work = sys.argv[1]
+          marker = os.environ["MARKER"]
+
+          with open(os.path.join(work, "threads.json")) as fh:
+              threads = json.load(fh)["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
 
           findings = []
-          with open(os.path.join(work, "raw.json")) as fh:
-              comments = json.load(fh)
-
-          for c in comments:
+          resolved = 0
+          for thread in threads:
+              nodes = (thread.get("comments") or {}).get("nodes") or []
+              if not nodes:
+                  continue
+              # A thread the author marked resolved has been dealt with. This
+              # reports the state, it does not judge whether it was correct.
+              if thread.get("isResolved"):
+                  resolved += 1
+                  continue
+              c = nodes[0]
               body = c.get("body") or ""
               # A severity badge is what distinguishes a finding from prose.
               # Anything else in a review comment is commentary.
               m = re.search(r'badges/(p[0-2])\.svg', body)
               if not m:
                   continue
-              severity = m.group(1).upper()
               title = ""
               t = re.search(r'\*\*([^*]+)\*\*', body)
               if t:
@@ -84,12 +114,13 @@ jobs:
               if not title:
                   title = (body.strip().splitlines() or ["(no title)"])[-1][:120]
               findings.append({
-                  "severity": severity,
+                  "severity": m.group(1).upper(),
                   "title": title,
                   "path": c.get("path") or "",
-                  "line": c.get("line") or c.get("original_line") or "",
-                  "user": (c.get("user") or {}).get("login", "?"),
-                  "url": c.get("html_url", ""),
+                  "line": c.get("line") or c.get("originalLine") or "",
+                  "user": (c.get("author") or {}).get("login", "?"),
+                  "url": c.get("url", ""),
+                  "outdated": bool(thread.get("isOutdated")),
               })
 
           severity_order = {"P0": 0, "P1": 1, "P2": 2}
@@ -98,18 +129,20 @@ jobs:
           out = [marker, "", "## Post-merge review sweep", ""]
           if not findings:
               out += [
-                  "No P0-P2 review findings on this pull request.",
+                  "No unresolved P0-P2 review findings on this pull request."
+                  + (f" {resolved} finding thread(s) had been marked resolved." if resolved else ""),
                   "",
                   "Findings can still be raised after this comment; this sweep only",
                   "reports what the review threads contained when it ran.",
               ]
           else:
               out += [
-                  f"**{len(findings)} review finding(s) were left on this merged pull request.**",
+                  f"**{len(findings)} unresolved review finding(s) on this merged pull request.**",
                   "",
                   "These were present when the pull request merged and were not part of",
-                  "what CI checked. They need triage: each is either a real defect now on",
-                  f"`main`, or a mistaken finding. Nothing here is verified.",
+                  "what CI checked. Each needs triage: either a real defect now on",
+                  f"`main`, or a mistaken finding. Nothing here is verified."
+                  + (f" {resolved} thread(s) were already marked resolved and are not listed." if resolved else ""),
                   "",
                   "| severity | where | finding | raised by |",
                   "| --- | --- | --- | --- |",
@@ -117,14 +150,25 @@ jobs:
               for f in findings:
                   where = f"`{f['path']}`" + (f":{f['line']}" if f["line"] else "")
                   link = f"[{f['title']}]({f['url']})"
+                  if f["outdated"]:
+                      link += " *(outdated)*"
                   out.append(f"| {f['severity']} | {where} | {link} | {f['user']} |")
               out += [
                   "",
-                  "This comment is posted by a workflow that matches severity badges in",
-                  "review comments. It does not judge whether a finding is real.",
+                  "Posted by a workflow that matches severity badges in review threads.",
+                  "It does not judge whether a finding is real, and it skips threads",
+                  "the author marked resolved.",
               ]
           print("\n".join(out))
           PY
 
           cat "$work/body.md"
-          gh pr comment "$PR" --body-file "$work/body.md"
+
+          # Update the existing report rather than returning. Returning here is
+          # what left a stale report claiming there were no findings when a
+          # review arrived afterwards: re-running did nothing at all.
+          if gh pr view "$PR" --json comments --jq '.comments[].body' | grep -qF "$MARKER"; then
+            gh pr comment "$PR" --edit-last --body-file "$work/body.md"
+          else
+            gh pr comment "$PR" --body-file "$work/body.md"
+          fi
