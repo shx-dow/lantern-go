@@ -540,6 +540,16 @@ func (n *Node) completeShareRead(remote string, path string) {
 		Total:    found.fileSize,
 		Done:     true,
 	})
+
+	// Teardown order matters, and it is the order serveShare already uses.
+	// forwardProgress selects on both the progress channel and this share's
+	// context, so cancelling first lets it observe the cancelled context and
+	// drop the buffered final message -- leaving the sender waiting on an
+	// event that was queued but never delivered. The receiver succeeded; the
+	// sender hangs anyway. Closing the channel is what guarantees the queued
+	// message is taken: forwardProgress drains it, emits the event, then sees
+	// the close and returns.
+	close(found.progress)
 	found.done()
 }
 

@@ -131,3 +131,59 @@ func sharePair(t *testing.T, root string) (*Node, *Node, peer.AddrInfo) {
 	provider.RegisterFSHandler()
 	return requester, provider, peer.AddrInfo{ID: provider.Host.ID(), Addrs: provider.Host.Addrs()}
 }
+
+// Completing a share closes its progress channel, the way serveShare does.
+//
+// The channel carrying Done is buffered, and the share's context is cancelled
+// straight after the message is queued. A forwarder selecting on both can take
+// the cancelled context and drop the queued message, so the receiver
+// succeeds and the sender waits forever on an event that was produced but
+// never delivered. Closing the channel is what rules that out: forwardProgress
+// drains what is buffered, emits the event, then sees the close and returns.
+//
+// Asserting the close is what makes this control deterministic. Asserting the
+// event's arrival would only catch the race some of the time -- with both cases
+// ready, the select picks between them at random.
+func TestCompletingAShareClosesItsProgressChannel(t *testing.T) {
+	root := t.TempDir()
+	const content = "the bytes that must land"
+	path := filepath.Join(root, "notes.txt")
+	writeFile(t, path, content)
+
+	requester, provider, pi := sharePair(t, root)
+
+	const code = "close-on-complete"
+	progress := make(chan TransferProgress, 8)
+	if err := provider.RegisterShareHandler(fsCtx(t), code, path, progress); err != nil {
+		t.Fatalf("share: %v", err)
+	}
+
+	info, err := requester.ResolveShare(fsCtx(t), pi, code)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if _, _, _, _, err := requester.ReadFS(fsCtx(t), pi, FSRequest{Op: OpRead, Path: info.Path}); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	// The completion itself.
+	select {
+	case p := <-progress:
+		if !p.Done {
+			t.Fatalf("expected a completion, got %+v", p)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the share was never completed")
+	}
+
+	// And the channel is closed, so a forwarder cannot miss the message above
+	// by taking a cancelled context instead.
+	select {
+	case _, ok := <-progress:
+		if ok {
+			t.Fatal("the progress channel was left open after completion")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the progress channel was never closed after completion")
+	}
+}
