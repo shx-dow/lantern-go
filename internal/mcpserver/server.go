@@ -424,25 +424,70 @@ func (s *server) handle(req rpcRequest) {
 // driven from a test or from another program rather than only as a process.
 func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	s := &server{dc: newDaemonClient(), out: bufio.NewWriter(out)}
-	scan := bufio.NewScanner(in)
-	scan.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	for scan.Scan() {
-		line := strings.TrimSpace(scan.Text())
-		if line == "" {
-			continue
-		}
-		var req rpcRequest
-		if err := json.Unmarshal([]byte(line), &req); err != nil {
-			continue
-		}
-		// A cancelled context means the host went away mid-call; stop reading
-		// rather than blocking on a stdin that will never deliver more.
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		s.handle(req)
+
+	// Reading happens on its own goroutine, because the cancellation check
+	// cannot live in the read loop.
+	//
+	// It used to: `if ctx.Err() != nil` sat between two lines, so it was only
+	// ever reached once a line had already arrived. While waiting for the next
+	// request -- which is the state a stdio transport spends nearly all of its
+	// life in -- the loop was parked inside Scan and never looked at ctx at
+	// all. A cancelled context therefore hung the process until the host
+	// happened to close stdin, which is the opposite of what the comment above
+	// this function claimed.
+	type scanned struct {
+		line string
+		err  error
 	}
-	return scan.Err()
+	lines := make(chan scanned)
+	// Closed on the way out, so the reader goroutine abandons a pending send
+	// instead of leaking on a channel nobody is reading any more.
+	done := make(chan struct{})
+	defer close(done)
+
+	go func() {
+		defer close(lines)
+		scan := bufio.NewScanner(in)
+		scan.Buffer(make([]byte, 64*1024), 4*1024*1024)
+		for scan.Scan() {
+			select {
+			case lines <- scanned{line: scan.Text()}:
+			case <-done:
+				return
+			}
+		}
+		if err := scan.Err(); err != nil {
+			select {
+			case lines <- scanned{err: err}:
+			case <-done:
+			}
+		}
+	}()
+
+	for {
+		select {
+		// A cancelled context means the host went away; stop reading rather
+		// than blocking on a stdin that will never deliver more.
+		case <-ctx.Done():
+			return ctx.Err()
+		case next, ok := <-lines:
+			if !ok {
+				return nil
+			}
+			if next.err != nil {
+				return next.err
+			}
+			line := strings.TrimSpace(next.line)
+			if line == "" {
+				continue
+			}
+			var req rpcRequest
+			if err := json.Unmarshal([]byte(line), &req); err != nil {
+				continue
+			}
+			s.handle(req)
+		}
+	}
 }
 
 // Usage is the agent shim's help text, also shown by `lantern help mcp`.
