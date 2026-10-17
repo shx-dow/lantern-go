@@ -74,9 +74,21 @@ jobs:
           }
           GQL
 
+          # Passed with -f query=, not --input. `--input` takes a JSON request
+          # body, so handing it a bare GraphQL query is a 400 -- and -f
+          # query=@file is no better, because the @ is taken literally. Only
+          # this form works:
+          #
+          #     --input FILE                  Problems parsing JSON (HTTP 400)
+          #     -f query=@FILE                Expected one of SCHEMA, ... ("@")
+          #     -f query="$(cat FILE)"        works
+          #
+          # All three were run against the live API, because getting this wrong
+          # is invisible to actionlint and to bash -n.
           owner="${REPO%/*}"; name="${REPO#*/}"
+          query="$(cat "$work/query.graphql")"
           gh api graphql \
-            --input "$work/query.graphql" \
+            -f query="$query" \
             -F owner="$owner" -F name="$name" -F number="$PR" \
             > "$work/threads.json"
 
