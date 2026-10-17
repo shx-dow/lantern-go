@@ -443,14 +443,14 @@ func (n *Node) fsList(roots []string, path string) FSResponse {
 // finished it. A read that stops short -- a partial range, or one that ends
 // before the last byte -- is not a fetch that completed.
 //
-// last is the number of bytes this request actually delivered, which for a
-// read that ran to the end of the file is what makes offset+last the size.
-func (n *Node) maybeCompleteShareRead(remote string, resolved string, eof bool, offset int64, last int64) {
-	fi, err := os.Stat(resolved)
-	if err != nil {
-		return
-	}
-	if !eof || fi.Size() != offset+last {
+// size is the size of the file this read opened, not of whatever occupies the
+// path now. Stat-ing the path again here would ask a different question: a
+// file replaced mid-read leaves the open handle delivering every original byte
+// to a receiver whose hash check passes, while the replacement on disk has a
+// size that does not match, and the completion would be skipped for a
+// transfer that plainly succeeded.
+func (n *Node) maybeCompleteShareRead(remote string, resolved string, eof bool, offset int64, last int64, size int64) {
+	if !eof || size != offset+last {
 		return
 	}
 	n.completeShareRead(remote, resolved)
@@ -512,7 +512,7 @@ func (n *Node) fsRead(s network.Stream, remote string, roots []string, req FSReq
 	}
 
 	if length == 0 {
-		n.maybeCompleteShareRead(remote, resolved, eof, req.Offset, 0)
+		n.maybeCompleteShareRead(remote, resolved, eof, req.Offset, 0, fi.Size())
 		return
 	}
 	if _, err := io.CopyN(s, f, length); err != nil {
@@ -538,7 +538,7 @@ func (n *Node) fsRead(s network.Stream, remote string, roots []string, req FSReq
 	// the sender claimed success, and deleted its share, before a single byte
 	// had been written. A connection that failed mid-copy left the sender
 	// reporting a transfer that never happened.
-	n.maybeCompleteShareRead(remote, resolved, eof, req.Offset, length)
+	n.maybeCompleteShareRead(remote, resolved, eof, req.Offset, length, fi.Size())
 }
 
 // resolveWritePath resolves a write destination under a write policy. It is

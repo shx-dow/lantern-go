@@ -447,3 +447,56 @@ func mustAbs(t *testing.T, path string) string {
 	}
 	return abs
 }
+
+// Completion is decided by the size of the file that was read.
+//
+// fsRead opens the file, stats it, and copies from that open handle. If
+// something replaces the path while the read runs, the handle still delivers
+// every original byte and the receiver's hash check passes -- so the transfer
+// succeeded. Re-stat-ing the path afterwards asks about a different file, sees
+// a different size, and skips the completion for a fetch that plainly
+// finished. Found by Greptile on #50.
+//
+// Deterministic rather than raced: the point is the contract, that the size
+// passed in is authoritative, so the replacement is made first and the size
+// the read would have seen is passed explicitly.
+func TestCompletionUsesTheSizeOfTheFileThatWasRead(t *testing.T) {
+	root := t.TempDir()
+	const original = "the bytes that must land"
+	path := filepath.Join(root, "notes.txt")
+	writeFile(t, path, original)
+
+	requester, provider, pi := sharePair(t, root)
+
+	const code = "replaced-mid-read"
+	progress := make(chan TransferProgress, 8)
+	if err := provider.RegisterShareHandler(fsCtx(t), code, path, progress); err != nil {
+		t.Fatalf("share: %v", err)
+	}
+
+	info, err := requester.ResolveShare(fsCtx(t), pi, code)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	// The path is replaced with a file of a different size, as it would be if
+	// another process rewrote it while the read was in flight.
+	if err := os.WriteFile(path, []byte("s"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The read had already opened the original, and had its size.
+	read := int64(len(original))
+	provider.maybeCompleteShareRead(
+		requester.Host.ID().String(), info.Path, true, 0, read, read,
+	)
+
+	select {
+	case p := <-progress:
+		if !p.Done {
+			t.Fatalf("expected a completion, got %+v", p)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a read that delivered every byte it opened was not completed, because the path changed underneath it")
+	}
+}
