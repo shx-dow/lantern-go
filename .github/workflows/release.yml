@@ -205,11 +205,28 @@ jobs:
           if [ "${{ needs.verify.outputs.prerelease }}" = "true" ]; then
             args+=(--prerelease)
           fi
+          # Named globs, not dist/*.
+          #
+          # dist/* is correct today only because download-artifact extracts
+          # into an otherwise empty directory, so the only things in it are the
+          # archives this job uploaded. That is an accident of the current
+          # layout rather than a property anything states, and if anything else
+          # ever lands there the glob hands gh a directory to upload. Caught by
+          # running the extracted steps with the staging directories still
+          # present -- which is exactly what dist/* picked up.
+          assets=(dist/*.tar.gz dist/*.zip dist/SHA256SUMS)
+          for a in "${assets[@]}"; do
+            if [ ! -f "$a" ]; then
+              echo "::error::missing release asset $a"
+              exit 1
+            fi
+          done
+
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             # A re-run after a partial failure replaces the assets it already
             # published. Deleting the release instead would fail --verify-tag,
             # because --cleanup-tag removes the tag that triggered this run.
-            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "${args[@]}" dist/*
+            gh release create "$GITHUB_REF_NAME" "${args[@]}" "${assets[@]}"
           fi
