@@ -469,6 +469,17 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		// A cancelled context means the host went away; stop reading rather
 		// than blocking on a stdin that will never deliver more.
 		case <-ctx.Done():
+			// Closing done releases the reader goroutine if it is waiting to
+			// send, but not if it is parked inside in.Read() -- which is the
+			// usual state, and which closing a channel cannot interrupt. A
+			// reader that is also a Closer can be unblocked outright; os.Stdin
+			// and io.PipeReader both are.
+			//
+			// Only on this path. On a normal return the caller still owns in,
+			// and closing it here would take away a reader they may reuse.
+			if closer, ok := in.(io.ReadCloser); ok {
+				_ = closer.Close()
+			}
 			return ctx.Err()
 		case next, ok := <-lines:
 			if !ok {
@@ -484,6 +495,15 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			var req rpcRequest
 			if err := json.Unmarshal([]byte(line), &req); err != nil {
 				continue
+			}
+			// Checked here as well as in the select above. Reading ahead means
+			// a request can already be queued and waiting by the time ctx is
+			// cancelled, and then both cases in the select are ready -- so the
+			// select may choose the request. Without this, cancelling during a
+			// slow handle would let the next queued request start a share or a
+			// fetch after the caller asked for neither.
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
 			s.handle(req)
 		}

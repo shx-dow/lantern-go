@@ -16,7 +16,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -188,14 +192,23 @@ func TestServeAnswersUnknownMethodsWithAnError(t *testing.T) {
 //
 // The host going away is the normal way this process ends. Reporting it means
 // the shim can exit non-zero and something upstream learns why.
+//
+// The reader is a pipe rather than a reader that blocks forever, because a
+// reader blocked in Read cannot be released by closing a channel: the reader
+// goroutine stays parked, holding its scanner buffer, for the life of the test
+// binary. Closing the pipe is what a real stdin needs too, and it is the same
+// mechanism Serve uses.
 func TestServeStopsOnACancelledContext(t *testing.T) {
-	// A reader that never returns data, so the loop is genuinely waiting.
-	in := &neverEndingReader{}
+	reader, writer := io.Pipe()
+	defer writer.Close()
+
+	var out bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan error, 1)
-	go func() { done <- Serve(ctx, in, &bytes.Buffer{}) }()
+	go func() { done <- Serve(ctx, reader, &out) }()
 
+	_, _ = io.WriteString(writer, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`+"\n")
 	cancel()
 	select {
 	case err := <-done:
@@ -204,6 +217,94 @@ func TestServeStopsOnACancelledContext(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("serve did not stop when its context was cancelled")
+	}
+
+	// The pipe read returns once Serve has closed it, which is what proves the
+	// reader was not simply abandoned. A goroutine parked in Read cannot be
+	// released by closing a channel; only closing the reader reaches it.
+	//
+	// The read is bounded, because without the close it does not return at all
+	// and the failure would be the whole test binary timing out rather than
+	// this one test saying what was wrong.
+	released := make(chan error, 1)
+	go func() {
+		_, err := reader.Read(make([]byte, 1))
+		released <- err
+	}()
+	select {
+	case err := <-released:
+		if err == nil {
+			t.Fatal("the pipe is still open, so Serve left its reader blocked in Read")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve never closed its reader, so the reader goroutine is still parked in Read")
+	}
+}
+
+// A request that is already queued when cancellation lands must not start.
+//
+// Reading ahead means the next request can be sitting in the channel before
+// ctx is cancelled, and then both select cases are ready -- so the select may
+// choose the request. That request can be a share or a fetch, so cancelling a
+// session would still begin work the caller asked it not to.
+//
+// The window is held open deterministically by parking handle inside a daemon
+// call: the first request is a tools/call against a server that blocks until
+// the test releases it, and the second request is queued behind it. Cancelling
+// in between is then a certainty rather than a race with the clock -- an
+// earlier version of this test just slept, and the requests finished before
+// the cancel arrived.
+func TestServeDoesNotStartAQueuedRequestAfterCancellation(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, _ *http.Request) {
+		once.Do(func() { close(entered) })
+		<-release
+		_ = json.NewEncoder(w).Encode(map[string]any{"peer_id": "p1"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	t.Setenv("LANTERND_URL", srv.URL)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	reader, writer := io.Pipe()
+	defer writer.Close()
+
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, reader, &out) }()
+
+	// The first request parks inside handle; the second is read ahead.
+	_, _ = io.WriteString(writer,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"status","arguments":{}}}`+"\n"+
+			`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`+"\n")
+
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first request never reached the daemon")
+	}
+
+	// Cancelled while handle is still blocked, with request 2 queued.
+	cancel()
+	close(release)
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("serve returned nil for a cancelled context")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not stop when its context was cancelled")
+	}
+
+	for _, r := range rpcLines(t, out.String()) {
+		if idIs(r.ID, 2) {
+			t.Fatal("a request queued before cancellation was started anyway")
+		}
 	}
 }
 
@@ -217,14 +318,6 @@ func TestServeAcceptsEmptyInput(t *testing.T) {
 	if out.Len() != 0 {
 		t.Fatalf("empty input produced output: %q", out.String())
 	}
-}
-
-// neverEndingReader satisfies io.Reader and never returns data or EOF, which
-// is what a stdin looks like after the host stops writing to it.
-type neverEndingReader struct{}
-
-func (r *neverEndingReader) Read(p []byte) (int, error) {
-	select {}
 }
 
 // stringList distinguishes an absent argument from an empty one, and the
