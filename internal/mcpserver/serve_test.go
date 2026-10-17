@@ -236,7 +236,7 @@ func TestServeStopsOnACancelledContext(t *testing.T) {
 		if err == nil {
 			t.Fatal("the pipe is still open, so Serve left its reader blocked in Read")
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatal("Serve never closed its reader, so the reader goroutine is still parked in Read")
 	}
 }
@@ -255,6 +255,24 @@ func TestServeStopsOnACancelledContext(t *testing.T) {
 // earlier version of this test just slept, and the requests finished before
 // the cancel arrived.
 func TestServeDoesNotStartAQueuedRequestAfterCancellation(t *testing.T) {
+	// Repeated, because with the check missing this is a coin flip rather than
+	// a certainty: once cancellation and the queued request are both ready, Go
+	// picks between the select arms at random. Blocking the daemon call holds
+	// the window open, but it does not decide the choice. Measured at three
+	// failures in ten rounds, so forty rounds miss it about once in a billion.
+	//
+	// It ran only once for a while, which made it a test that passed by luck
+	// roughly half the time and looked green.
+	const rounds = 40
+	for round := range rounds {
+		t.Run(fmt.Sprint(round), func(t *testing.T) {
+			queuedRequestMustNotStart(t, round)
+		})
+	}
+}
+
+func queuedRequestMustNotStart(t *testing.T, round int) {
+	t.Helper()
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
@@ -297,7 +315,7 @@ func TestServeDoesNotStartAQueuedRequestAfterCancellation(t *testing.T) {
 		if err == nil {
 			t.Fatal("serve returned nil for a cancelled context")
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("serve did not stop when its context was cancelled")
 	}
 
@@ -306,6 +324,24 @@ func TestServeDoesNotStartAQueuedRequestAfterCancellation(t *testing.T) {
 			t.Fatal("a request queued before cancellation was started anyway")
 		}
 	}
+
+	// The reader is released on this path too, not only when the select takes
+	// the cancellation arm. Which arm it takes is arbitrary, so this has to
+	// hold either way.
+	releasedRead := make(chan error, 1)
+	go func() {
+		_, err := reader.Read(make([]byte, 1))
+		releasedRead <- err
+	}()
+	select {
+	case err := <-releasedRead:
+		if err == nil {
+			t.Fatal("the pipe is still open, so Serve left its reader blocked in Read")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Serve never closed its reader, so the reader goroutine is still parked in Read")
+	}
+	_ = round
 }
 
 // Empty input is not an error. A client that opens the stream and closes it

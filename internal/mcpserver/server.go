@@ -419,6 +419,24 @@ func (s *server) handle(req rpcRequest) {
 	}
 }
 
+// releaseReader unblocks a reader parked in Read, when it is able to be.
+//
+// Closing the done channel inside Serve releases the reader goroutine if it is
+// waiting to send, but not if it is parked in in.Read() -- which is where it
+// spends nearly all of its life. A reader that is also a Closer can be
+// unblocked outright; os.Stdin and io.PipeReader both are.
+//
+// Called from every cancellation return, and only those. There are two of them
+// -- the select arm and the check before handle -- and doing it in only one
+// leaves the goroutine parked whenever the select happens to take the request
+// arm while a cancellation is also pending. On a normal return the caller still
+// owns in, and closing it would take away a reader they may reuse.
+func releaseReader(in io.Reader) {
+	if closer, ok := in.(io.ReadCloser); ok {
+		_ = closer.Close()
+	}
+}
+
 // Serve runs the JSON-RPC loop over in and out until the input is exhausted
 // or ctx is cancelled. It is exported and parameterised so the shim can be
 // driven from a test or from another program rather than only as a process.
@@ -469,17 +487,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		// A cancelled context means the host went away; stop reading rather
 		// than blocking on a stdin that will never deliver more.
 		case <-ctx.Done():
-			// Closing done releases the reader goroutine if it is waiting to
-			// send, but not if it is parked inside in.Read() -- which is the
-			// usual state, and which closing a channel cannot interrupt. A
-			// reader that is also a Closer can be unblocked outright; os.Stdin
-			// and io.PipeReader both are.
-			//
-			// Only on this path. On a normal return the caller still owns in,
-			// and closing it here would take away a reader they may reuse.
-			if closer, ok := in.(io.ReadCloser); ok {
-				_ = closer.Close()
-			}
+			releaseReader(in)
 			return ctx.Err()
 		case next, ok := <-lines:
 			if !ok {
@@ -503,6 +511,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			// slow handle would let the next queued request start a share or a
 			// fetch after the caller asked for neither.
 			if ctx.Err() != nil {
+				releaseReader(in)
 				return ctx.Err()
 			}
 			s.handle(req)
