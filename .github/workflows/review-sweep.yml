@@ -52,17 +52,21 @@ jobs:
           # The review comments, which is where a bot's findings live. Issue
           # comments are summaries and badges, not findings, and including them
           # would report every sweep and every retrigger as an open problem.
-          gh api "repos/$GH_REPO/pulls/$PR/comments" --paginate > /tmp/opencode/raw.json
+          # Created here rather than hardcoded. A path baked in from whatever
+          # machine wrote this file does not exist on a runner, and the failure
+          # is a confusing "No such file or directory" several steps later.
+          work="$(mktemp -d)"
+          echo "working in $work"
 
-          python3 - "$MARKER" <<'PY' > /tmp/opencode/body.md
+          gh api "repos/$GH_REPO/pulls/$PR/comments" --paginate > "$work/raw.json"
+
+          python3 - "$MARKER" "$work" <<'PY' > "$work/body.md"
           import json, os, re, sys
 
-          marker = sys.argv[1]
-          repo = os.environ["GH_REPO"]
-          pr = os.environ["PR"]
+          marker, work = sys.argv[1], sys.argv[2]
 
           findings = []
-          with open("/tmp/opencode/raw.json") as fh:
+          with open(os.path.join(work, "raw.json")) as fh:
               comments = json.load(fh)
 
           for c in comments:
@@ -122,5 +126,5 @@ jobs:
           print("\n".join(out))
           PY
 
-          cat /tmp/opencode/body.md
-          gh pr comment "$PR" --body-file /tmp/opencode/body.md
+          cat "$work/body.md"
+          gh pr comment "$PR" --body-file "$work/body.md"
