@@ -325,3 +325,64 @@ func providerWithReaders(t *testing.T, root string, n int) (*Node, []*Node, peer
 	provider.RegisterFSHandler()
 	return provider, readers, peer.AddrInfo{ID: provider.Host.ID(), Addrs: provider.Host.Addrs()}
 }
+
+// Completing a share removes its local advertisement, as serveShare does.
+//
+// Removing the share from the map is not the same as retiring the code. The
+// rendezvous file on disk is what a later lookup on this machine finds, so
+// without this a long-running sender leaves every completed read-path code
+// still discoverable, pointing at a device that can no longer serve it.
+func TestCompletingAShareRemovesItsLocalAdvertisement(t *testing.T) {
+	root := t.TempDir()
+	const content = "the bytes that must land"
+	path := filepath.Join(root, "notes.txt")
+	writeFile(t, path, content)
+
+	requester, provider, pi := sharePair(t, root)
+	provider.localDir = t.TempDir()
+
+	const code = "advert-left-behind"
+	if err := provider.AdvertiseLocal(code); err != nil {
+		t.Fatalf("advertise: %v", err)
+	}
+	adFile, err := provider.peerFilePath(code)
+	if err != nil {
+		t.Fatalf("ad path: %v", err)
+	}
+	if _, err := os.Stat(adFile); err != nil {
+		t.Fatalf("the advertisement was never written: %v", err)
+	}
+
+	progress := make(chan TransferProgress, 8)
+	if err := provider.RegisterShareHandler(fsCtx(t), code, path, progress); err != nil {
+		t.Fatalf("share: %v", err)
+	}
+	info, err := requester.ResolveShare(fsCtx(t), pi, code)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if _, _, _, _, err := requester.ReadFS(fsCtx(t), pi, FSRequest{Op: OpRead, Path: info.Path}); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	select {
+	case p := <-progress:
+		if !p.Done {
+			t.Fatalf("expected a completion, got %+v", p)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the share was never completed")
+	}
+
+	// The advertisement for a spent code must not outlive the share.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(adFile); os.IsNotExist(err) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the advertisement for a completed share is still on disk at %s", adFile)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

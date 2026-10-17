@@ -577,6 +577,13 @@ func (n *Node) completeShareRead(remote string, path string) {
 	// the close and returns.
 	close(found.progress)
 	found.done()
+
+	// And the local advertisement goes, as serveShare removes it. Deleting the
+	// share from the map is not enough: the rendezvous file on disk is what a
+	// later lookup on this machine finds, so on a long-running sender every
+	// completed read-path share would leave its code still discoverable for a
+	// transfer that can no longer happen.
+	n.ClearLocal(found.code)
 }
 
 func (n *Node) forgetShare(code string) {
