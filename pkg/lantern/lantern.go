@@ -567,21 +567,48 @@ func (l *Lantern) forwardProgress(ctx context.Context, progress <-chan p2p.Trans
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			// Drain what is already queued before giving up.
+			//
+			// A share's completion queues Done and then closes the channel and
+			// cancels this context. Both can be ready by the time this goroutine
+			// next reaches the select, and when both are, which one it takes is
+			// arbitrary -- so a forwarder that returns on cancellation may
+			// return without ever emitting the completion. The receiver has the
+			// file; the sender waits forever. Closing the channel narrows that
+			// window but does not remove it. Draining removes it.
+			//
+			// Everything drained here was produced before the cancellation, so
+			// reporting it is reporting what happened, not reviving a
+			// cancelled transfer.
+			for {
+				select {
+				case p, ok := <-progress:
+					if !ok {
+						return
+					}
+					l.emitProgress(transferID, p)
+				default:
+					return
+				}
+			}
 		case p, ok := <-progress:
 			if !ok {
 				return
 			}
-			if p.Err != nil {
-				l.emit(Event{TransferID: transferID, Type: EventError, Err: p.Err})
-				continue
-			}
-			if p.Done {
-				l.emit(Event{TransferID: transferID, Type: EventTransferDone, FileName: p.FileName, Bytes: p.Bytes, Total: p.Total})
-			} else {
-				l.emit(Event{TransferID: transferID, Type: EventTransferProgress, FileName: p.FileName, Bytes: p.Bytes, Total: p.Total})
-			}
+			l.emitProgress(transferID, p)
 		}
+	}
+}
+
+// emitProgress turns one reported transfer state into one session event.
+func (l *Lantern) emitProgress(transferID string, p p2p.TransferProgress) {
+	switch {
+	case p.Err != nil:
+		l.emit(Event{TransferID: transferID, Type: EventError, Err: p.Err})
+	case p.Done:
+		l.emit(Event{TransferID: transferID, Type: EventTransferDone, FileName: p.FileName, Bytes: p.Bytes, Total: p.Total})
+	default:
+		l.emit(Event{TransferID: transferID, Type: EventTransferProgress, FileName: p.FileName, Bytes: p.Bytes, Total: p.Total})
 	}
 }
 

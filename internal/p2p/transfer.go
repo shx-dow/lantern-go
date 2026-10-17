@@ -240,12 +240,15 @@ type shareState struct {
 	fileHash string
 	handled  atomic.Bool
 	progress chan TransferProgress
-	// readPeer is the remote that resolved this code over the read path, and
-	// so the only peer whose reads count as fetching this share. Empty until
-	// the code is resolved, and reserved once it is: a later resolve of the
-	// same code does not take it. Guarded by n.mu, not by its own lock,
-	// because the map holding it is guarded by that.
-	readPeer string
+	// readPeers are the remotes that resolved this code over the read path,
+	// and so the only peers whose reads count as fetching this share. Empty
+	// until the code is resolved. A set, and not a single reader, because
+	// neither of the alternatives is right: one reader means a peer that
+	// resolved and stopped can block the peer that actually downloads, and
+	// last-writer-wins means a bystander's resolve strips the claim from
+	// whoever was mid-download. Guarded by n.mu, not by its own lock, because
+	// the map holding it is guarded by that.
+	readPeers map[string]bool
 	// seq orders shares by registration, so that a read which could match
 	// several shares completes a predictable one. Map order is randomised on
 	// every iteration, and "an arbitrary share" is not a decision.
@@ -496,9 +499,9 @@ func sameFile(a, b string) bool {
 	return os.SameFile(ai, bi)
 }
 
-// noteShareResolved reserves the share held under code for remote, so a later
-// read of that file by that peer is recognised as fetching this share and not
-// some other share of the same file.
+// noteShareResolved records that remote resolved the share held under code, so
+// a later read of that file by that peer is recognised as fetching this share
+// and not some other share of the same file.
 //
 // Keyed by the code the receiver presented, never by path. Two ShareSession
 // calls on one file produce two codes, and marking both by path meant
@@ -506,19 +509,23 @@ func sameFile(a, b string) bool {
 // code that was never resolved, and the share it did resolve could be left
 // waiting.
 //
-// Reserved, not overwritten. The first resolve claims the share. A second peer
-// that resolves the same code and then stops before reading used to take the
-// reservation with it, so the peer that was actually downloading finished with
-// no match left, no completion, and the original hang -- this time because a
-// bystander had been in the way.
+// Adds to the share's readers rather than claiming it for one. A resolve is
+// cheap and says the peer is interested, not that it went on to read, so a
+// single reader is wrong in both directions: first-writer-wins lets a peer
+// that resolved and walked away block the peer that actually downloaded, and
+// last-writer-wins lets the same bystander strip the claim from a download in
+// progress. Either way the sender waits on a transfer that succeeded.
 func (n *Node) noteShareResolved(code string, remote string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	state := n.shares[code]
-	if state == nil || state.readPeer != "" {
+	if state == nil {
 		return
 	}
-	state.readPeer = remote
+	if state.readPeers == nil {
+		state.readPeers = make(map[string]bool, 1)
+	}
+	state.readPeers[remote] = true
 }
 
 // completeShareRead reports that remote has finished reading path, when that
@@ -541,7 +548,7 @@ func (n *Node) completeShareRead(remote string, path string) {
 	n.mu.Lock()
 	var found *shareState
 	for _, state := range n.shares {
-		if state.readPeer != remote || !sameFile(state.filePath, path) {
+		if !state.readPeers[remote] || !sameFile(state.filePath, path) {
 			continue
 		}
 		// remote resolved more than one code for this file. They are the same
