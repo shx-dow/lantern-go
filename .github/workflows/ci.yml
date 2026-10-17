@@ -28,6 +28,24 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - name: Check whitespace
         run: git diff --check
+      # The workflow files themselves, not just the Go.
+      #
+      # A malformed run block fails its workflow before any job starts, so a
+      # broken workflow produces no red job for anyone to notice -- it just
+      # does not run. The release workflow sat on main in that state through
+      # two merges while five green checks passed on the pull requests adding
+      # it, because nothing was checking that a workflow was well-formed.
+      - name: Lint workflows
+        run: |
+          set -euo pipefail
+          # Pinned, like staticcheck above: an unpinned linter changes what it
+          # reports without a review of this repository happening.
+          version=1.7.7
+          curl -sSfL --max-time 120 \
+            "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz" \
+            -o /tmp/actionlint.tgz
+          tar xzf /tmp/actionlint.tgz -C /tmp actionlint
+          /tmp/actionlint .github/workflows/*.yml
 
   # The test matrix exists because the code makes claims this used to leave
   # unchecked. internal/paths, internal/doctor and internal/p2p all branch on
