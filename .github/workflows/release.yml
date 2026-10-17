@@ -117,12 +117,26 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "dist/${{ matrix.goos }}-${{ matrix.goarch }}"
+          # The extension is decided in the shell, not in a template.
+          # GitHub expands expressions inside run blocks -- comments included --
+          # and an inline conditional is not an expression: it is only valid as
+          # the condition of an `if:` key. Writing one inline makes the whole
+          # run block an unparseable template, and GitHub then fails the
+          # workflow before any job starts, which is not a shape of failure a
+          # CI run on a pull request would ever surface.
+          #
+          # (The same trap catches the comment above, which is why this one
+          # spells the syntax out rather than writing it.)
+          ext=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            ext=".exe"
+          fi
           go build -trimpath \
             -ldflags "-s -w \
               -X $MODULE/internal/version.Version=${{ needs.verify.outputs.version }} \
               -X $MODULE/internal/version.Commit=$GITHUB_SHA \
               -X $MODULE/internal/version.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -o "dist/${{ matrix.goos }}-${{ matrix.goarch }}/lantern${{ if eq matrix.goos == 'windows' && '.exe' }}" \
+            -o "dist/${{ matrix.goos }}-${{ matrix.goarch }}/lantern${ext}" \
             ./cmd/lantern
 
       - name: Package
