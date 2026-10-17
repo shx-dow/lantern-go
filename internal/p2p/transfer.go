@@ -461,6 +461,30 @@ func (n *Node) matchShare(req protocol.TransferRequest) *shareState {
 	return nil
 }
 
+// sameFile reports whether two paths are the same file on disk.
+//
+// By identity, never as strings. A share holds the path the caller passed to
+// ShareSession, while every path reaching the correlation has been through
+// resolveWithinRoots, which calls EvalSymlinks. Those differ wherever the
+// caller's path is not already canonical -- macOS temp directories live under
+// /var, which is a symlink to /private/var -- and a string comparison then
+// matches nothing at all. Linux agrees, which is how that passed there and
+// failed on two other platforms.
+func sameFile(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(ai, bi)
+}
+
 // noteShareResolved records that remote resolved the share held at path, so a
 // later read of that path by that peer can be recognised as fetching it.
 //
@@ -471,7 +495,7 @@ func (n *Node) noteShareResolved(path string, remote string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	for _, state := range n.shares {
-		if state.filePath == path {
+		if sameFile(state.filePath, path) {
 			state.readPeer = remote
 		}
 	}
@@ -497,7 +521,7 @@ func (n *Node) completeShareRead(remote string, path string) {
 	n.mu.Lock()
 	var found *shareState
 	for _, state := range n.shares {
-		if state.filePath == path && state.readPeer == remote {
+		if state.readPeer == remote && sameFile(state.filePath, path) {
 			found = state
 			break
 		}

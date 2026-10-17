@@ -124,16 +124,26 @@ func TestAReaderThatNeverPresentedTheCodeDoesNotCompleteTheShare(t *testing.T) {
 	}
 
 	// The share must still be live: no completion was earned.
-	select {
-	case e, ok := <-session.Events():
-		if !ok {
-			t.Fatal("the session ended")
+	//
+	// Every event over a window, not just the next one. Sharing itself emits
+	// an event, so a single receive is satisfied by that and stops watching --
+	// which let this pass with the peer check removed, the completion already
+	// queued behind it. Verified by mutation.
+	deadline := time.After(2 * time.Second)
+	for {
+		for _, e := range pending(session.Events()) {
+			if e.Type == 1 {
+				t.Fatal("a plain read completed a share that was never fetched")
+			}
+			if e.Type == 4 {
+				t.Fatalf("the session reported an error: %v", e.Err)
+			}
 		}
-		if e.Type == 1 || e.Type == 4 {
-			t.Fatalf("a plain read completed a share that was never fetched: %+v", e)
+		select {
+		case <-deadline:
+			return
+		case <-time.After(50 * time.Millisecond):
 		}
-	case <-time.After(500 * time.Millisecond):
-		// Expected: nothing at all.
 	}
 }
 
