@@ -154,17 +154,20 @@ jobs:
           fi
           ls -l dist
 
+      # One step, both patterns, rather than one step per format.
+      #
+      # Windows produces only the zip and everything else only the tarball, so
+      # two steps each guarded by if-no-files-found: error fails every matrix
+      # job: each is missing the format it did not build, and with fail-fast
+      # off that means six failures and a release job that is skipped. A single
+      # step matching both patterns always finds at least one file, which is
+      # what if-no-files-found actually asks.
       - uses: actions/upload-artifact@v4
         with:
           name: "lantern-${{ matrix.goos }}-${{ matrix.goarch }}"
-          path: dist/*.tar.gz
-          if-no-files-found: error
-          retention-days: 1
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: "lantern-${{ matrix.goos }}-${{ matrix.goarch }}-zip"
-          path: dist/*.zip
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
           if-no-files-found: error
           retention-days: 1
 
@@ -191,6 +194,11 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # gh resolves the repository from a git remote, and this job has no
+          # checkout, so it has none. The token authenticates; it does not say
+          # which repository. Without this, gh release view finds nothing and
+          # gh release create fails for the same reason.
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           args=(--title "$GITHUB_REF_NAME" --generate-notes --verify-tag)
