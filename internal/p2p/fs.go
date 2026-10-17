@@ -301,10 +301,11 @@ func (n *Node) fsResolveShare(s network.Stream, remote string, req FSRequest) {
 	entry := &FSEntry{Size: info.Size}
 	entry.setName(info.Name)
 
-	// Record who asked. A read by this peer of this path is then a fetch of
-	// this share, and a read by anyone else is not -- so an unrelated reader
-	// of the same file cannot complete a share it never asked for.
-	n.noteShareResolved(info.Path, remote)
+	// Record who asked, against the code they asked with. A read by this peer
+	// of this file is then a fetch of this share, and a read by anyone else is
+	// not -- so an unrelated reader of the same file cannot complete a share it
+	// never asked for.
+	n.noteShareResolved(req.Code, remote)
 
 	_ = protocol.WriteMetadata(s, stamped(FSResponse{
 		Path:    info.Path,
@@ -438,6 +439,23 @@ func (n *Node) fsList(roots []string, path string) FSResponse {
 	return stamped(FSResponse{Entries: entries})
 }
 
+// maybeCompleteShareRead completes a share when this read was the one that
+// finished it. A read that stops short -- a partial range, or one that ends
+// before the last byte -- is not a fetch that completed.
+//
+// last is the number of bytes this request actually delivered, which for a
+// read that ran to the end of the file is what makes offset+last the size.
+func (n *Node) maybeCompleteShareRead(remote string, resolved string, eof bool, offset int64, last int64) {
+	fi, err := os.Stat(resolved)
+	if err != nil {
+		return
+	}
+	if !eof || fi.Size() != offset+last {
+		return
+	}
+	n.completeShareRead(remote, resolved)
+}
+
 func (n *Node) fsRead(s network.Stream, remote string, roots []string, req FSRequest) {
 	if req.Offset < 0 {
 		_ = protocol.WriteMetadata(s, fail("offset must not be negative"))
@@ -493,6 +511,16 @@ func (n *Node) fsRead(s network.Stream, remote string, roots []string, req FSReq
 		return
 	}
 
+	if length == 0 {
+		n.maybeCompleteShareRead(remote, resolved, eof, req.Offset, 0)
+		return
+	}
+	if _, err := io.CopyN(s, f, length); err != nil {
+		// The header is already sent; there is no second channel to
+		// report on, so the receiver surfaces a short read instead.
+		return
+	}
+
 	// This read finished a share, if it is the read that finishes one.
 	//
 	// A paired receiver resolving a share code is answered by this node, and
@@ -504,18 +532,13 @@ func (n *Node) fsRead(s network.Stream, remote string, roots []string, req FSReq
 	// Correlated by peer, not by path. A peer that merely reads the same file
 	// without ever presenting the code is not fetching the share, and must not
 	// complete it.
-	if eof && fi.Size() == req.Offset+length {
-		n.completeShareRead(remote, resolved)
-	}
-
-	if length == 0 {
-		return
-	}
-	if _, err := io.CopyN(s, f, length); err != nil {
-		// The header is already sent; there is no second channel to
-		// report on, so the receiver surfaces a short read instead.
-		return
-	}
+	//
+	// After the copy, never before. Reporting here used to happen above the
+	// copy, so for any file under one chunk -- which is nearly all of them --
+	// the sender claimed success, and deleted its share, before a single byte
+	// had been written. A connection that failed mid-copy left the sender
+	// reporting a transfer that never happened.
+	n.maybeCompleteShareRead(remote, resolved, eof, req.Offset, length)
 }
 
 // resolveWritePath resolves a write destination under a write policy. It is

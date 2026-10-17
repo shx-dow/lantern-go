@@ -242,9 +242,14 @@ type shareState struct {
 	progress chan TransferProgress
 	// readPeer is the remote that resolved this code over the read path, and
 	// so the only peer whose reads count as fetching this share. Empty until
-	// the code is resolved. Guarded by n.mu, not by its own lock, because the
-	// map holding it is guarded by that.
+	// the code is resolved, and reserved once it is: a later resolve of the
+	// same code does not take it. Guarded by n.mu, not by its own lock,
+	// because the map holding it is guarded by that.
 	readPeer string
+	// seq orders shares by registration, so that a read which could match
+	// several shares completes a predictable one. Map order is randomised on
+	// every iteration, and "an arbitrary share" is not a decision.
+	seq uint64
 	// ctx governs the share's lifetime. It is the same context the advertisement
 	// runs under, so cancelling it means nobody is reporting progress any more.
 	ctx  context.Context
@@ -290,8 +295,14 @@ func (n *Node) RegisterShareHandler(ctx context.Context, code string, path strin
 		return fmt.Errorf("hash file: %w", err)
 	}
 
+	n.mu.Lock()
+	n.shareSeq++
+	seq := n.shareSeq
+	n.mu.Unlock()
+
 	state := &shareState{
 		code:     code,
+		seq:      seq,
 		filePath: path,
 		fileName: filepath.Base(path),
 		fileSize: fi.Size(),
@@ -485,20 +496,29 @@ func sameFile(a, b string) bool {
 	return os.SameFile(ai, bi)
 }
 
-// noteShareResolved records that remote resolved the share held at path, so a
-// later read of that path by that peer can be recognised as fetching it.
+// noteShareResolved reserves the share held under code for remote, so a later
+// read of that file by that peer is recognised as fetching this share and not
+// some other share of the same file.
 //
-// Nothing is recorded on a code that does not resolve: an unanswered resolve is
-// the receiver's signal to use the transfer path, and that path reports its own
-// progress through serveShare.
-func (n *Node) noteShareResolved(path string, remote string) {
+// Keyed by the code the receiver presented, never by path. Two ShareSession
+// calls on one file produce two codes, and marking both by path meant
+// completing either one satisfied the other: the receiver could be handed a
+// code that was never resolved, and the share it did resolve could be left
+// waiting.
+//
+// Reserved, not overwritten. The first resolve claims the share. A second peer
+// that resolves the same code and then stops before reading used to take the
+// reservation with it, so the peer that was actually downloading finished with
+// no match left, no completion, and the original hang -- this time because a
+// bystander had been in the way.
+func (n *Node) noteShareResolved(code string, remote string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	for _, state := range n.shares {
-		if sameFile(state.filePath, path) {
-			state.readPeer = remote
-		}
+	state := n.shares[code]
+	if state == nil || state.readPeer != "" {
+		return
 	}
+	state.readPeer = remote
 }
 
 // completeShareRead reports that remote has finished reading path, when that
@@ -521,9 +541,15 @@ func (n *Node) completeShareRead(remote string, path string) {
 	n.mu.Lock()
 	var found *shareState
 	for _, state := range n.shares {
-		if state.readPeer == remote && sameFile(state.filePath, path) {
+		if state.readPeer != remote || !sameFile(state.filePath, path) {
+			continue
+		}
+		// remote resolved more than one code for this file. They are the same
+		// fetch either way, so the oldest share wins -- chosen by registration
+		// order, because ranging a map would pick an arbitrary one and the
+		// receiver would be told a code was spent that it never presented.
+		if found == nil || state.seq < found.seq {
 			found = state
-			break
 		}
 	}
 	if found != nil {
@@ -540,7 +566,24 @@ func (n *Node) completeShareRead(remote string, path string) {
 		Total:    found.fileSize,
 		Done:     true,
 	})
+
+	// Teardown order matters, and it is the order serveShare already uses.
+	// forwardProgress selects on both the progress channel and this share's
+	// context, so cancelling first lets it observe the cancelled context and
+	// drop the buffered final message -- leaving the sender waiting on an
+	// event that was queued but never delivered. The receiver succeeded; the
+	// sender hangs anyway. Closing the channel is what guarantees the queued
+	// message is taken: forwardProgress drains it, emits the event, then sees
+	// the close and returns.
+	close(found.progress)
 	found.done()
+
+	// And the local advertisement goes, as serveShare removes it. Deleting the
+	// share from the map is not enough: the rendezvous file on disk is what a
+	// later lookup on this machine finds, so on a long-running sender every
+	// completed read-path share would leave its code still discoverable for a
+	// transfer that can no longer happen.
+	n.ClearLocal(found.code)
 }
 
 func (n *Node) forgetShare(code string) {

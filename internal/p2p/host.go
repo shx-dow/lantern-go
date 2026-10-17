@@ -49,6 +49,7 @@ type Node struct {
 
 	mu          sync.Mutex
 	shares      map[string]*shareState
+	shareSeq    uint64
 	handlerOnce sync.Once
 
 	listOnce  sync.Once
