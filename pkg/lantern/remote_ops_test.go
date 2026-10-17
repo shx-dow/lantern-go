@@ -16,6 +16,8 @@ package lantern
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -212,10 +214,23 @@ func TestListRemoteEntriesListsOneLevel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
+	// Asserted positively as well as negatively. Checking only that buried.txt
+	// is absent would pass on an empty listing, a stale one, or one that drops
+	// directories -- which is the opposite of what a directory listing is for.
+	var sawSub bool
 	for _, e := range entries {
 		if e.Name == "buried.txt" {
 			t.Fatal("a one-level listing recursed into a subdirectory")
 		}
+		if e.Name == "sub" {
+			sawSub = true
+			if !e.IsDir {
+				t.Fatal("the subdirectory was listed as a file")
+			}
+		}
+	}
+	if !sawSub {
+		t.Fatalf("the subdirectory was dropped from the listing: %v", entries)
 	}
 }
 
@@ -253,8 +268,12 @@ func TestPushRemoteStoresTheContentOnTheDevice(t *testing.T) {
 	if res.Bytes != int64(len(content)) {
 		t.Fatalf("push reported %d bytes, sent %d", res.Bytes, len(content))
 	}
-	if res.SHA256 == "" {
-		t.Fatal("push reported no digest")
+	// The digest of what was sent, not merely a non-empty string. A wrapper
+	// returning a constant, or the digest of the wrong thing, would otherwise
+	// pass, and the digest is what a receiver verifies against.
+	want := sha256.Sum256([]byte(content))
+	if res.SHA256 != hex.EncodeToString(want[:]) {
+		t.Fatalf("push reported digest %s, want %s", res.SHA256, hex.EncodeToString(want[:]))
 	}
 
 	stored, err := os.ReadFile(dest)
