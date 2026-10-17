@@ -998,9 +998,9 @@ func runSend(ctx context.Context, ln *lantern.Lantern, opts cliOptions) {
 		fmt.Fprintln(os.Stderr, "waiting for receiver...")
 	}
 
-	failed := runTransfer(ctx, session, enc, opts.jsonOut, "sent", peer.FileName)
+	failed := runTransfer(ctx, session.Events(), enc, opts.jsonOut, "sent", peer.FileName)
 	if failed {
-		os.Exit(1)
+		exit(1)
 	}
 }
 
@@ -1031,9 +1031,9 @@ func runReceive(ctx context.Context, ln *lantern.Lantern, opts cliOptions) {
 		fmt.Fprintf(os.Stderr, "connecting to %s...\n", peer.ID)
 	}
 
-	failed := runTransfer(ctx, session, enc, opts.jsonOut, "received:", "")
+	failed := runTransfer(ctx, session.Events(), enc, opts.jsonOut, "received:", "")
 	if failed {
-		os.Exit(1)
+		exit(1)
 	}
 }
 
@@ -1041,12 +1041,32 @@ func runReceive(ctx context.Context, ln *lantern.Lantern, opts cliOptions) {
 // or the context is cancelled. In JSON mode every event is a JSON object on
 // stdout for agents/GUI; in human mode progress goes to stderr and only the
 // final result touches stdout. It reports whether the transfer failed.
-func runTransfer(ctx context.Context, session *lantern.Session, enc *json.Encoder, jsonOut bool, doneVerb, doneName string) bool {
+//
+// It takes the event channel rather than the session. A session is a lifecycle
+// with states and a Done channel, and none of that is used here: this loop only
+// ever reads events. Taking the channel is what makes the rendering -- the part
+// with the actual branches -- drivable from a test, which a session could not
+// be, because sessions are only built inside pkg/lantern.
+func runTransfer(ctx context.Context, events <-chan lantern.Event, enc *json.Encoder, jsonOut bool, doneVerb, doneName string) bool {
 	for {
 		select {
-		case e, ok := <-session.Events():
+		case e, ok := <-events:
 			if !ok {
-				return false
+				// The channel closed without a terminal event, so the transfer
+				// did not complete. Returning false here -- success -- made
+				// `lantern send` exit 0 having printed nothing at all, which
+				// is how an aborted or cancelled send reported itself as a
+				// finished one. A Done event is always emitted before the
+				// close, so reaching here means there was none.
+				if jsonOut {
+					enc.Encode(map[string]any{
+						"type":  "error",
+						"error": "the transfer ended without completing",
+					})
+				} else {
+					fmt.Fprintln(os.Stderr, "\nerror: the transfer ended without completing")
+				}
+				return true
 			}
 			switch e.Type {
 			case lantern.EventTransferProgress:
