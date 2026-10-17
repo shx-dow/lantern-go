@@ -500,3 +500,56 @@ func TestCompletionUsesTheSizeOfTheFileThatWasRead(t *testing.T) {
 		t.Fatal("a read that delivered every byte it opened was not completed, because the path changed underneath it")
 	}
 }
+
+// A peer that resolves and walks away does not block the peer that downloads.
+//
+// #50 made the first resolve claim the share for its peer, which fixed a
+// bystander stealing the claim from a download in progress -- and introduced
+// the opposite failure. A resolve says the peer is interested, not that it
+// went on to read. So if peer A resolved the code and stopped, peer B could
+// still resolve and download the whole file, and the completion was then
+// rejected because the claim belonged to A. B had the file and the sender
+// waited forever.
+//
+// Found by Greptile on #50.
+func TestAnAbandonedResolveDoesNotBlockTheDownloadingPeer(t *testing.T) {
+	root := t.TempDir()
+	const content = "the bytes that must land"
+	path := filepath.Join(root, "notes.txt")
+	writeFile(t, path, content)
+
+	provider, readers, pi := providerWithReaders(t, root, 2)
+
+	const code = "abandoned-resolve"
+	progress := make(chan TransferProgress, 8)
+	if err := provider.RegisterShareHandler(fsCtx(t), code, path, progress); err != nil {
+		t.Fatalf("share: %v", err)
+	}
+	a, b := readers[0], readers[1]
+
+	// A resolves and goes away without reading anything.
+	if _, err := a.ResolveShare(fsCtx(t), pi, code); err != nil {
+		t.Fatalf("A resolve: %v", err)
+	}
+
+	// B resolves the same code and fetches it.
+	info, err := b.ResolveShare(fsCtx(t), pi, code)
+	if err != nil {
+		t.Fatalf("B resolve: %v", err)
+	}
+	if _, _, data, eof, err := b.ReadFS(fsCtx(t), pi, FSRequest{Op: OpRead, Path: info.Path}); err != nil {
+		t.Fatalf("B read: %v", err)
+	} else if !eof || string(data) != content {
+		t.Fatalf("B short read: eof=%v data=%q", eof, data)
+	}
+
+	select {
+	case p := <-progress:
+		if p.Done {
+			return
+		}
+		t.Fatalf("unexpected progress: %+v", p)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the peer that downloaded the share was not credited, because an earlier peer resolved it and stopped")
+	}
+}
