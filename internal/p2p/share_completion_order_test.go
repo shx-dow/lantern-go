@@ -386,3 +386,64 @@ func TestCompletingAShareRemovesItsLocalAdvertisement(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// A share registered under a relative path still completes.
+//
+// RegisterShareHandler stores the caller's path unchanged, while the resolve
+// side works in a resolved one. Greptile reported that sharing a relative path
+// therefore never records a matching reader and never completes the sender's
+// session. Testing it rather than taking it: sameFile stats both sides, and a
+// relative path stats against the working directory, which for the serving
+// process is the same directory it was shared from.
+func TestARelativeSharePathStillCompletes(t *testing.T) {
+	const content = "shared by a relative path"
+	const name = "relative-share-probe.txt"
+
+	// Written into the working directory so the relative path below is the
+	// path the caller would actually have passed. No chdir, which would move
+	// the ground under every other test in this binary.
+	abs := filepath.Join(".", name)
+	if err := os.WriteFile(abs, []byte(content), 0600); err != nil {
+		t.Skipf("the working directory is not writable: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(abs) })
+
+	root := filepath.Dir(mustAbs(t, "."))
+	requester, provider, pi := sharePair(t, root)
+
+	const code = "relative-path"
+	progress := make(chan TransferProgress, 8)
+	// The relative path, exactly as a caller sharing from here would pass it.
+	if err := provider.RegisterShareHandler(fsCtx(t), code, name, progress); err != nil {
+		t.Fatalf("share: %v", err)
+	}
+
+	info, err := requester.ResolveShare(fsCtx(t), pi, code)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if _, _, data, eof, err := requester.ReadFS(fsCtx(t), pi, FSRequest{Op: OpRead, Path: info.Path}); err != nil {
+		t.Fatalf("read: %v", err)
+	} else if !eof || string(data) != content {
+		t.Fatalf("short read: eof=%v data=%q", eof, data)
+	}
+
+	select {
+	case p := <-progress:
+		if p.Done {
+			return
+		}
+		t.Fatalf("unexpected progress: %+v", p)
+	case <-time.After(5 * time.Second):
+		t.Fatal("a share registered under a relative path never completed")
+	}
+}
+
+func mustAbs(t *testing.T, path string) string {
+	t.Helper()
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return abs
+}
