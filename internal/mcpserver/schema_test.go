@@ -41,6 +41,27 @@ func TestFlagSchemasDeclareBooleans(t *testing.T) {
 	}
 }
 
+// Every schema must carry "required" as an array. A nil variadic slice marshals
+// to null, which is not a valid JSON Schema value and makes a strict MCP client
+// reject the whole tools/list response, so the server cannot connect at all.
+func TestEveryToolSchemaHasRequiredArray(t *testing.T) {
+	for _, def := range tools() {
+		schema, ok := def.InputSchema.(map[string]any)
+		if !ok {
+			t.Errorf("%s inputSchema is not an object: %#v", def.Name, def.InputSchema)
+			continue
+		}
+		req, ok := schema["required"].([]string)
+		if !ok {
+			t.Errorf("%s required = %#v (%T), want []string", def.Name, schema["required"], schema["required"])
+			continue
+		}
+		if req == nil {
+			t.Errorf("%s required is a nil slice, which marshals to null; want []string{}", def.Name)
+		}
+	}
+}
+
 // isTruthyArg accepts the shapes clients actually send for a flag. Anything
 // unrecognised is false, because a flag that was not clearly requested must not
 // replace a file.
