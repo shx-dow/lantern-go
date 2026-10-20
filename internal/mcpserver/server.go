@@ -57,6 +57,12 @@ type toolDef struct {
 
 func tools() []toolDef {
 	obj := func(props map[string]any, required ...string) map[string]any {
+		// A nil variadic slice marshals to null, which is not a valid JSON
+		// Schema value for "required" and is rejected outright by strict MCP
+		// clients. Emit an empty array when every property is optional.
+		if required == nil {
+			required = []string{}
+		}
 		return map[string]any{"type": "object", "properties": props, "required": required}
 	}
 	str := func(desc string) map[string]any { return map[string]any{"type": "string", "description": desc} }
