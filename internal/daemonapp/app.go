@@ -17,12 +17,15 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/shx-dow/lantern-go/internal/daemon"
 	"github.com/shx-dow/lantern-go/internal/p2p"
 	"github.com/shx-dow/lantern-go/internal/paths"
+	"github.com/shx-dow/lantern-go/internal/storage"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -128,12 +131,27 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 	// call site fall back on its own. Everything below then works on the same
 	// resolved path, and the path can be shown to the operator instead of
 	// being an empty string they have to guess at.
-	if strings.TrimSpace(dir) == "" {
-		dir = paths.Data()
-	}
-	if _, err := paths.EnsureData(); err != nil {
+	//
+	// Empty means default. An explicit ".", though, means this directory:
+	// that was the behaviour before the identity lock existed and it stays,
+	// because silently redirecting an explicit choice to the default
+	// directory loads the wrong identity, or refuses one that used to work.
+	dir = resolveDataDir(dir)
+
+	// One identity per directory, and no two daemons on the same one. The
+	// lock is taken before lantern.New loads or mints the key, so a refused
+	// second daemon leaves the identity files and the token exactly as the
+	// running daemon wrote them.
+	releaseLock, err := storage.AcquireDirLock(dir)
+	if err != nil {
+		if errors.Is(err, storage.ErrDirLocked) {
+			return fmt.Errorf("another lantern daemon already owns the identity in %s\n"+
+				"  for a second lantern on this machine: pass a different --data-dir and\n"+
+				"  connect it with --peer, the full multiaddr printed by the running daemon", dir)
+		}
 		return fmt.Errorf("state directory: %w", err)
 	}
+	defer releaseLock()
 
 	ln, err := lantern.New(lantern.Config{Port: port, DataDir: dir, Bootstrap: r.BootstrapPeers, Relay: r.RelayAddrs, StaticPeers: r.PeerAddrs})
 	if err != nil {
@@ -262,6 +280,24 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 		// An agent client needs this token and nothing else reveals it, so
 		// say where it is rather than making people search the filesystem.
 		fmt.Fprintf(stderr, "  daemon token:          %s\n", daemon.TokenPath(dir))
+		// Two daemons on one machine keep failing the same way: the second
+		// run is the same identity, so it dials itself. The way out is a
+		// separate --data-dir and a --peer to the first, so give both,
+		// ready to paste, rather than letting the collision be discovered.
+		//
+		// The HTTP address gets port 0 deliberately: the default is fixed
+		// and the first daemon is holding it, so the pasted command must
+		// bind its own. Everything is quoted because directory names carry
+		// spaces more often than not.
+		if peerID != "" {
+			ma := staticPeerAddr(addrs, peerID)
+			if ma != "" {
+				fmt.Fprintf(stderr,
+					"  second lantern on this machine:\n"+
+						"    lantern daemon --data-dir %s --addr 127.0.0.1:0 --peer %s\n",
+					shQuote(dir+"-2"), shQuote(ma))
+			}
+		}
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serveErr <- err
 			return
@@ -302,6 +338,55 @@ func orNone(names []string) string {
 		return "none"
 	}
 	return strings.Join(names, ", ")
+}
+
+// staticPeerAddr picks the address most likely to work for a daemon on the
+// same machine: a non-loopback IPv4 address if there is one, else the first
+// address, plus the peer ID -- the full form --peer wants. Empty when the
+// host has no addresses at all.
+func staticPeerAddr(addrs []string, peerID string) string {
+	if len(addrs) == 0 {
+		return ""
+	}
+	chosen := addrs[0]
+	for _, a := range addrs {
+		if strings.Contains(a, "/ip4/") && !strings.Contains(a, "/127.0.0.1/") && !strings.Contains(a, "/p2p/") {
+			chosen = a
+			break
+		}
+	}
+	return chosen + "/p2p/" + peerID
+}
+
+// resolveDataDir maps the --data-dir flag to the directory everything below
+// works on. Empty means the default; everything else -- including ".",
+// which means this directory, as before the identity lock existed -- is
+// used as given, cleaned. Redirecting an explicit choice to the default
+// would load the wrong identity, or refuse one that used to work.
+func resolveDataDir(dir string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return paths.Data()
+	}
+	return filepath.Clean(dir)
+}
+
+// shQuote wraps s for pasting into a shell: single quotes on everything, so
+// the sentence survives spaces -- the default macOS data dir contains
+// "Application Support" and would otherwise split into separate arguments.
+// An embedded single quote is doubled for PowerShell (the default shell on
+// Windows, which reads single quotes literally but has no '\' escape) and
+// '\”d for POSIX shells.
+//
+// Sharing produces a nearly identical form on both families; the difference
+// only shows for a quote inside the value, which for a directory name is not
+// a setup this project needs to make pretty, only correct.
+func shQuote(s string) string {
+	q := `'`
+	if runtime.GOOS == "windows" {
+		return q + strings.ReplaceAll(s, q, `''`) + q
+	}
+	return q + strings.ReplaceAll(s, q, `'\''`) + q
 }
 
 // dialStaticPeers connects to --peer addresses, retrying every 20s until
