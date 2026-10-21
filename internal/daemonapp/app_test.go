@@ -8,9 +8,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/shx-dow/lantern-go/internal/storage"
 )
 
 const testToken = "test-token-0123456789"
@@ -95,6 +99,114 @@ func get(url string) (string, error) {
 		return "", fmt.Errorf("status %d: %s", resp.StatusCode, body)
 	}
 	return string(body), nil
+}
+
+// A second daemon pointed at the same state directory must be refused, not
+// started: the two processes would share an identity -- same peer ID, so the
+// first transfer dials itself -- and their writes to the trust store and the
+// token would interleave unsynchronised. The refusal names the way out, which
+// is a separate --data-dir and a --peer to the first daemon.
+//
+// Control: with the lock removed from Run, the second daemon starts and this
+// test fails on err == nil.
+func TestSecondDaemonOnOneIdentityIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	trap := t.TempDir()
+	if err := os.WriteFile(filepath.Join(trap, "keep"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	args := []string{"--addr", "127.0.0.1:" + freePort(t), "--data-dir", dir, "--lan", "--device-name", "first"}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- Run(ctx, args, io.Discard) }()
+
+	// The lock file appears before the API serves; wait on it so the second
+	// run can never win a race against the first.
+	lockPath := filepath.Join(dir, storage.LockFileName)
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		if _, err := os.Stat(lockPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first daemon never took the identity lock")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	var stderr bytes.Buffer
+	err := Run(context.Background(), []string{
+		"--addr", "127.0.0.1:" + freePort(t),
+		"--data-dir", dir,
+		"--device-name", "second",
+	}, &stderr)
+	if err == nil {
+		cancel()
+		t.Fatal("second daemon on the same identity directory started instead of being refused")
+	}
+	body := err.Error() + "\n" + stderr.String()
+	if !strings.Contains(body, "--data-dir") {
+		t.Errorf("refusal does not name --data-dir, the way out:\n%s", body)
+	}
+	if !strings.Contains(body, "--peer") {
+		t.Errorf("refusal does not name --peer, the way out:\n%s", body)
+	}
+	// A refused daemon must not have touched the identity: no second identity
+	// file, and the running daemon's token stays the only one written.
+	if _, err := os.Stat(filepath.Join(dir, "lantern-identity.key")); err != nil {
+		t.Errorf("identity missing from the first daemon's directory: %v", err)
+	}
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil && !strings.Contains(err.Error(), context.Canceled.Error()) {
+			t.Fatalf("first daemon exited with %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("first daemon did not shut down within 15s")
+	}
+}
+
+// The startup output tells an operator how to run a second lantern on the
+// same machine: a ready-to-paste command with a separate --data-dir and the
+// full static peer multiaddr of this daemon. Without it the second-device
+// setup requires hand-assembling /p2p/<peer-id> onto a multiaddr read out of
+// a status call.
+func TestStartupPrintsSecondDeviceCommand(t *testing.T) {
+	dir := t.TempDir()
+	addrPort := "127.0.0.1:" + freePort(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var stderr bytes.Buffer
+	errCh := make(chan error, 1)
+	go func() { errCh <- Run(ctx, []string{"--addr", addrPort, "--data-dir", dir, "--lan"}, &stderr) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-errCh:
+		case <-time.After(15 * time.Second):
+		}
+	})
+
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		out := stderr.String()
+		if strings.Contains(out, "second lantern on this machine") {
+			if !strings.Contains(out, "--peer /ip4/") {
+				t.Fatalf("second-device line names --peer without a full multiaddr:\n%s", out)
+			}
+			if !strings.Contains(out, "/p2p/12D3KooW") {
+				t.Fatalf("second-device multiaddr does not end in the peer ID:\n%s", out)
+			}
+			if !strings.Contains(out, `--data-dir `+dir+`-2`) {
+				t.Fatalf("second-device command does not suggest a nearby --data-dir:\n%s", out)
+			}
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("startup never printed the second-device command; stderr:\n%s", stderr.String())
 }
 
 func TestDaemonStartsAndServesAPI(t *testing.T) {
