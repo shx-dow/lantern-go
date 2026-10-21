@@ -136,8 +136,8 @@ func TestResolveDataDirKeepsExplicitDot(t *testing.T) {
 	if r := resolveDataDir(" . "); r != "." {
 		t.Errorf(`an explicit "." means the current directory, not paths.Data(); got %q`, r)
 	}
-	if r := resolveDataDir(" /tmp/x "); r != "/tmp/x" {
-		t.Errorf(`an explicit path with surrounding spaces is honored: got %q`, r)
+	if r := resolveDataDir(" ./child "); r != filepath.Clean("child") {
+		t.Errorf(`an explicit relative path with surrounding spaces is honored: got %q`, r)
 	}
 }
 
