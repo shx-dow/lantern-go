@@ -3,6 +3,7 @@ package daemonapp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -123,6 +125,22 @@ func (w *syncWriter) String() string {
 	return w.buf.String()
 }
 
+// resolveDataDir is the unit behind Run's data-dir handling: empty falls
+// back to the default, every explicit value -- "." included -- is used as
+// given. The "." branch is the negative control for the redirect that existed
+// mid-PR, where an explicit "." silently loaded the default identity instead.
+func TestResolveDataDirKeepsExplicitDot(t *testing.T) {
+	if r := resolveDataDir(""); r == "" {
+		t.Errorf(`empty --data-dir must fall back to the default, got %q`, r)
+	}
+	if r := resolveDataDir(" . "); r != "." {
+		t.Errorf(`an explicit "." means the current directory, not paths.Data(); got %q`, r)
+	}
+	if r := resolveDataDir(" /tmp/x "); r != "/tmp/x" {
+		t.Errorf(`an explicit path with surrounding spaces is honored: got %q`, r)
+	}
+}
+
 // A second daemon pointed at the same state directory must be refused, not
 // started: the two processes would share an identity -- same peer ID, so the
 // first transfer dials itself -- and their writes to the trust store and the
@@ -163,7 +181,12 @@ func TestSecondDaemonOnOneIdentityIsRefused(t *testing.T) {
 	}
 
 	stderr := new(syncWriter)
-	err := Run(context.Background(), []string{
+	// A deadline, not context.Background(): if locking regresses into a
+	// blocking wait the refusal test must fail in seconds with a clear name,
+	// not hang until the test runner's global timeout.
+	runCtx, runCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer runCancel()
+	err := Run(runCtx, []string{
 		"--addr", "127.0.0.1:" + freePort(t),
 		"--data-dir", dir,
 		"--device-name", "second",
@@ -171,6 +194,9 @@ func TestSecondDaemonOnOneIdentityIsRefused(t *testing.T) {
 	if err == nil {
 		cancel()
 		t.Fatal("second daemon on the same identity directory started instead of being refused")
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("lock refusing did not return within its deadline; locking must fail fast, not wait:\n%s", stderr.String())
 	}
 	body := err.Error() + "\n" + stderr.String()
 	if !strings.Contains(body, "--data-dir") {
@@ -216,24 +242,116 @@ func TestStartupPrintsSecondDeviceCommand(t *testing.T) {
 		}
 	})
 
+	// The command line is what the daemon tells the operator to paste, so
+	// the test reads it back out of the noise and takes it apart the way a
+	// shell would.
+	var line string
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
-		out := stderr.String()
-		if strings.Contains(out, "second lantern on this machine") {
-			if !strings.Contains(out, "--peer /ip4/") {
-				t.Fatalf("second-device line names --peer without a full multiaddr:\n%s", out)
+		for _, l := range strings.Split(stderr.String(), "\n") {
+			if strings.Contains(l, "lantern daemon --data-dir") {
+				line = strings.TrimSpace(l)
 			}
-			if !strings.Contains(out, "/p2p/12D3KooW") {
-				t.Fatalf("second-device multiaddr does not end in the peer ID:\n%s", out)
-			}
-			if !strings.Contains(out, `--data-dir `+dir+`-2`) {
-				t.Fatalf("second-device command does not suggest a nearby --data-dir:\n%s", out)
-			}
-			return
+		}
+		if line != "" {
+			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("startup never printed the second-device command; stderr:\n%s", stderr.String())
+	if line == "" {
+		t.Fatalf("startup never printed the second-device command; stderr:\n%s", stderr.String())
+	}
+
+	tokens := splitArgs(line)
+	want := []string{"lantern", "daemon", "--data-dir", dir + "-2", "--addr", "127.0.0.1:0"}
+	for i, w := range want {
+		if tokens[i] != w {
+			t.Errorf("token %d = %q, want %q; full line:\n%s", i, tokens[i], w, line)
+		}
+	}
+	ma := tokens[len(tokens)-1]
+	if !strings.HasPrefix(ma, "/ip4/") || !strings.Contains(ma, "/p2p/12D3Koo") {
+		t.Errorf("--peer value is not a full host multiaddr ending in the peer ID: %s", ma)
+	}
+	if len(tokens) != len(want)+2 {
+		t.Fatalf("second-device command should be `lantern daemon --data-dir <dir> --addr <addr> --peer <multiaddr>`, got %d tokens:\n%s", len(tokens), line)
+	}
+
+	// Then paste it: run exactly what the line said, no edited-in flags. It
+	// must bind its own port-0 address and stay up beside the first daemon
+	// -- the collision this line exists to break was the second daemon
+	// either reusing the identity or reusing the HTTP port.
+	second := new(syncWriter)
+	runCtx, runCancel := context.WithCancel(context.Background())
+	defer runCancel()
+	runErr := make(chan error, 1)
+	go func() { runErr <- Run(runCtx, tokens[2:], second) }()
+	select {
+	case err := <-runErr:
+		t.Fatalf("the printed second-device command did not stay up:\n%v\nstderr:\n%s", err, second.String())
+	case <-time.After(3 * time.Second):
+	}
+	if out := second.String(); !strings.Contains(out, "listening") {
+		t.Errorf("second daemon stayed up but never reported it is listening:\n%s", out)
+	}
+	runCancel()
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Errorf("second daemon shut down with %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("second daemon did not shut down within 15s")
+	}
+}
+
+// splitArgs splits a command line into argv the way the shell the line is
+// written for would. It knows exactly the quoting shQuote emits: everything
+// single-quoted, with an embedded quote doubled on Windows (PowerShell reads
+// single quotes literally but has no backslash escape) and '\”-escaped on
+// POSIX shells.
+func splitArgs(line string) []string {
+	doubled := runtime.GOOS == "windows"
+	var args []string
+	var cur strings.Builder
+	inQuote, started := false, false
+	flush := func() {
+		if started {
+			args = append(args, cur.String())
+			cur.Reset()
+			started = false
+		}
+	}
+	runes := []rune(line)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch {
+		case r == '\'':
+			if inQuote && doubled && i+1 < len(runes) && runes[i+1] == '\'' {
+				cur.WriteRune('\'')
+				i++
+				break
+			}
+			inQuote = !inQuote
+			started = true
+		case inQuote:
+			cur.WriteRune(r)
+			started = true
+		case r == '\\':
+			if i+1 < len(runes) {
+				cur.WriteRune(runes[i+1])
+				started = true
+				i++
+			}
+		case r == ' ':
+			flush()
+		default:
+			cur.WriteRune(r)
+			started = true
+		}
+	}
+	flush()
+	return args
 }
 
 func TestDaemonStartsAndServesAPI(t *testing.T) {
