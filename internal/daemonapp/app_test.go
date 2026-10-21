@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -101,6 +102,27 @@ func get(url string) (string, error) {
 	return string(body), nil
 }
 
+// syncWriter is a bytes.Buffer safe to read while a daemon is writing to it.
+// Run paints stderr from several goroutines (the serve loop, the mDNS
+// logger), so a test that polls the buffer while the daemon is up needs the
+// guard or the race detector scores a direct hit -- as it did in CI.
+type syncWriter struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (w *syncWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *syncWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
 // A second daemon pointed at the same state directory must be refused, not
 // started: the two processes would share an identity -- same peer ID, so the
 // first transfer dials itself -- and their writes to the trust store and the
@@ -117,30 +139,35 @@ func TestSecondDaemonOnOneIdentityIsRefused(t *testing.T) {
 	}
 
 	args := []string{"--addr", "127.0.0.1:" + freePort(t), "--data-dir", dir, "--lan", "--device-name", "first"}
+	stderrBuf := new(syncWriter)
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
-	go func() { errCh <- Run(ctx, args, io.Discard) }()
+	go func() { errCh <- Run(ctx, args, stderrBuf) }()
 
 	// The lock file appears before the API serves; wait on it so the second
-	// run can never win a race against the first.
+	// run can never win a race against the first. The identity key comes
+	// later than the lock -- lantern.New loads it after acquiring -- so wait
+	// for that too before asserting anything about who wrote it.
 	lockPath := filepath.Join(dir, storage.LockFileName)
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		if _, err := os.Stat(lockPath); err == nil {
-			break
+	for _, p := range []string{lockPath, filepath.Join(dir, "lantern-identity.key")} {
+		deadline := time.Now().Add(15 * time.Second)
+		for {
+			if _, err := os.Stat(p); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s never appeared; first daemon may have died\nstderr:\n%s", p, stderrBuf.String())
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("first daemon never took the identity lock")
-		}
-		time.Sleep(50 * time.Millisecond)
 	}
 
-	var stderr bytes.Buffer
+	stderr := new(syncWriter)
 	err := Run(context.Background(), []string{
 		"--addr", "127.0.0.1:" + freePort(t),
 		"--data-dir", dir,
 		"--device-name", "second",
-	}, &stderr)
+	}, stderr)
 	if err == nil {
 		cancel()
 		t.Fatal("second daemon on the same identity directory started instead of being refused")
@@ -178,9 +205,9 @@ func TestStartupPrintsSecondDeviceCommand(t *testing.T) {
 	addrPort := "127.0.0.1:" + freePort(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	var stderr bytes.Buffer
+	stderr := new(syncWriter)
 	errCh := make(chan error, 1)
-	go func() { errCh <- Run(ctx, []string{"--addr", addrPort, "--data-dir", dir, "--lan"}, &stderr) }()
+	go func() { errCh <- Run(ctx, []string{"--addr", addrPort, "--data-dir", dir, "--lan"}, stderr) }()
 	t.Cleanup(func() {
 		cancel()
 		select {
