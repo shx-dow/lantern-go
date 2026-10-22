@@ -7,7 +7,9 @@
 //	{"mcpServers": {"lantern": {"command": "lantern", "args": ["mcp"]}}}
 //
 // Env: LANTERND_URL (default http://127.0.0.1:43782),
-// LANTERN_DAEMON_TOKEN (or LANTERND_TOKEN).
+// LANTERN_DAEMON_TOKEN (or LANTERND_TOKEN), and LANTERN_DAEMON_TOKEN_FILE.
+// With no token variable set, a loopback daemon's persisted token file is read
+// automatically, so the shim works on a fresh local setup with no exports.
 package mcpserver
 
 import (
@@ -120,8 +122,8 @@ func tools() []toolDef {
 
 type daemonClient = lanternclient.Client
 
-func newDaemonClient() *daemonClient {
-	return lanternclient.NewFromEnv()
+func newDaemonClient() (*daemonClient, error) {
+	return lanternclient.NewFromEnvChecked()
 }
 
 func callTool(c *daemonClient, name string, args map[string]any) (any, error) {
@@ -447,7 +449,11 @@ func releaseReader(in io.Reader) {
 // or ctx is cancelled. It is exported and parameterised so the shim can be
 // driven from a test or from another program rather than only as a process.
 func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
-	s := &server{dc: newDaemonClient(), out: bufio.NewWriter(out)}
+	dc, err := newDaemonClient()
+	if err != nil {
+		return err
+	}
+	s := &server{dc: dc, out: bufio.NewWriter(out)}
 
 	// Reading happens on its own goroutine, because the cancellation check
 	// cannot live in the read loop.
@@ -537,6 +543,11 @@ Point it at a running daemon:
   LANTERND_URL           daemon base URL (default http://127.0.0.1:43782)
   LANTERN_DAEMON_TOKEN   daemon bearer token (or LANTERND_TOKEN)
   LANTERND_TOKEN         same
+  LANTERN_DAEMON_TOKEN_FILE
+                         token file, for a daemon with a custom --data-dir
+
+With neither token variable set, a loopback daemon's token file is read
+automatically, so registering the command above is enough.
 
 Register it with an MCP client as one command:
 

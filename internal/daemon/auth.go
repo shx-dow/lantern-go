@@ -78,7 +78,7 @@ func RequireAuth(next http.Handler, token string) http.Handler {
 		if len(got) == 0 || subtle.ConstantTimeCompare(got, want) != 1 {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="lanternd"`)
 			writeJSON(w, http.StatusUnauthorized, map[string]string{
-				"error": "missing or invalid daemon token (use --daemon-token or $LANTERN_DAEMON_TOKEN)",
+				"error": "missing or invalid daemon token (use --daemon-token, $LANTERN_DAEMON_TOKEN, or the daemon's token file)",
 			})
 			return
 		}

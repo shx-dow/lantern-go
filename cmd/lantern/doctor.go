@@ -29,11 +29,17 @@ Flags:
                      reporting only whether a connection happens to be open
   --daemon-url URL   daemon base URL (same as $LANTERND_URL)
   --daemon-token T   daemon bearer token (same as $LANTERN_DAEMON_TOKEN)
+  --token-file FILE  file holding the daemon token (same as
+                     $LANTERN_DAEMON_TOKEN_FILE). Read only for a loopback URL.
   --json             machine-readable JSON on stdout
 
 Point it at a daemon with the same environment the CLI and MCP shim use:
   LANTERND_URL           daemon base URL (default http://127.0.0.1:43782)
   LANTERN_DAEMON_TOKEN   daemon bearer token (or $LANTERND_TOKEN)
+  LANTERN_DAEMON_TOKEN_FILE  token file, for a daemon with a custom --data-dir
+
+With neither token variable set, a loopback daemon's token file is read
+automatically, so a fresh setup needs no exports.
 
 Examples:
   lantern doctor
@@ -53,14 +59,20 @@ func runDoctor(ctx context.Context, args []string, out io.Writer) error {
 	jsonOut := fs.Bool("json", false, "machine-readable JSON on stdout")
 	base := fs.String("daemon-url", "", "daemon base URL (same as $LANTERND_URL)")
 	tokenFlag := fs.String("daemon-token", "", "daemon bearer token (same as $LANTERN_DAEMON_TOKEN)")
+	tokenFile := fs.String("token-file", "", "file holding the daemon bearer token (same as $LANTERN_DAEMON_TOKEN_FILE)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
 	// Flags win over the environment, which wins over the default, so doctor
-	// resolves its target exactly the way the rest of the CLI does.
+	// resolves its target exactly the way the rest of the CLI does. The token
+	// file is the same last resort the CLI and MCP shim use, gated on a
+	// loopback URL.
 	addr := firstEnv(*base, os.Getenv("LANTERND_URL"), defaultDaemonURL)
-	token := firstEnv(*tokenFlag, os.Getenv("LANTERN_DAEMON_TOKEN"), os.Getenv("LANTERND_TOKEN"))
+	token, err := lanternclient.ResolveToken(normalizeBaseURL(addr), firstEnv(*tokenFlag, os.Getenv("LANTERN_DAEMON_TOKEN"), os.Getenv("LANTERND_TOKEN")), *tokenFile)
+	if err != nil {
+		return err
+	}
 	return runDoctorReport(ctx, lanternclient.New(normalizeBaseURL(addr), token), doctor.Options{
 		Token:      token,
 		ProbePeers: *probe,
@@ -70,8 +82,12 @@ func runDoctor(ctx context.Context, args []string, out io.Writer) error {
 // runDoctorFlags serves doctor when it arrived with CLI flags parsed, so
 // `lantern --daemon-url :43792 doctor` works the same as the env vars.
 func runDoctorFlags(ctx context.Context, opts cliOptions, out io.Writer) error {
-	report := doctor.Run(ctx, newDaemonClient(opts.daemonURL, opts.daemonToken), doctor.Options{
-		Token:      opts.daemonToken,
+	token, err := opts.resolvedToken()
+	if err != nil {
+		return err
+	}
+	report := doctor.Run(ctx, newDaemonClient(opts.daemonURL, token), doctor.Options{
+		Token:      token,
 		ProbePeers: opts.probePeers,
 	})
 	renderDoctorReport(report, opts.jsonOut, out)
