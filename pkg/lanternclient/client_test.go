@@ -203,3 +203,25 @@ func TestNewFromEnvHonorsTokenFileOverride(t *testing.T) {
 		t.Errorf("token = %q, want the file named by LANTERN_DAEMON_TOKEN_FILE", c.token)
 	}
 }
+
+// NewFromEnv has no error channel, so it must keep working when a named token
+// file is unreadable: callers immediately invoke methods on the result.
+//
+// Control: the version that returned the error's nil client panics on the
+// BaseURL call below.
+func TestNewFromEnvNeverReturnsNil(t *testing.T) {
+	isolateTokenEnv(t)
+	t.Setenv("LANTERND_URL", "http://127.0.0.1:43782")
+	t.Setenv("LANTERN_DAEMON_TOKEN_FILE", filepath.Join(t.TempDir(), "missing-token"))
+
+	c := NewFromEnv()
+	if c == nil {
+		t.Fatal("NewFromEnv returned nil; its callers cannot handle that")
+	}
+	if got := c.BaseURL(); got != "http://127.0.0.1:43782" {
+		t.Errorf("BaseURL() = %q, want the configured URL", got)
+	}
+	if c.token != "" {
+		t.Errorf("an unreadable file must leave no token, got %q", c.token)
+	}
+}

@@ -132,24 +132,40 @@ func New(base, token string) *Client {
 
 // NewFromEnv builds a client from LANTERND_URL and LANTERN_DAEMON_TOKEN
 // (or LANTERND_TOKEN), falling back to DefaultURL and, when the URL is
-// loopback, to the daemon's persisted token file. A token file named by the
-// environment that cannot be read is not reported here; use NewFromEnvChecked
-// when there is somewhere to surface it.
+// loopback, to the daemon's persisted token file.
+//
+// It always returns a usable client. A token file named by the environment
+// that cannot be read leaves the client without a token, which surfaces as the
+// daemon's 401; a caller that can report the file error at startup should use
+// NewFromEnvChecked instead. This wrapper must never return nil: its callers
+// have no error to inspect and would panic on the first method call.
 func NewFromEnv() *Client {
-	c, _ := NewFromEnvChecked()
-	return c
+	base := envBase()
+	token, err := ResolveToken(base, envToken(), "")
+	if err != nil {
+		token = ""
+	}
+	return New(base, token)
 }
 
 // NewFromEnvChecked is NewFromEnv but preserves a token-file error, so a
 // long-lived process can refuse to start with no credential rather than
 // reporting the daemon's 401 much later.
 func NewFromEnvChecked() (*Client, error) {
-	base := strings.TrimSuffix(firstNonEmpty(os.Getenv("LANTERND_URL"), DefaultURL), "/")
-	token, err := ResolveToken(base, firstNonEmpty(os.Getenv("LANTERN_DAEMON_TOKEN"), os.Getenv("LANTERND_TOKEN")), "")
+	base := envBase()
+	token, err := ResolveToken(base, envToken(), "")
 	if err != nil {
 		return nil, err
 	}
 	return New(base, token), nil
+}
+
+func envBase() string {
+	return strings.TrimSuffix(firstNonEmpty(os.Getenv("LANTERND_URL"), DefaultURL), "/")
+}
+
+func envToken() string {
+	return firstNonEmpty(os.Getenv("LANTERN_DAEMON_TOKEN"), os.Getenv("LANTERND_TOKEN"))
 }
 
 // BaseURL reports the daemon address this client talks to.
