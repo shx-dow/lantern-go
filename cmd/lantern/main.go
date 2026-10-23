@@ -106,6 +106,7 @@ type cliOptions struct {
 	daemon        bool
 	daemonURL     string
 	daemonToken   string
+	tokenFile     string
 	probePeers    bool
 	tier          string
 	writableRoots []string
@@ -246,6 +247,7 @@ func parseArgs(args []string) (cliOptions, error) {
 		opts.daemonURL = defaultDaemonURL
 	}
 	opts.daemonToken = os.Getenv("LANTERN_DAEMON_TOKEN")
+	opts.tokenFile = os.Getenv(lanternclient.TokenFileEnv)
 
 	// Errors are reported here and printed by the caller, so a parse failure
 	// must not have written anything itself.
@@ -281,6 +283,14 @@ func parseArgs(args []string) (cliOptions, error) {
 	fs.Func("daemon-addr", "lanternd base URL", setDaemonURL)
 	fs.Func("daemon-token", "lanternd bearer token", func(v string) error {
 		opts.daemonToken = v
+		return nil
+	})
+	// An empty value falls back rather than clearing the environment, like
+	// every other value flag here.
+	fs.Func("token-file", "file holding the lanternd bearer token", func(v string) error {
+		if strings.TrimSpace(v) != "" {
+			opts.tokenFile = v
+		}
 		return nil
 	})
 	fs.StringVar(&opts.outDir, "out", opts.outDir, "receive output directory")
@@ -471,7 +481,11 @@ flags:
                     always use it, flag or not.
                     (default URL http://127.0.0.1:43782 or $LANTERND_URL)
   --daemon-url URL  same as --daemon=URL
-  --daemon-token T  daemon bearer token (or $LANTERN_DAEMON_TOKEN)
+  --daemon-token T  daemon bearer token (or $LANTERN_DAEMON_TOKEN); wins over
+                    the token file
+  --token-file FILE daemon bearer token file (default: the daemon's token in the
+                    per-user data dir, or $LANTERN_DAEMON_TOKEN_FILE). Read
+                    automatically only when the daemon URL is loopback.
 
 examples:
   lantern send ./photo.jpg
@@ -490,8 +504,18 @@ func newDaemonClient(base, token string) *daemonClient {
 	return lanternclient.New(base, token)
 }
 
+// resolvedToken applies the flag > environment > token-file precedence once,
+// at the point a daemon client is built.
+func (o cliOptions) resolvedToken() (string, error) {
+	return lanternclient.ResolveToken(o.daemonURL, o.daemonToken, o.tokenFile)
+}
+
 func runDaemonCommand(ctx context.Context, opts cliOptions) {
-	c := newDaemonClient(opts.daemonURL, opts.daemonToken)
+	token, err := opts.resolvedToken()
+	if err != nil {
+		fatal(opts.jsonOut, err)
+	}
+	c := newDaemonClient(opts.daemonURL, token)
 	enc := json.NewEncoder(os.Stdout)
 	switch opts.command {
 	case "send":

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -130,10 +131,41 @@ func New(base, token string) *Client {
 }
 
 // NewFromEnv builds a client from LANTERND_URL and LANTERN_DAEMON_TOKEN
-// (or LANTERND_TOKEN), falling back to DefaultURL.
+// (or LANTERND_TOKEN), falling back to DefaultURL and, when the URL is
+// loopback, to the daemon's persisted token file.
+//
+// It always returns a usable client. A token file named by the environment
+// that cannot be read leaves the client without a token, which surfaces as the
+// daemon's 401; a caller that can report the file error at startup should use
+// NewFromEnvChecked instead. This wrapper must never return nil: its callers
+// have no error to inspect and would panic on the first method call.
 func NewFromEnv() *Client {
-	base := strings.TrimSuffix(firstNonEmpty(os.Getenv("LANTERND_URL"), DefaultURL), "/")
-	return New(base, firstNonEmpty(os.Getenv("LANTERN_DAEMON_TOKEN"), os.Getenv("LANTERND_TOKEN")))
+	base := envBase()
+	token, err := ResolveToken(base, envToken(), "")
+	if err != nil {
+		token = ""
+	}
+	return New(base, token)
+}
+
+// NewFromEnvChecked is NewFromEnv but preserves a token-file error, so a
+// long-lived process can refuse to start with no credential rather than
+// reporting the daemon's 401 much later.
+func NewFromEnvChecked() (*Client, error) {
+	base := envBase()
+	token, err := ResolveToken(base, envToken(), "")
+	if err != nil {
+		return nil, err
+	}
+	return New(base, token), nil
+}
+
+func envBase() string {
+	return strings.TrimSuffix(firstNonEmpty(os.Getenv("LANTERND_URL"), DefaultURL), "/")
+}
+
+func envToken() string {
+	return firstNonEmpty(os.Getenv("LANTERN_DAEMON_TOKEN"), os.Getenv("LANTERND_TOKEN"))
 }
 
 // BaseURL reports the daemon address this client talks to.
@@ -142,12 +174,95 @@ func (c *Client) BaseURL() string { return c.base }
 // TokenFile is the name the daemon persists its bearer token under.
 const TokenFile = ".lanternd-token"
 
+// TokenFileEnv names an environment variable that overrides where the client
+// looks for the token file. It exists for a daemon started with a custom
+// --data-dir, whose token is not in the default per-user directory.
+const TokenFileEnv = "LANTERN_DAEMON_TOKEN_FILE"
+
 // TokenPath is where the daemon persists its bearer token in the default
 // per-user data dir, so a tool can name the exact file an operator should
 // read rather than describing it. A daemon started with --data-dir keeps its
 // token there instead.
 func TokenPath() string {
 	return filepath.Join(paths.Data(), TokenFile)
+}
+
+// ResolveToken returns the bearer token to send to base.
+//
+// Precedence is explicit (a flag, or the token environment variables), then a
+// token file. The file is only read when base is loopback: a token written for
+// a daemon on this machine is not a credential to send to some other host.
+// A file named explicitly (tokenFile, or TokenFileEnv) is honored only for a
+// loopback URL too, and an unreadable one is an error -- silently ignoring a
+// path the caller typed would hide a typo.
+//
+// A missing default file is not an error. The client then has no token and
+// the daemon's 401 is the place that explains it.
+func ResolveToken(base, explicit, tokenFile string) (string, error) {
+	if tok := strings.TrimSpace(explicit); tok != "" {
+		return tok, nil
+	}
+
+	namedFile := strings.TrimSpace(tokenFile)
+	if namedFile == "" {
+		namedFile = strings.TrimSpace(os.Getenv(TokenFileEnv))
+	}
+	path := namedFile
+	if path == "" {
+		path = TokenPath()
+	}
+
+	if !IsLoopbackURL(base) {
+		if namedFile != "" {
+			return "", fmt.Errorf("refusing to read token file %s for non-loopback daemon URL %s", path, base)
+		}
+		return "", nil
+	}
+
+	tok, err := readTokenFile(path)
+	if err != nil {
+		if namedFile != "" {
+			return "", err
+		}
+		return "", nil
+	}
+	return tok, nil
+}
+
+// IsLoopbackURL reports whether base names this machine. Only loopback URLs
+// are allowed to pick up the local token file.
+func IsLoopbackURL(base string) bool {
+	s := strings.TrimSpace(base)
+	if s == "" {
+		return false
+	}
+	// Accept the bare host:port spelling the CLI normalizes before this is
+	// called, so a caller cannot accidentally classify it as remote.
+	if !strings.Contains(s, "://") {
+		s = "http://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func readTokenFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read daemon token file: %w", err)
+	}
+	tok := strings.TrimSpace(string(data))
+	if tok == "" {
+		return "", fmt.Errorf("daemon token file %s is empty", path)
+	}
+	return tok, nil
 }
 
 func firstNonEmpty(v ...string) string {
