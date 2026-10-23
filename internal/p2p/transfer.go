@@ -1,6 +1,7 @@
 package p2p
 
 import (
+	"bytes"
 	"context"
 	crand "crypto/rand"
 	"crypto/sha256"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -201,6 +203,12 @@ const CodeBytes = 16
 // ioBufSize is the file read/write chunk size for streaming transfers.
 const ioBufSize = 32 * 1024
 
+// shareHandshakeTimeout bounds how long a peer may hold a share stream open
+// before sending its request. The share code is unknown until that request
+// arrives, so there is nothing to authenticate and nothing else to time out.
+// It is a variable so tests can shorten it.
+var shareHandshakeTimeout = 10 * time.Second
+
 // TransferProgress is a sender-side progress report consumed by
 // Lantern.forwardProgress; Done marks the final message before close.
 type TransferProgress struct {
@@ -331,9 +339,31 @@ func (n *Node) RegisterShareHandler(ctx context.Context, code string, path strin
 func (n *Node) serveShare(s network.Stream) {
 	defer s.Close()
 
-	dec := json.NewDecoder(s)
+	// The request arrives before any share code is known, so this read is
+	// reachable by any peer that can open the protocol stream. Bound both how
+	// long it may take and how much it may contain: without the deadline an
+	// idle peer holds the handler forever, and without the limit a peer can
+	// make the JSON decoder consume an unbounded stream.
+	if err := s.SetDeadline(time.Now().Add(shareHandshakeTimeout)); err != nil {
+		return
+	}
+	dec := json.NewDecoder(io.LimitReader(s, protocol.MaxMetadataSize))
 	var req protocol.TransferRequest
 	if err := dec.Decode(&req); err != nil {
+		return
+	}
+	// One request per stream. Anything but whitespace after the value is a
+	// second handshake, or garbage the sender would otherwise have treated as
+	// the start of the encrypted stream. Only bytes the decoder has already
+	// buffered are checked; waiting for more would reintroduce the stall the
+	// deadline exists to prevent.
+	if trailing, err := io.ReadAll(dec.Buffered()); err != nil || len(bytes.TrimSpace(trailing)) != 0 {
+		return
+	}
+	// The request has arrived, so the read is over. Clear the deadline before
+	// any response bytes go out: it covers writes too, and a file can take far
+	// longer to send than a peer should get to start one.
+	if err := s.SetDeadline(time.Time{}); err != nil {
 		return
 	}
 	if req.Offset < 0 {
