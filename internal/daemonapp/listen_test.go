@@ -156,6 +156,7 @@ func TestRequireLoopbackAddr(t *testing.T) {
 // With the opt-in, a non-loopback bind starts and says what it exposes. This
 // is a regression net, not a control: the flag did not exist before the fix.
 func TestAllowRemoteBindsAndWarns(t *testing.T) {
+	dir := t.TempDir()
 	stderr := new(syncWriter)
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
@@ -164,7 +165,7 @@ func TestAllowRemoteBindsAndWarns(t *testing.T) {
 			"--addr", "0.0.0.0:0",
 			"--allow-remote",
 			"--p2p-port", "0",
-			"--data-dir", t.TempDir(),
+			"--data-dir", dir,
 			"--lan",
 			"--token", testToken,
 		}, stderr)
