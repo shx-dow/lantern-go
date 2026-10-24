@@ -134,7 +134,7 @@ func main() {
 	// Subcommands that own their own argument grammar run before the CLI
 	// parser sees them, so `lantern daemon --lan` does not have to be
 	// spelled in a way parseArgs understands.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stop()
 
 	switch subcommand(args) {
@@ -1161,7 +1161,7 @@ func fatal(jsonOut bool, err error) {
 
 func handleSignal(cancel context.CancelFunc, jsonOut bool) {
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
+	signal.Notify(sig, shutdownSignals()...)
 	defer signal.Stop(sig)
 	<-sig
 	if !jsonOut {
