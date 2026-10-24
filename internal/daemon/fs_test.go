@@ -1,12 +1,16 @@
 package daemon
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func newTrustHandler(t *testing.T, entries ...TrustEntry) *Handler {
@@ -159,6 +163,80 @@ func TestDevicesResponseShape(t *testing.T) {
 	// Reachability is opt-in, so an unprobed listing must not claim it.
 	if body.Devices[0].Reachable != nil {
 		t.Fatalf("unprobed listing reported reachability: %v", *body.Devices[0].Reachable)
+	}
+}
+
+// TestDevicesWithoutProbeDoesNotDial is the negative control for the probe
+// gate. getDevices used to start one ProbeDevice goroutine per paired device
+// whether or not ?probe was set: only the wait and the use of the results were
+// behind `if probe`. Listing devices therefore dialed every peer, the
+// connection Lantern promises not to open merely to learn who is there.
+func TestDevicesWithoutProbeDoesNotDial(t *testing.T) {
+	h := newTrustHandler(t, TrustEntry{PeerID: "12D3KooWDialMe", Alias: "laptop"})
+
+	dialed := make(chan string, 1)
+	release := make(chan struct{})
+	defer close(release)
+	h.probeDevice = func(_ context.Context, ref string) error {
+		select {
+		case dialed <- ref:
+		default:
+		}
+		<-release
+		return errors.New("unreachable")
+	}
+
+	rec := httptest.NewRecorder()
+	h.getDevices(rec, httptest.NewRequest(http.MethodGet, "/v1/devices", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+
+	// The old code starts its dials in goroutines it never waits for, so give
+	// a stray one time to announce itself rather than racing the assertion.
+	select {
+	case ref := <-dialed:
+		t.Fatalf("listing devices without ?probe dialed %q", ref)
+	case <-time.After(time.Second):
+	}
+}
+
+// ?probe=1 must still dial each device exactly once. This is a regression net
+// for the gate: it passes before and after, and would fail if the fix silently
+// stopped probing at all.
+func TestDevicesWithProbeDials(t *testing.T) {
+	h := newTrustHandler(t, TrustEntry{PeerID: "12D3KooWDialMe", Alias: "laptop"})
+
+	var (
+		mu   sync.Mutex
+		refs []string
+	)
+	h.probeDevice = func(_ context.Context, ref string) error {
+		mu.Lock()
+		refs = append(refs, ref)
+		mu.Unlock()
+		return nil
+	}
+
+	rec := httptest.NewRecorder()
+	h.getDevices(rec, httptest.NewRequest(http.MethodGet, "/v1/devices?probe=1", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+	mu.Lock()
+	got := append([]string(nil), refs...)
+	mu.Unlock()
+	if len(got) != 1 || got[0] != "12D3KooWDialMe" {
+		t.Fatalf("probe calls = %v, want exactly the paired device", got)
+	}
+	var body struct {
+		Devices []deviceInfo `json:"devices"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Devices) != 1 || body.Devices[0].Reachable == nil || !*body.Devices[0].Reachable {
+		t.Fatalf("probed listing must report the probe's verdict: %+v", body.Devices)
 	}
 }
 

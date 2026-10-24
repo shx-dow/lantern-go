@@ -258,27 +258,28 @@ func (h *Handler) getDevices(w http.ResponseWriter, r *http.Request) {
 	entries := h.daemon.Trust.List()
 
 	// Probe concurrently: each dial is bounded, but serialising them would
-	// make N unreachable peers take N times the timeout.
+	// make N unreachable peers take N times the timeout. Nothing dials unless
+	// the caller asked for a probe; a listing must not open connections.
 	type probeResult struct {
 		ok    bool
 		error string
 	}
 	results := make([]probeResult, len(entries))
-	var wg sync.WaitGroup
-	for i, e := range entries {
-		wg.Add(1)
-		go func(i int, ref string) {
-			defer wg.Done()
-			err := h.daemon.ProbeDevice(r.Context(), ref)
-			ok := err == nil
-			msg := ""
-			if err != nil {
-				msg = err.Error()
-			}
-			results[i] = probeResult{ok: ok, error: msg}
-		}(i, e.PeerID)
-	}
 	if probe {
+		var wg sync.WaitGroup
+		for i, e := range entries {
+			wg.Add(1)
+			go func(i int, ref string) {
+				defer wg.Done()
+				err := h.probeDevice(r.Context(), ref)
+				ok := err == nil
+				msg := ""
+				if err != nil {
+					msg = err.Error()
+				}
+				results[i] = probeResult{ok: ok, error: msg}
+			}(i, e.PeerID)
+		}
 		wg.Wait()
 	}
 

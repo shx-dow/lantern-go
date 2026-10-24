@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -21,13 +22,21 @@ type Handler struct {
 	p2pPort    int
 	httpAddr   string
 	stateDir   string
+	// probeDevice is the reachability probe behind GET /v1/devices. It is a
+	// field so a test can count dials without a network; NewHandler binds it
+	// to the daemon's real probe.
+	probeDevice func(context.Context, string) error
 }
 
 // NewHandler builds HTTP routes around d. peerID/addrs describe this node
 // for GET /v1/status. defaultTTL applies to shares without ttl_seconds.
 // uploadDir roots browser uploads (defaults to the OS temp dir).
 func NewHandler(d *Daemon, peerID string, addrs []string, lanOnly bool, defaultTTL time.Duration, uploadDir string) *Handler {
-	return &Handler{daemon: d, peerID: peerID, addrs: addrs, lanOnly: lanOnly, defaultTTL: defaultTTL, uploadDir: uploadDir}
+	h := &Handler{daemon: d, peerID: peerID, addrs: addrs, lanOnly: lanOnly, defaultTTL: defaultTTL, uploadDir: uploadDir}
+	if d != nil {
+		h.probeDevice = d.ProbeDevice
+	}
+	return h
 }
 
 // WithP2PPort sets the libp2p listen port reported by GET /v1/status. Zero
