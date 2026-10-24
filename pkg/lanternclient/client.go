@@ -45,6 +45,11 @@ type Status struct {
 	Addrs      []string `json:"addrs"`
 	LANOnly    bool     `json:"lan_only"`
 	P2PPort    int      `json:"p2p_port"`
+	// HTTPAddr is the address the API is actually listening on. With
+	// --addr host:0 it carries the port the kernel chose.
+	HTTPAddr string `json:"http_addr"`
+	// StateDir is the resolved --data-dir: where the token and pairings live.
+	StateDir string `json:"state_dir"`
 }
 
 // PeerInfo mirrors one connected peer.
