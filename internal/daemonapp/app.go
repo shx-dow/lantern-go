@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -42,6 +43,8 @@ passed, so pairing a device is never by itself enough to change anything here.
 
 Flags:
   --addr string               localhost HTTP listen address (default 127.0.0.1:43782)
+  --allow-remote              bind the HTTP API beyond localhost; the bearer
+                              token then crosses the network in cleartext
   --p2p-port int              libp2p listen port (0 = random)
   --data-dir string           identity, pairings, and token live here
                               (default: per-user data dir, never a temp dir)
@@ -62,6 +65,15 @@ Flags:
   --default-ttl int           default share lifetime in seconds (0 = no expiry)
   --config string             config file (default $XDG_CONFIG_HOME/lantern/lanternd.json)
 `
+
+const (
+	// httpReadHeaderTimeout bounds a client that connects and then stalls
+	// before finishing its request headers. Without it one connection can
+	// occupy a handler forever. IdleTimeout bounds the gap between requests
+	// on a kept-alive connection; it does not cap a long-lived SSE response.
+	httpReadHeaderTimeout = 10 * time.Second
+	httpIdleTimeout       = 60 * time.Second
+)
 
 // mdnsFilter swallows the mDNS multicast warning. A node on a busy network
 // can receive stray announcements for other services, and the warning says
@@ -84,22 +96,23 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 	fs.Usage = func() { fmt.Fprint(stderr, Usage) }
 
 	var (
-		addr       = fs.String("addr", "", "localhost HTTP listen address (default from config file or 127.0.0.1:43782)")
-		p2pPort    = fs.Int("p2p-port", -1, "libp2p listen port (0 = random, -1 = config default)")
-		dataDir    = fs.String("data-dir", "", "state directory for identity, pairings, and token (default: per-user data dir)")
-		lan        = fs.Bool("lan", true, "LAN-only mode: no public DHT bootstraps, mDNS plus local adverts")
-		lanNeg     = fs.Bool("no-lan", false, "disable LAN-only mode (global DHT)")
-		configPath = fs.String("config", "", "config file path (default $XDG_CONFIG_HOME/lantern/lanternd.json)")
-		tokenFlag  = fs.String("token", "", "bearer token (default $LANTERND_TOKEN, else persisted in data dir)")
-		defaultTTL = fs.Int64("default-ttl", -1, "default share lifetime in seconds (0 = no expiry, -1 = config default)")
-		deviceName = fs.String("device-name", "", "human alias for this device (default config device_name or OS hostname)")
-		sharedDirs = fs.String("shared-dirs", "", "comma-separated dirs exposed via GET /v1/files (default config shared_dirs)")
-		bootstrapF = fs.String("bootstrap", "", "comma-separated bootstrap multiaddrs (default config bootstrap_peers; 'none' = LAN-only)")
-		relayF     = fs.String("relay", "", "comma-separated static relay multiaddrs for NAT traversal (default config relay_addrs)")
-		peerF      = fs.String("peer", "", "comma-separated full peer multiaddrs ending in /p2p/<peer-id> (default config peer_addrs)")
-		allowWrite = fs.Bool("allow-writes", false, "let paired devices write files into shared-dirs (default: this device is read-only)")
-		writableF  = fs.String("writable-dirs", "", "comma-separated dirs paired devices may write to (default: same as --shared-dirs)")
-		maxWriteF  = fs.Int64("max-write-bytes", -1, "largest single file a paired device may push here (0 = 512 MiB, -1 = default)")
+		addr        = fs.String("addr", "", "localhost HTTP listen address (default from config file or 127.0.0.1:43782)")
+		allowRemote = fs.Bool("allow-remote", false, "bind the HTTP API beyond localhost; the bearer token then crosses the network in cleartext")
+		p2pPort     = fs.Int("p2p-port", -1, "libp2p listen port (0 = random, -1 = config default)")
+		dataDir     = fs.String("data-dir", "", "state directory for identity, pairings, and token (default: per-user data dir)")
+		lan         = fs.Bool("lan", true, "LAN-only mode: no public DHT bootstraps, mDNS plus local adverts")
+		lanNeg      = fs.Bool("no-lan", false, "disable LAN-only mode (global DHT)")
+		configPath  = fs.String("config", "", "config file path (default $XDG_CONFIG_HOME/lantern/lanternd.json)")
+		tokenFlag   = fs.String("token", "", "bearer token (default $LANTERND_TOKEN, else persisted in data dir)")
+		defaultTTL  = fs.Int64("default-ttl", -1, "default share lifetime in seconds (0 = no expiry, -1 = config default)")
+		deviceName  = fs.String("device-name", "", "human alias for this device (default config device_name or OS hostname)")
+		sharedDirs  = fs.String("shared-dirs", "", "comma-separated dirs exposed via GET /v1/files (default config shared_dirs)")
+		bootstrapF  = fs.String("bootstrap", "", "comma-separated bootstrap multiaddrs (default config bootstrap_peers; 'none' = LAN-only)")
+		relayF      = fs.String("relay", "", "comma-separated static relay multiaddrs for NAT traversal (default config relay_addrs)")
+		peerF       = fs.String("peer", "", "comma-separated full peer multiaddrs ending in /p2p/<peer-id> (default config peer_addrs)")
+		allowWrite  = fs.Bool("allow-writes", false, "let paired devices write files into shared-dirs (default: this device is read-only)")
+		writableF   = fs.String("writable-dirs", "", "comma-separated dirs paired devices may write to (default: same as --shared-dirs)")
+		maxWriteF   = fs.Int64("max-write-bytes", -1, "largest single file a paired device may push here (0 = 512 MiB, -1 = default)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -127,6 +140,12 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 	lanOnly, ttl := r.LANOnly, r.DefaultTTL
 	name := r.DeviceName
 
+	// Decide the bind policy before touching the state directory: a refused
+	// address must not take the identity lock or mint a token first.
+	if err := requireLoopbackAddr(listenAddr, *allowRemote); err != nil {
+		return err
+	}
+
 	// Resolve the state directory once, here, rather than letting each
 	// call site fall back on its own. Everything below then works on the same
 	// resolved path, and the path can be shown to the operator instead of
@@ -137,6 +156,14 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 	// because silently redirecting an explicit choice to the default
 	// directory loads the wrong identity, or refuses one that used to work.
 	dir = resolveDataDir(dir)
+
+	// Status reports an absolute state directory. A client running from a
+	// different working directory cannot resolve a relative --data-dir, and
+	// doctor derives the token path from this value.
+	stateDir := dir
+	if abs, err := filepath.Abs(dir); err == nil {
+		stateDir = abs
+	}
 
 	// One identity per directory, and no two daemons on the same one. The
 	// lock is taken before lantern.New loads or mints the key, so a refused
@@ -152,6 +179,17 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 		return fmt.Errorf("state directory: %w", err)
 	}
 	defer releaseLock()
+
+	// Bind here, after the identity lock, so a second daemon on the same
+	// state directory is still refused for that reason rather than for the
+	// port the first one happens to hold. Port 0 resolves to the port the
+	// kernel chose, which is what the startup line and status report.
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", listenAddr, err)
+	}
+	defer listener.Close()
+	httpAddr := listener.Addr().String()
 
 	ln, err := lantern.New(lantern.Config{Port: port, DataDir: dir, Bootstrap: r.BootstrapPeers, Relay: r.RelayAddrs, StaticPeers: r.PeerAddrs})
 	if err != nil {
@@ -251,6 +289,8 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 	daemon.NewHandler(d, peerID, addrs, lanOnly, ttl, dir).
 		WithDeviceName(name).
 		WithP2PPort(port).
+		WithHTTPAddr(httpAddr).
+		WithStateDir(stateDir).
 		Routes(mux)
 
 	// The UI page is public (it holds no secrets; API calls carry the token
@@ -271,11 +311,18 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 	})
 	top.Handle("/v1/", daemon.RequireAuth(mux, token))
 
-	srv := &http.Server{Addr: listenAddr, Handler: daemon.CORS(top)}
+	srv := &http.Server{
+		Handler:           daemon.CORS(top),
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		IdleTimeout:       httpIdleTimeout,
+	}
 
 	serveErr := make(chan error, 1)
 	go func() {
-		fmt.Fprintf(stderr, "lantern daemon listening on http://%s/ui (lan_only=%v)\n", listenAddr, lanOnly)
+		if !isLoopbackAddr(httpAddr) {
+			fmt.Fprintf(stderr, "warning: HTTP API is not loopback-only at %s; the bearer token crosses the network in cleartext\n", httpAddr)
+		}
+		fmt.Fprintf(stderr, "lantern daemon listening on http://%s/ui (lan_only=%v)\n", httpAddr, lanOnly)
 		fmt.Fprintf(stderr, "  identity and pairings: %s\n", dir)
 		// An agent client needs this token and nothing else reveals it, so
 		// say where it is rather than making people search the filesystem.
@@ -298,7 +345,7 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 					shQuote(dir+"-2"), shQuote(ma))
 			}
 		}
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serveErr <- err
 			return
 		}
@@ -356,6 +403,40 @@ func staticPeerAddr(addrs []string, peerID string) string {
 		}
 	}
 	return chosen + "/p2p/" + peerID
+}
+
+// requireLoopbackAddr enforces the HTTP bind policy. The API authenticates
+// with a bearer token over cleartext HTTP, so a bind beyond loopback shows the
+// token to anyone on the path; an explicit opt-in is the only way to accept
+// that exposure.
+func requireLoopbackAddr(addr string, allowRemote bool) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Not a host:port at all. Let net.Listen report that with its own
+		// message rather than suggesting an opt-in flag that would not help.
+		return nil
+	}
+	if allowRemote || isLoopbackHost(host) {
+		return nil
+	}
+	return fmt.Errorf("refusing to listen on %s: the HTTP API carries a bearer token in cleartext; pass --allow-remote to bind beyond localhost", addr)
+}
+
+// isLoopbackAddr reports whether addr names a loopback host.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	return err == nil && isLoopbackHost(host)
+}
+
+// isLoopbackHost accepts "localhost" and literal loopback IPs. A name other
+// than "localhost" is not resolved here: DNS can change between this check and
+// the bind, and a host that is not visibly loopback is treated as remote.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // resolveDataDir maps the --data-dir flag to the directory everything below

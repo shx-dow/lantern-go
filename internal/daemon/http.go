@@ -19,6 +19,8 @@ type Handler struct {
 	defaultTTL time.Duration
 	uploadDir  string
 	p2pPort    int
+	httpAddr   string
+	stateDir   string
 }
 
 // NewHandler builds HTTP routes around d. peerID/addrs describe this node
@@ -39,6 +41,22 @@ func (h *Handler) WithP2PPort(port int) *Handler {
 // WithDeviceName sets the human alias reported by GET /v1/status.
 func (h *Handler) WithDeviceName(name string) *Handler {
 	h.deviceName = name
+	return h
+}
+
+// WithHTTPAddr sets the bound HTTP address reported by GET /v1/status. It is
+// the listener's resolved address, so a daemon started on port 0 reports the
+// port the kernel chose rather than 0.
+func (h *Handler) WithHTTPAddr(addr string) *Handler {
+	h.httpAddr = addr
+	return h
+}
+
+// WithStateDir sets the resolved state directory reported by GET /v1/status.
+// Clients that were given a custom --data-dir need this to find the token and
+// the pairing store without guessing at the per-user default.
+func (h *Handler) WithStateDir(dir string) *Handler {
+	h.stateDir = dir
 	return h
 }
 
@@ -177,6 +195,14 @@ func (h *Handler) getStatus(w http.ResponseWriter, _ *http.Request) {
 		"addrs":       h.addrs,
 		"lan_only":    h.lanOnly,
 		"device_name": h.deviceName,
+		// http_addr is the listener's resolved address. A daemon started on
+		// port 0 is only reachable at the port reported here and in its
+		// startup line, not at the :0 it was asked for.
+		"http_addr": h.httpAddr,
+		// state_dir is the resolved --data-dir. It is where the token and
+		// pairings live, which a client cannot derive from a custom path
+		// unless the daemon says so.
+		"state_dir": h.stateDir,
 		// p2p_port is 0 when the daemon was started without a fixed
 		// --p2p-port, which means the listen port changes on every restart
 		// and any --peer address recorded elsewhere goes stale. Reporting it
