@@ -331,13 +331,13 @@ func TestStoreAddressesDevicesByPeerID(t *testing.T) {
 	if _, err := s.Add(TrustSpec{PeerID: "peer-1", Alias: "Laptop"}); err != nil {
 		t.Fatal(err)
 	}
-	if !s.Remove("peer-1") {
+	if removed, err := s.Remove("peer-1"); !removed || err != nil {
 		t.Fatal("a peer ID should unpair its device")
 	}
 	if s.Trusted("peer-1") {
 		t.Error("the device should be gone")
 	}
-	if s.Remove("peer-1") {
+	if removed, err := s.Remove("peer-1"); removed || err != nil {
 		t.Error("removing twice should report false")
 	}
 }

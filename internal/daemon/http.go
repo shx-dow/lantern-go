@@ -383,7 +383,14 @@ func (h *Handler) deleteTrust(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if !store.Remove(peerID) {
+	removed, err := store.Remove(peerID)
+	if err != nil {
+		// The pairing is still in effect on disk; saying "unpaired" would
+		// make the next restart bring the device back.
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("unpair: %w", err))
+		return
+	}
+	if !removed {
 		writeError(w, http.StatusNotFound, fmt.Errorf("peer not found"))
 		return
 	}
