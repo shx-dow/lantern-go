@@ -32,8 +32,11 @@ func TestTrustStoreRoundTrip(t *testing.T) {
 	if !again.Trusted("peer-abc") {
 		t.Fatal("entry did not persist")
 	}
-	if !s.Remove("peer-abc") || s.Remove("peer-abc") {
+	if removed, err := s.Remove("peer-abc"); !removed || err != nil {
 		t.Fatal("remove semantics wrong")
+	}
+	if removed, err := s.Remove("peer-abc"); removed || err != nil {
+		t.Fatal("removing twice should report false")
 	}
 	if _, err := s.Add(TrustSpec{PeerID: "", Alias: "x"}); err == nil {
 		t.Fatal("expected error for empty peer ID")

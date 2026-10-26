@@ -191,6 +191,9 @@ type TrustStore struct {
 	mu   sync.Mutex
 	path string
 	byID map[string]TrustEntry
+	// save, when set, replaces the on-disk write. Tests use it to exercise a
+	// persistence failure without depending on filesystem permissions.
+	save func() error
 }
 
 // NewTrustStore loads path (missing file = empty store).
@@ -229,6 +232,9 @@ func NewTrustStore(dataDir string) (*TrustStore, error) {
 }
 
 func (s *TrustStore) saveLocked() error {
+	if s.save != nil {
+		return s.save()
+	}
 	list := make([]TrustEntry, 0, len(s.byID))
 	for _, e := range s.byID {
 		list = append(list, e)
@@ -418,17 +424,24 @@ func splitNonEmpty(in []string) []string {
 	return out
 }
 
-// Remove unpairs peerID; false when unknown.
-func (s *TrustStore) Remove(peerID string) bool {
+// Remove unpairs peerID. The bool reports whether the device was paired. If the
+// revocation cannot be written, the entry is restored and the error returned,
+// so a caller never reports success for a change that would not survive a
+// restart.
+func (s *TrustStore) Remove(peerID string) (bool, error) {
 	peerID = peerIDOf(peerID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.byID[peerID]; !ok {
-		return false
+	prev, ok := s.byID[peerID]
+	if !ok {
+		return false, nil
 	}
 	delete(s.byID, peerID)
-	_ = s.saveLocked()
-	return true
+	if err := s.saveLocked(); err != nil {
+		s.byID[peerID] = prev
+		return false, err
+	}
+	return true, nil
 }
 
 // List returns paired devices.
