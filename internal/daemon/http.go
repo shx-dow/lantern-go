@@ -310,7 +310,7 @@ func (h *Handler) patchTrust(w http.ResponseWriter, r *http.Request) {
 	}
 	peerID, err := h.resolveTrustRef(r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeDeviceError(w, err)
 		return
 	}
 	var req trustRequest
@@ -380,7 +380,7 @@ func (h *Handler) deleteTrust(w http.ResponseWriter, r *http.Request) {
 	}
 	peerID, err := h.resolveTrustRef(r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeDeviceError(w, err)
 		return
 	}
 	removed, err := store.Remove(peerID)
@@ -398,8 +398,8 @@ func (h *Handler) deleteTrust(w http.ResponseWriter, r *http.Request) {
 }
 
 // resolveTrustRef maps an alias or a peer ID to the stored peer ID. A ref that
-// matches neither is returned unchanged so the store reports "not found" rather
-// than this helper inventing an error about the wrong thing.
+// matches neither is an unknown device, so the handler can answer 404 with the
+// name that was actually typed rather than a bare "peer not found".
 func (h *Handler) resolveTrustRef(ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -418,7 +418,7 @@ func (h *Handler) resolveTrustRef(ref string) (string, error) {
 			return e.PeerID, nil
 		}
 	}
-	return ref, nil
+	return "", &unknownDeviceError{ref: ref}
 }
 
 func (h *Handler) getFiles(w http.ResponseWriter, r *http.Request) {
@@ -436,7 +436,7 @@ func (h *Handler) getFiles(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) getRemoteFiles(w http.ResponseWriter, r *http.Request) {
 	ref, err := h.resolveRef(r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeDeviceError(w, err)
 		return
 	}
 	entries, err := h.daemon.RemoteFiles(r.Context(), ref, r.URL.Query().Get("dir"))

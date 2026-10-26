@@ -280,6 +280,35 @@ func GenerateCode() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// CodeHexLen is the length of a generated share code in characters.
+const CodeHexLen = CodeBytes * 2
+
+// NormalizeCode removes the spaces and dashes people add when reading a code
+// aloud, and lowercases it. It does not decide whether the result is valid.
+func NormalizeCode(code string) string {
+	code = strings.TrimSpace(code)
+	code = strings.ReplaceAll(code, "-", "")
+	code = strings.ReplaceAll(code, " ", "")
+	return strings.ToLower(code)
+}
+
+// ValidateCode reports whether code is a generated share code: exactly
+// CodeHexLen lowercase hex characters. Anything else cannot name a share, so
+// callers refuse it before starting a lookup that would wait for a peer that
+// cannot exist.
+func ValidateCode(code string) error {
+	valid := len(code) == CodeHexLen
+	for _, c := range code {
+		if !('0' <= c && c <= '9') && !('a' <= c && c <= 'f') {
+			valid = false
+		}
+	}
+	if !valid {
+		return fmt.Errorf("invalid share code %q: share codes are %d hex characters", code, CodeHexLen)
+	}
+	return nil
+}
+
 // AddStaticPeers records operator-configured peer addresses (the --peer
 // flag) in the peerstore with a permanent TTL, and returns the ones that
 // parsed. Each entry must be a full multiaddr ending in /p2p/<peer-id>;

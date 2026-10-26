@@ -394,6 +394,12 @@ func (l *Lantern) shareWithCode(ctx context.Context, path string, code string) (
 // outputDir, resuming any partial download. See ShareSession for the
 // session contract.
 func (l *Lantern) ReceiveSession(ctx context.Context, code string, outputDir string) (*Session, *Peer, error) {
+	// A code that cannot be one of ours is refused here, before discovery
+	// spends its whole timeout looking for a peer that cannot exist.
+	code = p2p.NormalizeCode(code)
+	if err := p2p.ValidateCode(code); err != nil {
+		return nil, nil, err
+	}
 	session := l.newSession(ctx, code)
 	peer, err := l.receive(session.ctx, code, outputDir)
 	if err != nil {
