@@ -119,12 +119,7 @@ func New(ln *lantern.Lantern) *Daemon {
 
 // NormalizeCode trims spaces/dashes and lowercases share codes so pasted
 // or dictated codes still work.
-func NormalizeCode(code string) string {
-	code = strings.TrimSpace(code)
-	code = strings.ReplaceAll(code, "-", "")
-	code = strings.ReplaceAll(code, " ", "")
-	return strings.ToLower(code)
-}
+func NormalizeCode(code string) string { return p2p.NormalizeCode(code) }
 
 // Share advertises path and tracks the transfer. The share lives until
 // Cancel is called, ttl elapses, or the daemon closes, independent of the
