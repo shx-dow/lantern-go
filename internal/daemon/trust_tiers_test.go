@@ -357,10 +357,10 @@ func TestTrustRefResolvesAliasCaseInsensitively(t *testing.T) {
 		}
 	}
 
-	// An unknown ref is passed through so the store reports "not found".
-	got, err := h.resolveTrustRef("nobody")
-	if err != nil || got != "nobody" {
-		t.Errorf("resolveTrustRef(nobody) = %q %v, want it passed through", got, err)
+	// An unknown ref is named in the error so the caller learns what they
+	// typed was not a paired device.
+	if got, err := h.resolveTrustRef("nobody"); err == nil || got != "" {
+		t.Errorf("resolveTrustRef(nobody) = %q %v, want an unknown-device error", got, err)
 	}
 	if _, err := h.resolveTrustRef("   "); err == nil {
 		t.Error("an empty ref must be refused")

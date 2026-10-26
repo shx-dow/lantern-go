@@ -55,18 +55,21 @@ func TestResolveRefRejectsEmpty(t *testing.T) {
 	}
 }
 
-// An unknown alias must not be silently treated as a trusted peer ID; it
-// falls through to peer.Decode downstream, which rejects it. This test
-// pins that the trust store does not invent a match.
-func TestResolveRefUnknownAliasDoesNotMatch(t *testing.T) {
+// An unknown alias is not a peer ID. It used to be passed downstream, where
+// peer.Decode answered with a parse error about the syntax; the useful answer
+// names the device the caller typed and points at the pairing list.
+func TestResolveRefUnknownAliasNamesTheCause(t *testing.T) {
 	const id = "12D3KooWTestPeerID00000000000000000000000000000000"
 	h := newTrustHandler(t, TrustEntry{PeerID: id, Alias: "laptop"})
-	got, err := h.resolveRef("desktop")
-	if err != nil {
-		t.Fatal(err)
+	_, err := h.resolveRef("desktop")
+	if err == nil {
+		t.Fatal("an unpaired name must not resolve")
 	}
-	if got != "desktop" {
-		t.Fatalf("unknown alias should pass through for downstream validation, got %q", got)
+	if !strings.Contains(err.Error(), `no paired device named "desktop"`) {
+		t.Fatalf("error does not name the device: %v", err)
+	}
+	if !strings.Contains(err.Error(), "lantern trust list") {
+		t.Fatalf("error does not point at the pairing list: %v", err)
 	}
 }
 

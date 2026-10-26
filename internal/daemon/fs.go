@@ -15,9 +15,21 @@ import (
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
 
+// unknownDeviceError is a device reference that names neither a paired peer ID
+// nor a paired alias. The handlers answer 404: the request is well-formed, and
+// there is simply nothing paired by that name.
+type unknownDeviceError struct{ ref string }
+
+func (e *unknownDeviceError) Error() string {
+	return fmt.Sprintf("no paired device named %q (see lantern trust list)", e.ref)
+}
+
 // resolveRef maps a device reference to a peer ID. A ref is either a full
 // libp2p peer ID or the alias given at pairing time, so an agent can say
-// "laptop" instead of pasting 52 characters of base58.
+// "laptop" instead of pasting 52 characters of base58. Anything that matches
+// neither is an unknown device: passing it through would make the p2p layer
+// answer with a peer ID parse error, which blames the syntax for what is
+// really an unpaired or mistyped name.
 func (h *Handler) resolveRef(ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -37,7 +49,18 @@ func (h *Handler) resolveRef(ref string) (string, error) {
 			return e.PeerID, nil
 		}
 	}
-	return ref, nil
+	return "", &unknownDeviceError{ref: ref}
+}
+
+// writeDeviceError answers a device reference error. An unknown device is a
+// 404; an empty or otherwise malformed reference is the caller's bad input.
+func writeDeviceError(w http.ResponseWriter, err error) {
+	var unknown *unknownDeviceError
+	if errors.As(err, &unknown) {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	writeError(w, http.StatusBadRequest, err)
 }
 
 type readResponse struct {
@@ -71,7 +94,7 @@ func encodeContent(data []byte) (encoding, content string) {
 func (h *Handler) getRemoteRead(w http.ResponseWriter, r *http.Request) {
 	ref, err := h.resolveRef(r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeDeviceError(w, err)
 		return
 	}
 	path := r.URL.Query().Get("path")
@@ -119,7 +142,7 @@ func (h *Handler) getRemoteRead(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) getRemoteStat(w http.ResponseWriter, r *http.Request) {
 	ref, err := h.resolveRef(r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeDeviceError(w, err)
 		return
 	}
 	path := r.URL.Query().Get("path")
@@ -172,7 +195,7 @@ func (h *Handler) postPush(w http.ResponseWriter, r *http.Request) {
 	}
 	ref, err := h.resolveRef(req.To)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeDeviceError(w, err)
 		return
 	}
 

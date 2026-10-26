@@ -51,9 +51,9 @@ func TestPushRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
-// An alias nobody paired must not resolve to some other device. It reaches
-// the transport as a peer ID and is refused there, so this is an upstream
-// failure rather than a caller error.
+// An alias nobody paired must not resolve to some other device. The answer is
+// a 404 that names the device, not a downstream parse or connection error:
+// nothing is wrong with the request, there is just no such pairing.
 func TestPushRejectsUnknownAlias(t *testing.T) {
 	const id = "12D3KooWTestPeerID00000000000000000000000000000000"
 	h := newTrustHandler(t, TrustEntry{PeerID: id, Alias: "laptop"})
@@ -66,8 +66,11 @@ func TestPushRejectsUnknownAlias(t *testing.T) {
 	if rec.Code == http.StatusOK {
 		t.Fatal("push to an unknown device must not succeed")
 	}
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("got %d, want 502 for an unresolvable device", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("got %d, want 404 for an unpaired device", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `no paired device named \"desk\"`) {
+		t.Fatalf("error does not name the device: %s", rec.Body.String())
 	}
 }
 
@@ -77,7 +80,8 @@ func TestPushRejectsUnknownAlias(t *testing.T) {
 // the behaviour change; the expansion itself is covered end to end in
 // internal/p2p/audit_push_dir_test.go.
 func TestPushAcceptsDirectorySource(t *testing.T) {
-	h := newTrustHandler(t)
+	const id = "12D3KooWTestPeerID00000000000000000000000000000000"
+	h := newTrustHandler(t, TrustEntry{PeerID: id, Alias: "laptop"})
 	rec := httptest.NewRecorder()
 	h.postPush(rec, pushReq(t, map[string]any{"to": "laptop", "path": t.TempDir()}))
 	if rec.Code == http.StatusBadRequest && strings.Contains(rec.Body.String(), "not implemented") {
@@ -86,7 +90,8 @@ func TestPushAcceptsDirectorySource(t *testing.T) {
 }
 
 func TestPushRejectsMissingSource(t *testing.T) {
-	h := newTrustHandler(t)
+	const id = "12D3KooWTestPeerID00000000000000000000000000000000"
+	h := newTrustHandler(t, TrustEntry{PeerID: id, Alias: "laptop"})
 	rec := httptest.NewRecorder()
 	h.postPush(rec, pushReq(t, map[string]any{"to": "laptop", "path": filepath.Join(t.TempDir(), "absent")}))
 	if rec.Code != http.StatusBadRequest {
