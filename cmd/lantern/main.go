@@ -48,26 +48,86 @@ var ownedSubcommands = map[string]bool{
 	"version": true,
 }
 
-// subcommand returns args[0] when it names one of ownedSubcommands, and ""
-// otherwise.
-//
-// Only the first argument is considered, on purpose. parseArgs gives every
-// existing CLI flag a value in a separate argument, so honouring global flags
-// before a subcommand would mean tracking which ones take a value. Since none
-// of them do, the rule is simply that a subcommand comes first — which also
-// removes any ambiguity about a flag's value happening to be spelled
-// "daemon".
-func subcommand(args []string) string {
-	if len(args) == 0 {
-		return ""
-	}
-	if ownedSubcommands[args[0]] {
-		return args[0]
-	}
-	return ""
+// globalFlagsWithValues are the CLI flags that consume the argument after
+// them. The subcommand scan needs this so `--out daemon send x` is read as a
+// directory called daemon, not as the daemon command.
+var globalFlagsWithValues = map[string]bool{
+	"port":           true,
+	"data-dir":       true,
+	"out":            true,
+	"tier":           true,
+	"writable-roots": true,
+	"roots":          true,
+	"daemon-url":     true,
+	"daemon-addr":    true,
+	"daemon-token":   true,
+	"token-file":     true,
 }
 
-// usageFor returns the help text for a subcommand, or "" when the CLI owns it.
+// globalBoolFlags are the CLI flags that stand alone. Anything else before a
+// subcommand is left for parseArgs to reject, rather than being skipped and
+// forgotten.
+var globalBoolFlags = map[string]bool{
+	"json":        true,
+	"daemon":      true,
+	"probe-peers": true,
+}
+
+// ownedSubcommandAfterFlags finds a subcommand that owns its own argument
+// grammar even when global flags come first, so `lantern --json daemon --help`
+// reaches the daemon instead of being read as an unknown command.
+//
+// Global flags before the name are accepted and belong to the CLI; a
+// subcommand's own flags follow its name, as in `lantern daemon --data-dir X`.
+// Doctor is deliberately not matched here: it also reads the CLI's daemon
+// flags, so parseArgs routes it.
+func ownedSubcommandAfterFlags(args []string) (name string, rest []string, ok bool) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			return "", nil, false
+		}
+		if a == "-h" || a == "--help" {
+			// Help before a command belongs to the top level, where parseArgs
+			// turns it into `help <command>`.
+			return "", nil, false
+		}
+		if strings.HasPrefix(a, "-") && a != "-" {
+			f := strings.TrimLeft(a, "-")
+			f, _, hasValue := strings.Cut(f, "=")
+			switch {
+			case globalBoolFlags[f]:
+				// Stands alone; `--daemon=URL` carries its value in the same
+				// token and needs no skip either.
+			case globalFlagsWithValues[f] && !hasValue:
+				i++
+			default:
+				return "", nil, false
+			}
+			continue
+		}
+		if !ownedSubcommands[a] || a == "doctor" {
+			return "", nil, false
+		}
+		return a, args[i+1:], true
+	}
+	return "", nil, false
+}
+
+// wantsHelp reports whether args ask for help before a `--` terminator.
+func wantsHelp(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			return false
+		}
+		if a == "-h" || a == "--help" {
+			return true
+		}
+	}
+	return false
+}
+
+// usageFor returns the help text for a command, or "" when it is unknown.
 func usageFor(name string) string {
 	switch name {
 	case "daemon":
@@ -76,8 +136,10 @@ func usageFor(name string) string {
 		return doctorUsage
 	case "mcp":
 		return mcpserver.Usage
+	case "version":
+		return versionUsage
 	}
-	return ""
+	return commandUsage(name)
 }
 
 // runOrExit exits non-zero on failure, keeping the exit codes in one place.
@@ -88,6 +150,11 @@ func runOrExit(err error) {
 	// A cancelled context is the operator pressing Ctrl-C, not a fault.
 	if errors.Is(err, context.Canceled) {
 		os.Exit(130)
+	}
+	// flag.ErrHelp means the command's own flag set printed its usage. Asking
+	// for help is not a failure.
+	if errors.Is(err, flag.ErrHelp) {
+		return
 	}
 	// A command that already printed its own diagnosis exits non-zero
 	// without a second message saying "error: ".
@@ -112,6 +179,9 @@ type cliOptions struct {
 	writableRoots []string
 	command       string
 	positional    []string
+	// helpForCommand is set when -h/--help follows a command. The command
+	// owns that help, so it is shown instead of being treated as an argument.
+	helpForCommand bool
 }
 
 // commandNeedsDaemon reports whether a command is served only by
@@ -131,33 +201,38 @@ func commandNeedsDaemon(command string) bool {
 func main() {
 	args := os.Args[1:]
 
-	// Subcommands that own their own argument grammar run before the CLI
-	// parser sees them, so `lantern daemon --lan` does not have to be
-	// spelled in a way parseArgs understands.
 	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stop()
 
-	switch subcommand(args) {
-	case "daemon":
-		runOrExit(daemonapp.Run(ctx, args[1:], os.Stderr))
-		return
-	case "mcp":
-		runOrExit(mcpserver.Serve(ctx, os.Stdin, os.Stdout))
-		return
-	case "doctor":
+	// doctor owns its flags, but it also reads the CLI's daemon flags. When it
+	// comes first, run it directly; when global flags precede it, parseArgs
+	// routes it below.
+	if len(args) > 0 && args[0] == "doctor" {
 		runOrExit(runDoctor(ctx, args[1:], os.Stdout))
-		return
-	case "version":
-		fmt.Println(version.Get())
 		return
 	}
 
-	// `lantern help daemon` and `lantern help mcp` route to the subcommand's
-	// own help rather than the CLI's, so every command has one place that
-	// describes it.
-	if len(args) == 2 && args[0] == "help" {
-		if text := usageFor(args[1]); text != "" {
-			fmt.Fprint(os.Stderr, text)
+	// Subcommands that own their own argument grammar run before the CLI
+	// parser sees them, so `lantern daemon --lan` does not have to be
+	// spelled in a way parseArgs understands. Global flags may come first.
+	if name, rest, ok := ownedSubcommandAfterFlags(args); ok {
+		switch name {
+		case "daemon":
+			runOrExit(daemonapp.Run(ctx, rest, os.Stderr))
+			return
+		case "mcp":
+			if wantsHelp(rest) {
+				fmt.Fprint(os.Stderr, mcpserver.Usage)
+				return
+			}
+			runOrExit(mcpserver.Serve(ctx, os.Stdin, os.Stdout))
+			return
+		case "version":
+			if wantsHelp(rest) {
+				fmt.Fprint(os.Stderr, versionUsage)
+				return
+			}
+			fmt.Println(version.Get())
 			return
 		}
 	}
@@ -169,7 +244,33 @@ func main() {
 		os.Exit(2)
 	}
 
-	if opts.command == "" || opts.command == "help" || opts.command == "-h" || opts.command == "--help" {
+	// `lantern help`, `lantern help trust`, and `lantern --help trust` all
+	// land here with command "help" and the topic as the first positional.
+	if opts.command == "" {
+		usage()
+		return
+	}
+	// A command named before --help owns that help, including send and
+	// receive, which used to treat the flag as a path.
+	if opts.helpForCommand {
+		if text := usageFor(opts.command); text != "" {
+			fmt.Fprint(os.Stderr, text)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "unknown command %q\n", opts.command)
+		usage()
+		os.Exit(2)
+	}
+	if opts.command == "help" {
+		if len(opts.positional) > 0 {
+			if text := usageFor(opts.positional[0]); text != "" {
+				fmt.Fprint(os.Stderr, text)
+				return
+			}
+			fmt.Fprintf(os.Stderr, "unknown command %q\n", opts.positional[0])
+			usage()
+			os.Exit(2)
+		}
 		usage()
 		return
 	}
@@ -360,11 +461,10 @@ func parseArgs(args []string) (cliOptions, error) {
 		case helpRequested && !hadCommand:
 			helpFirst = true
 		case helpRequested && !hadHelp:
-			// --help after a command belongs to it, and it belongs where it was
-			// written. Appending it at the end reordered the arguments —
-			// `send --help a.txt` went from failing on a missing --help to
-			// sharing a.txt.
-			opts.positional = append(opts.positional, "--help")
+			// --help after a command belongs to it, wherever it was written.
+			// Recording it as a flag keeps it out of the command's arguments:
+			// `send --help a.txt` used to look for a file called --help.
+			opts.helpForCommand = true
 		}
 		rest = fs.Args()
 		if len(rest) == 0 {
@@ -467,11 +567,15 @@ func usage() {
     trust remove <peer-id>       unpair a device
     files [dir]                  list shared-dir files
     remote-files <peer-id> [dir] list files on a connected peer
+    daemon                       run the background service (lantern daemon --help)
+    mcp                          run the MCP stdio server for agents
     doctor                       diagnose a setup and print the fix for each problem
                                 (lantern doctor --probe-peers for real reachability)
     version                      version, commit, build date, toolchain, platform
+    help [command]               show help for a command
 
 flags:
+  -h, --help        show help (also <command> --help)
   --json            machine-readable JSONL on stdout (agents/MCP/GUI)
   --out DIR         receive output directory (default ".")
   --port N          in-process listen port (default 0 = random)

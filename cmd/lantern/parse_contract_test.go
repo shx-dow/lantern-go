@@ -126,13 +126,17 @@ func TestHelpFlagRouting(t *testing.T) {
 		t.Errorf("parseArgs(help daemon) = %+v, want command help with [daemon]", opts)
 	}
 
-	// After a real command, --help is passed through rather than hijacked.
+	// After a real command, --help belongs to the command rather than being
+	// passed on as one of its arguments.
 	opts, err = parseArgs([]string{"send", "--help"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.command != "send" || !reflect.DeepEqual(opts.positional, []string{"--help"}) {
-		t.Errorf("parseArgs(send --help) = %+v, want command send with [--help]", opts)
+	if opts.command != "send" || !opts.helpForCommand {
+		t.Errorf("parseArgs(send --help) = %+v, want command send with help requested", opts)
+	}
+	if len(opts.positional) != 0 {
+		t.Errorf("parseArgs(send --help): positional = %v, want none", opts.positional)
 	}
 }
 
@@ -394,30 +398,33 @@ func TestTerminatorProtectsEveryArgumentAfterIt(t *testing.T) {
 	}
 }
 
-// A command's own --help keeps its position, so the arguments the command acts
-// on are the same ones it acted on before. Appending it at the end reordered
-// them, and `send --help a.txt` went from failing on a missing --help to
-// sharing a.txt — a transfer the user did not ask for.
-func TestHelpAfterACommandKeepsItsPosition(t *testing.T) {
+// A command's own --help is recorded as a flag rather than kept as an
+// argument. Keeping it in the argument list made `send --help a.txt` try to
+// share a file called --help, and `send a.txt --help` a real transfer the user
+// did not ask for. The command's other arguments still parse as before.
+func TestHelpAfterACommandIsFlaggedNotPassed(t *testing.T) {
 	for _, c := range []struct {
 		args []string
 		want []string
 	}{
-		{[]string{"send", "--help", "a.txt"}, []string{"--help", "a.txt"}},
-		{[]string{"send", "a.txt", "--help"}, []string{"a.txt", "--help"}},
+		{[]string{"send", "--help", "a.txt"}, []string{"a.txt"}},
+		{[]string{"send", "a.txt", "--help"}, []string{"a.txt"}},
 		// "add" is trust's own subcommand, so it is an argument here.
-		{[]string{"trust", "add", "--help", "peer"}, []string{"add", "--help", "peer"}},
+		{[]string{"trust", "add", "--help", "peer"}, []string{"add", "peer"}},
 	} {
 		opts, err := parseArgs(c.args)
 		if err != nil {
 			t.Fatalf("parseArgs(%v) = %v", c.args, err)
+		}
+		if !opts.helpForCommand {
+			t.Errorf("parseArgs(%v): helpForCommand = false, want true", c.args)
 		}
 		if !reflect.DeepEqual(opts.positional, c.want) {
 			t.Errorf("parseArgs(%v): positional = %v, want %v", c.args, opts.positional, c.want)
 		}
 	}
 
-	// A flag before the --help is still read; only --help moved.
+	// A flag before the --help is still read.
 	opts, err := parseArgs([]string{"trust", "add", "--tier", "read", "--help", "peer"})
 	if err != nil {
 		t.Fatal(err)
@@ -425,8 +432,23 @@ func TestHelpAfterACommandKeepsItsPosition(t *testing.T) {
 	if opts.tier != "read" {
 		t.Errorf("tier = %q, want read", opts.tier)
 	}
-	if !reflect.DeepEqual(opts.positional, []string{"add", "--help", "peer"}) {
-		t.Errorf("positional = %v, want [add --help peer]", opts.positional)
+	if !opts.helpForCommand {
+		t.Error("helpForCommand = false, want true")
+	}
+	if !reflect.DeepEqual(opts.positional, []string{"add", "peer"}) {
+		t.Errorf("positional = %v, want [add peer]", opts.positional)
+	}
+
+	// After the terminator it is an argument, not a request for help.
+	opts, err = parseArgs([]string{"send", "--", "--help"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.helpForCommand {
+		t.Error("a --help after `--` is an argument, not a help request")
+	}
+	if !reflect.DeepEqual(opts.positional, []string{"--help"}) {
+		t.Errorf("positional = %v, want [--help]", opts.positional)
 	}
 }
 
