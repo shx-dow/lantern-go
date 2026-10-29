@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 func newTrustHandler(t *testing.T, entries ...TrustEntry) *Handler {
@@ -45,6 +49,37 @@ func TestResolveRefByAlias(t *testing.T) {
 		if got != tc.want {
 			t.Fatalf("%q: got %q want %q", tc.ref, got, tc.want)
 		}
+	}
+}
+
+// newPeerID returns a syntactically valid peer ID that no test has paired.
+func newPeerID(t *testing.T) string {
+	t.Helper()
+	_, pub, err := crypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := peer.IDFromPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id.String()
+}
+
+// A valid peer ID does not have to be paired locally. Push is gated by the
+// receiver's trust and pairings are one-directional, so a sender that has
+// paired nothing addresses the receiver by raw peer ID. #73 rejected every
+// unpaired ref, which made that push a local 404 that never dialled.
+func TestResolveRefAcceptsUnpairedPeerID(t *testing.T) {
+	h := newTrustHandler(t, TrustEntry{PeerID: refTestPeerID, Alias: "laptop"})
+	unpaired := newPeerID(t)
+
+	got, err := h.resolveRef(unpaired)
+	if err != nil {
+		t.Fatalf("an unpaired but valid peer ID must resolve: %v", err)
+	}
+	if got != unpaired {
+		t.Fatalf("resolveRef(%q) = %q, want the ID unchanged", unpaired, got)
 	}
 }
 

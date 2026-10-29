@@ -15,9 +15,9 @@ import (
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
 
-// unknownDeviceError is a device reference that names neither a paired peer ID
-// nor a paired alias. The handlers answer 404: the request is well-formed, and
-// there is simply nothing paired by that name.
+// unknownDeviceError is a device reference that is neither a peer ID nor a
+// paired alias. The handlers answer 404: the request is well-formed, and there
+// is simply nothing by that name.
 type unknownDeviceError struct{ ref string }
 
 func (e *unknownDeviceError) Error() string {
@@ -26,10 +26,14 @@ func (e *unknownDeviceError) Error() string {
 
 // resolveRef maps a device reference to a peer ID. A ref is either a full
 // libp2p peer ID or the alias given at pairing time, so an agent can say
-// "laptop" instead of pasting 52 characters of base58. Anything that matches
-// neither is an unknown device: passing it through would make the p2p layer
-// answer with a peer ID parse error, which blames the syntax for what is
-// really an unpaired or mistyped name.
+// "laptop" instead of pasting 52 characters of base58.
+//
+// A valid peer ID does not have to be paired locally. Push is gated by the
+// receiver's trust and pairings are one-directional, so a sender that has
+// paired nothing can still address the receiver by its raw peer ID. Only a
+// ref that is neither paired nor a peer ID is an unknown device: passing that
+// through would make the p2p layer answer with a peer ID parse error, which
+// blames the syntax for what is really an unpaired or mistyped name.
 func (h *Handler) resolveRef(ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -48,6 +52,11 @@ func (h *Handler) resolveRef(ref string) (string, error) {
 		if e.Alias != "" && strings.EqualFold(e.Alias, ref) {
 			return e.PeerID, nil
 		}
+	}
+	// Not paired here, but syntactically a peer ID: the receiver decides
+	// whether the push is allowed, so let it be dialled.
+	if _, err := peer.Decode(ref); err == nil {
+		return ref, nil
 	}
 	return "", &unknownDeviceError{ref: ref}
 }
