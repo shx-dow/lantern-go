@@ -236,7 +236,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '503':
-          $ref: '#/components/responses/BadRequest'
+          description: Pairing is not configured on this daemon.
     post:
       summary: Pair a device
       requestBody:
@@ -257,23 +257,70 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Pairing is not configured on this daemon.
   /v1/trust/{id}:
-    delete:
-      summary: Unpair a device
+    patch:
+      summary: Change what a paired device may do
+      description: |-
+        Changes an existing pairing without re-adding it, so granting or
+        revoking access cannot clobber the alias or the cached addresses. Only
+        the fields present in the body change; an absent `tier` keeps the
+        current one. Takes an alias as well as a peer ID.
       parameters:
         - name: id
           in: path
           required: true
           schema:
             type: string
-          description: Peer ID to unpair.
+          description: Device alias or peer ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrustRequest'
+      responses:
+        '200':
+          description: The updated pairing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrustEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Not paired.
+        '503':
+          description: Pairing is not configured on this daemon.
+    delete:
+      summary: Unpair a device
+      description: |-
+        Revokes every standing capability the pairing conferred, on both the
+        read and the write path, immediately. Takes an alias as well as a peer
+        ID.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Device alias or peer ID.
       responses:
         '204':
           description: Unpaired.
-        '404':
-          $ref: '#/components/responses/NotFound'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Not paired.
+        '500':
+          description: The unpair could not be persisted; the pairing is still in effect.
+        '503':
+          description: Pairing is not configured on this daemon.
   /v1/files:
     get:
       summary: List local shared-dir files
@@ -302,15 +349,15 @@ paths:
           $ref: '#/components/responses/Unauthorized'
   /v1/peers/{id}/files:
     get:
-      summary: List files on a connected peer
-      description: Proxies the paired remote's shared dirs over /lantern/list/1.0.0. The remote serves only paired devices.
+      summary: List files on a paired device
+      description: Proxies the remote's shared dirs over /lantern/list/1.0.0. The remote serves only devices it has paired.
       parameters:
         - name: id
           in: path
           required: true
           schema:
             type: string
-          description: Connected peer ID.
+          description: Device alias or peer ID.
         - name: dir
           in: query
           schema:
@@ -332,6 +379,10 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          description: The remote refused the listing or was unreachable.
   /v1/devices:
     get:
       summary: List paired devices
@@ -429,6 +480,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '502':
           description: The remote refused the read or was unreachable.
   /v1/peers/{id}/stat:
@@ -464,71 +517,19 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '502':
           description: The remote refused the stat or was unreachable.
-  /v1/trust/{id}:
-    patch:
-      summary: Change what a paired device may do
-      description: |-
-        Changes an existing pairing without re-adding it, so granting or
-        revoking access cannot clobber the alias or the cached addresses. Only
-        the fields present in the body change; an absent `tier` keeps the
-        current one. Takes an alias as well as a peer ID.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-          description: Device alias or peer ID.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/TrustRequest'
-      responses:
-        '200':
-          description: The updated pairing.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TrustEntry'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          description: Not paired.
-    delete:
-      summary: Unpair a device
-      description: |-
-        Revokes every standing capability the pairing conferred, on both the
-        read and the write path, immediately. Takes an alias as well as a peer
-        ID.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-          description: Device alias or peer ID.
-      responses:
-        '204':
-          description: Unpaired.
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          description: Not paired.
   /v1/pushes:
     post:
-      summary: Send a local file or directory to a paired device
+      summary: Send a local file or directory to another device
       description: |-
-        Copies a local file or directory onto a paired device. The sending
-        device dials the receiver and writes directly, so an agent holding
-        a file can place it without the receiver having to ask for it.
+        Copies a local file or directory onto another device. The receiving
+        device must have paired the sender at tier `read-write`; this device
+        dials it and writes directly, so an agent holding a file can place it
+        without the receiver having to ask for it. The sender does not have to
+        have paired the receiver: addressing it by raw peer ID is enough.
 
         Only paths and metadata cross this API; the bytes move p2p, so
         pushing a large file costs the same request as a small one.
@@ -576,7 +577,10 @@ paths:
               properties:
                 to:
                   type: string
-                  description: Destination device alias or peer ID.
+                  description: |-
+                    Destination device alias or peer ID. A raw peer ID works
+                    even when this device has paired nothing, because the
+                    receiving device's trust decides whether the write lands.
                 path:
                   type: string
                   description: Local file or directory to send. A directory is archived and expanded on the receiver.
@@ -597,6 +601,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '502':
           description: The remote refused the write, was unreachable, or returned a mismatched digest.
   /v1/uploads:
@@ -629,6 +635,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '500':
+          description: The daemon could not create or write the upload directory.
   /v1/events:
     get:
       summary: Stream transfer events (SSE)
@@ -691,7 +699,7 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
     NotFound:
-      description: Unknown transfer ID.
+      description: No transfer, device, or pairing by that ID or alias.
       content:
         application/json:
           schema:
@@ -778,6 +786,7 @@ components:
           format: int64
     Status:
       type: object
+      required: [peer_id, device_name, addrs, lan_only, http_addr, state_dir, p2p_port]
       properties:
         peer_id:
           type: string
@@ -790,6 +799,15 @@ components:
             type: string
         lan_only:
           type: boolean
+        http_addr:
+          type: string
+          description: The HTTP listener's bound address, with the port the kernel chose when the daemon was started on port 0.
+        state_dir:
+          type: string
+          description: Resolved data directory holding the token file and the pairing store.
+        p2p_port:
+          type: integer
+          description: Fixed p2p listen port; 0 means it is random and changes on every restart.
     PeerInfo:
       type: object
       required: [id, addrs, connected]
@@ -871,6 +889,9 @@ components:
       properties:
         name:
           type: string
+        name_b64:
+          type: string
+          description: Base64 of `name` when the name is not valid UTF-8; absent otherwise. A listing must hand back a name that can be used again.
         size:
           type: integer
           format: int64
@@ -925,7 +946,7 @@ components:
           type: string
           description: The local path behind the code, when it may be disclosed.
         entry:
-          $ref: '#/components/schemas/FSEntry'
+          $ref: '#/components/schemas/FileEntry'
         sha256:
           type: string
           description: The hash the sender computed for the file, so the receiver can verify what it reads.
@@ -1014,4 +1035,4 @@ components:
       properties:
         error:
           type: string
-          example: missing or invalid daemon token (use --daemon-token or $LANTERN_DAEMON_TOKEN)
+          example: missing or invalid daemon token (use --daemon-token, $LANTERN_DAEMON_TOKEN, or the daemon's token file)

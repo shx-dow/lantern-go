@@ -8,8 +8,10 @@ export LANTERN_DAEMON_TOKEN="$(cat ~/.local/share/lantern/.lanternd-token)"
 export LANTERND_URL="http://127.0.0.1:43782"
 ```
 
-The full contract is [`api/openapi.yaml`](../api/openapi.yaml). CI does not
-validate it, so treat a change to it as review-worthy.
+The full contract is [`api/openapi.yaml`](../api/openapi.yaml). CI parses it
+and fails on a duplicate key, an unresolved local `$ref`, an operation with no
+`responses` map, or a method and path the daemon's mux does not serve (see
+[`api/openapi_test.go`](../api/openapi_test.go)).
 
 Every request body is a small document of paths and flags, capped at 64 KiB. The
 cap exists to refuse a mistake, not to be generous.
