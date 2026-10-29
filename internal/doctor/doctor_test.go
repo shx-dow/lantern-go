@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -108,8 +109,9 @@ func TestRunWithoutDaemonStopsAfterOneFailure(t *testing.T) {
 	if c := find(t, r, "daemon"); c.Status != Fail || c.Fix == "" {
 		t.Fatalf("daemon check must fail with a fix: %+v", c)
 	}
-	// The token check is a local finding, so it still runs; the rest are all
-	// daemon-dependent and must be absent rather than reported as failing.
+	// The daemon check is the one failure; the token check cannot name a file
+	// without the daemon's state directory, so it is skipped rather than
+	// guessed at.
 	for _, c := range r.Checks {
 		if c.Name == "paired-devices" || c.Name == "listen-addresses" {
 			t.Fatalf("%s should not be reported without a daemon: %+v", c.Name, c)
@@ -135,14 +137,15 @@ func TestRunReportsAuthFailureDistinctly(t *testing.T) {
 	}
 }
 
-// A missing token is reported locally, before any call, because every call
-// would otherwise be refused for the same reason.
-func TestRunReportsMissingToken(t *testing.T) {
+// Without a daemon there is no state directory to derive a token path from,
+// so the token check is skipped rather than naming a file that may not be the
+// daemon's.
+func TestRunSkipsTokenWithoutADaemon(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	r := Run(t.Context(), lanternclient.New("http://127.0.0.1:1", ""), Options{})
 	c := find(t, r, "token")
-	if c.Status != Fail || c.Fix == "" {
-		t.Fatalf("token check = %+v", c)
+	if c.Status != Skip || c.Fix != "" {
+		t.Fatalf("token check = %+v, want skip with no fix", c)
 	}
 }
 
@@ -449,6 +452,75 @@ func TestFailingChecksCarryAFix(t *testing.T) {
 			if c.Fix == "" {
 				t.Errorf("check %q is %s with no fix: %+v", c.Name, c.Status, c)
 			}
+		}
+	}
+}
+
+// TestRunUsesTheDaemonsStateDir is the control for a daemon started with
+// --data-dir. Before the fix, doctor described the default directory and
+// pointed the token fix at a file under it, so the command it printed could
+// not work. The daemon already reports state_dir in /v1/status.
+func TestRunUsesTheDaemonsStateDir(t *testing.T) {
+	// The default location is a different directory, so a check that falls
+	// back to it is visible rather than accidentally right.
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	stateDir := filepath.Join(t.TempDir(), "custom-state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(stateDir, lanternclient.TokenFile)
+	s := &stubDaemon{status: lanternclient.Status{
+		PeerID: "p1", Addrs: []string{"/ip4/192.168.1.11/tcp/41001"},
+		StateDir: stateDir,
+	}}
+	srv := s.start(t)
+	defer srv.Close()
+
+	r := Run(t.Context(), lanternclient.New(srv.URL, "tok"), Options{Token: "tok"})
+	c := find(t, r, "data-dir")
+	if !contains(c.Detail, stateDir) || !contains(c.Detail, tokenPath) {
+		t.Fatalf("data-dir does not name the daemon's state dir and token: %+v", c)
+	}
+
+	// With no token supplied, the fix has to name the daemon's token file,
+	// not the default one.
+	r = Run(t.Context(), lanternclient.New(srv.URL, ""), Options{})
+	c = find(t, r, "token")
+	if c.Status != Fail || !contains(c.Fix, tokenPath) {
+		t.Fatalf("token fix does not name %s: %+v", tokenPath, c)
+	}
+}
+
+// On a fresh machine the daemon is the only thing to start. The token check
+// used to fail first and print a cat of a file that cannot exist yet, ahead of
+// the one actionable fix.
+func TestRunDoesNotOfferATokenFixWithoutADaemon(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	r := Run(t.Context(), lanternclient.New("http://127.0.0.1:1", ""), Options{})
+
+	c := find(t, r, "token")
+	if c.Status != Skip {
+		t.Fatalf("token = %+v, want skip when the daemon is unreachable", c)
+	}
+	if c.Fix != "" {
+		t.Fatalf("token skip carries a fix: %+v", c)
+	}
+
+	daemonAt, tokenAt := -1, -1
+	for i, ch := range r.Checks {
+		switch ch.Name {
+		case "daemon":
+			daemonAt = i
+		case "token":
+			tokenAt = i
+		}
+	}
+	if daemonAt < 0 || tokenAt < 0 || daemonAt > tokenAt {
+		t.Fatalf("the daemon check must come before the token check: %+v", r.Checks)
+	}
+	for _, ch := range r.Checks {
+		if strings.Contains(ch.Fix, "cat ") {
+			t.Fatalf("%s offers a cat fix with no daemon to read a token from: %+v", ch.Name, ch)
 		}
 	}
 }

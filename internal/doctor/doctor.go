@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -88,17 +89,20 @@ func Run(ctx context.Context, client *lanternclient.Client, opts Options) Report
 	}
 
 	add(checkBinary())
-	add(checkToken(opts.Token))
-	add(checkDataDir())
 
 	host := clientHost(client)
 
 	// The daemon check gates the rest: without it every later call fails for
-	// the same single reason, and saying so once is clearer than five
-	// identical errors.
+	// the same single reason, and the state directory needed to name a token
+	// path is unknown. It comes before the token check for that reason.
 	status, err := client.Status()
 	if err != nil {
 		add(daemonCheck(host, err))
+		add(Check{
+			Name:   "token",
+			Status: Skip,
+			Detail: "not checked: the daemon is unreachable, so the token file cannot be located",
+		})
 		return r
 	}
 	add(Check{
@@ -107,6 +111,15 @@ func Run(ctx context.Context, client *lanternclient.Client, opts Options) Report
 		Detail: fmt.Sprintf("reachable at %s as %s (%s), lan_only=%v",
 			host, orDash(status.DeviceName), orDash(status.PeerID), status.LANOnly),
 	})
+
+	stateDir := strings.TrimSpace(status.StateDir)
+	if stateDir == "" {
+		// A daemon older than state_dir in /v1/status. Fall back rather than
+		// describing an empty directory.
+		stateDir = paths.Data()
+	}
+	add(checkDataDir(stateDir))
+	add(checkToken(opts.Token, stateDir))
 
 	add(checkListenAddrs(status.Addrs))
 	add(checkP2PPortPinned(status))
@@ -129,30 +142,32 @@ func checkBinary() Check {
 
 // checkToken reports whether a token was supplied, since without one every
 // API call is refused with 401 and the operator would otherwise see only a
-// generic auth failure.
-func checkToken(token string) Check {
+// generic auth failure. The fix names the token file under the daemon's own
+// state directory, which is not necessarily the default one.
+func checkToken(token, stateDir string) Check {
 	if strings.TrimSpace(token) == "" {
 		return Check{
 			Name:   "token",
 			Status: Fail,
 			Detail: "no bearer token supplied, so every daemon call will be refused",
 			Fix: fmt.Sprintf("export LANTERN_DAEMON_TOKEN=$(cat %s)   # or pass --daemon-token",
-				lanternclientTokenPath()),
+				filepath.Join(stateDir, lanternclient.TokenFile)),
 		}
 	}
 	return Check{Name: "token", Status: Pass, Detail: "bearer token supplied"}
 }
 
 // checkDataDir reports where identity and pairings live, and whether that
-// directory is present.
+// directory is present. The directory is the daemon's own state_dir, so a
+// daemon started with --data-dir is described correctly rather than as the
+// default one.
 //
 // A missing directory is only a warning, never a failure: the daemon may
 // legitimately run under --data-dir somewhere else, and it has already proven
 // it has an identity by answering at all. It matters because it is where the
 // identity key lives, so its absence on a machine that is not running is how
 // a device silently loses its pairings after a reboot.
-func checkDataDir() Check {
-	dir := paths.Data()
+func checkDataDir(dir string) Check {
 	exists, err := osStat(dir)
 	switch {
 	case err != nil:
@@ -173,7 +188,8 @@ func checkDataDir() Check {
 		return Check{
 			Name:   "data-dir",
 			Status: Pass,
-			Detail: dir + " (identity, pairings, token live here)",
+			Detail: fmt.Sprintf("%s (identity, pairings, and %s live here)",
+				dir, filepath.Join(dir, lanternclient.TokenFile)),
 		}
 	}
 }
