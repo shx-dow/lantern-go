@@ -69,30 +69,63 @@ func (h *Handler) WithStateDir(dir string) *Handler {
 	return h
 }
 
+// Route is one method and path pattern the daemon serves.
+type Route struct {
+	Method  string
+	Pattern string
+}
+
+type route struct {
+	Route
+	handler http.HandlerFunc
+}
+
+// routeTable is the single list of v1 endpoints. Routes registers it and
+// RouteTable exposes it to the spec test, so a route cannot exist in only one
+// of the daemon and api/openapi.yaml.
+func (h *Handler) routeTable() []route {
+	return []route{
+		{Route{"POST", "/v1/shares"}, h.postShares},
+		{Route{"GET", "/v1/shares"}, h.getShares},
+		{Route{"DELETE", "/v1/shares/{id}"}, h.deleteTransfer},
+		{Route{"POST", "/v1/fetches"}, h.postFetches},
+		{Route{"GET", "/v1/transfers"}, h.getTransfers},
+		{Route{"GET", "/v1/transfers/{id}"}, h.getTransfer},
+		{Route{"DELETE", "/v1/transfers/{id}"}, h.deleteTransfer},
+		{Route{"GET", "/v1/history"}, h.getHistory},
+		{Route{"GET", "/v1/status"}, h.getStatus},
+		{Route{"GET", "/v1/peers"}, h.getPeers},
+		{Route{"POST", "/v1/uploads"}, h.postUploads},
+		{Route{"GET", "/v1/events"}, h.getEvents},
+		{Route{"GET", "/v1/trust"}, h.getTrust},
+		{Route{"POST", "/v1/trust"}, h.postTrust},
+		{Route{"PATCH", "/v1/trust/{id}"}, h.patchTrust},
+		{Route{"DELETE", "/v1/trust/{id}"}, h.deleteTrust},
+		{Route{"GET", "/v1/files"}, h.getFiles},
+		{Route{"GET", "/v1/devices"}, h.getDevices},
+		{Route{"GET", "/v1/peers/{id}/files"}, h.getRemoteFiles},
+		{Route{"GET", "/v1/peers/{id}/read"}, h.getRemoteRead},
+		{Route{"GET", "/v1/peers/{id}/stat"}, h.getRemoteStat},
+		{Route{"POST", "/v1/pushes"}, h.postPush},
+	}
+}
+
 // Routes registers v1 endpoints on mux.
 func (h *Handler) Routes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v1/shares", h.postShares)
-	mux.HandleFunc("GET /v1/shares", h.getShares)
-	mux.HandleFunc("DELETE /v1/shares/{id}", h.deleteTransfer)
-	mux.HandleFunc("POST /v1/fetches", h.postFetches)
-	mux.HandleFunc("GET /v1/transfers", h.getTransfers)
-	mux.HandleFunc("GET /v1/transfers/{id}", h.getTransfer)
-	mux.HandleFunc("DELETE /v1/transfers/{id}", h.deleteTransfer)
-	mux.HandleFunc("GET /v1/history", h.getHistory)
-	mux.HandleFunc("GET /v1/status", h.getStatus)
-	mux.HandleFunc("GET /v1/peers", h.getPeers)
-	mux.HandleFunc("POST /v1/uploads", h.postUploads)
-	mux.HandleFunc("GET /v1/events", h.getEvents)
-	mux.HandleFunc("GET /v1/trust", h.getTrust)
-	mux.HandleFunc("POST /v1/trust", h.postTrust)
-	mux.HandleFunc("PATCH /v1/trust/{id}", h.patchTrust)
-	mux.HandleFunc("DELETE /v1/trust/{id}", h.deleteTrust)
-	mux.HandleFunc("GET /v1/files", h.getFiles)
-	mux.HandleFunc("GET /v1/devices", h.getDevices)
-	mux.HandleFunc("GET /v1/peers/{id}/files", h.getRemoteFiles)
-	mux.HandleFunc("GET /v1/peers/{id}/read", h.getRemoteRead)
-	mux.HandleFunc("GET /v1/peers/{id}/stat", h.getRemoteStat)
-	mux.HandleFunc("POST /v1/pushes", h.postPush)
+	for _, r := range h.routeTable() {
+		mux.HandleFunc(r.Method+" "+r.Pattern, r.handler)
+	}
+}
+
+// RouteTable lists every method and path the daemon serves. The API spec test
+// compares it with api/openapi.yaml.
+func (h *Handler) RouteTable() []Route {
+	routes := h.routeTable()
+	out := make([]Route, len(routes))
+	for i, r := range routes {
+		out[i] = r.Route
+	}
+	return out
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
