@@ -85,9 +85,14 @@ func TestSpecRefsResolve(t *testing.T) {
 
 func checkRefs(t *testing.T, root, n *yaml.Node, path string) {
 	t.Helper()
-	if n.Kind == yaml.ScalarNode && n.Tag == "!!str" && strings.HasPrefix(n.Value, "#/") {
-		if _, err := resolvePointer(root, n.Value); err != nil {
-			t.Errorf("%s: %v", path, err)
+	if n.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			key, value := n.Content[i], n.Content[i+1]
+			if key.Value == "$ref" && value.Kind == yaml.ScalarNode && strings.HasPrefix(value.Value, "#/") {
+				if _, err := resolvePointer(root, value.Value); err != nil {
+					t.Errorf("%s: %v", path, err)
+				}
+			}
 		}
 	}
 	for _, c := range n.Content {
