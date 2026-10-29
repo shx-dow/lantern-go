@@ -89,6 +89,48 @@ func TestPushAcceptsDirectorySource(t *testing.T) {
 	}
 }
 
+// A sender that has paired nothing still pushes by raw peer ID. The receiver
+// pairs the sender at read-write, and that pairing is what governs the write:
+// pairings are one-directional, so requiring one on the sender would make the
+// documented arrangement impossible. This is the end-to-end control for the
+// local 404 #73 introduced.
+func TestPushByPeerIDWithoutALocalPairing(t *testing.T) {
+	root := t.TempDir()
+	p := tierPair(t, root, []string{root}, true)
+	defer p.cleanup()
+	if _, err := p.daemon.Trust.SetTier(p.paired, string(TierReadWrite)); err != nil {
+		t.Fatal(err)
+	}
+
+	// The sender's own trust store is empty: it has not paired the receiver.
+	senderTrust, err := NewTrustStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender := New(p.client)
+	sender.Trust = senderTrust
+	h := NewHandler(sender, "self", nil, true, 0, t.TempDir())
+
+	const content = "pushed by peer ID"
+	src := filepath.Join(t.TempDir(), "payload.txt")
+	if err := os.WriteFile(src, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	h.postPush(rec, pushReq(t, map[string]any{"to": p.server, "path": src}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("push to an unpaired peer ID = %d: %s", rec.Code, rec.Body.String())
+	}
+	got, err := os.ReadFile(filepath.Join(root, "payload.txt"))
+	if err != nil {
+		t.Fatalf("the receiver did not store the file: %v", err)
+	}
+	if string(got) != content {
+		t.Fatalf("receiver stored %q, want %q", got, content)
+	}
+}
+
 func TestPushRejectsMissingSource(t *testing.T) {
 	const id = "12D3KooWTestPeerID00000000000000000000000000000000"
 	h := newTrustHandler(t, TrustEntry{PeerID: id, Alias: "laptop"})
