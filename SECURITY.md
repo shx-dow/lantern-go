@@ -2,9 +2,8 @@
 
 ## Status
 
-Lantern is pre-alpha. There are no releases and no supported versions, so
-nothing here is covered by a compatibility promise. Treat it as experimental
-software.
+Lantern is pre-alpha. Releases are alpha only, with no supported versions and
+no compatibility promise, so treat it as experimental software.
 
 ## Reporting a vulnerability
 
@@ -76,8 +75,8 @@ The vocabulary for all of these is in [`CONTEXT.md`](CONTEXT.md).
 
 **No independent audit.** Nobody outside this project has reviewed the write
 path. An internal adversarial pass is recorded in
-[`docs/write-path-audit.md`](docs/write-path-audit.md), including the two
-findings it did not close.
+[`docs/write-path-audit.md`](docs/write-path-audit.md); both findings it made
+are fixed, and it is still not an independent audit.
 
 **Writes are the newer half.** Reads are encrypted and authenticated by the
 libp2p transport. A push has no application-layer key exchange of its own,
@@ -90,8 +89,9 @@ longer want with `lantern trust remove <peer-id>`.
 
 ## Version compatibility
 
-There are no tags and no releases, so there is no version table to maintain and
-nothing carries a compatibility promise. `main` is the only thing that exists.
+Releases are alpha only. No version is supported, so there is no version table
+to maintain and nothing carries a compatibility promise. `main` is the only
+thing that exists.
 
 One compatibility fact matters to a reporter, because it changes what a failure
 means. A **sender** older than the digest contract cannot push to a current

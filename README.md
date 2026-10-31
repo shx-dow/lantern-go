@@ -6,9 +6,10 @@ no cloud store, and the agent never handles a share code.
 Bytes go peer to peer over libp2p. Agents drive it through the CLI, the daemon
 HTTP API, or an MCP server.
 
-> **Pre-alpha.** No releases, no tags, no compatibility promise. The write path
-> has had no independent audit. Report a suspected vulnerability through
-> [private advisory](SECURITY.md), not a public issue.
+> **Pre-alpha.** Alpha builds only, with no supported versions and no
+> compatibility promise. The write path has had no independent audit. Report a
+> suspected vulnerability through [private advisory](SECURITY.md), not a public
+> issue.
 
 ## The three ways bytes move
 
@@ -92,7 +93,8 @@ lantern doctor --json            # for agents
 
 It reports on the daemon and its token, whether an advertised address is
 actually dialable from another machine, whether the p2p port is pinned, whether
-multicast leaves the host, and every paired device's reachability. It exits
+multicast leaves the host, and whether each paired device has a known address.
+Add `--probe-peers` to dial each paired device and report reachability. It exits
 non-zero when a check fails, so it works as a CI gate.
 
 Two results are warnings rather than failures: an mDNS check that hears
@@ -135,8 +137,9 @@ in [`docs/adr/`](docs/adr/). Two to read first:
   this device stopped working after an upgrade
 
 [`docs/write-path-audit.md`](docs/write-path-audit.md) records an internal
-adversarial pass over the push path, its two open findings, and the properties
-that held. It is not an independent audit.
+adversarial pass over the push path, the two findings it made and their fixes
+(`384b753`, `ab0223b`), and the properties that held. It is still not an
+independent audit.
 
 ## Security notes
 

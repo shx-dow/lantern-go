@@ -1,12 +1,20 @@
 # The daemon API
 
-Every request needs the daemon's bearer token. It lives in the data directory
-that `lantern daemon` prints on startup:
+Every request needs the daemon's bearer token. The CLI and MCP shim find it
+themselves for a loopback daemon: `--daemon-token` wins over
+`$LANTERN_DAEMON_TOKEN` (or `$LANTERND_TOKEN`), which wins over the token file
+in the data directory. The file is read only when the daemon URL is loopback, so
+a token from this machine is never sent to another host.
+
+For `curl` and other clients, read the token yourself:
 
 ```sh
 export LANTERN_DAEMON_TOKEN="$(cat ~/.local/share/lantern/.lanternd-token)"
 export LANTERND_URL="http://127.0.0.1:43782"
 ```
+
+A daemon started with `--data-dir` keeps its token in that directory; point
+`$LANTERN_DAEMON_TOKEN_FILE` at the file, or pass `--token-file`.
 
 The full contract is [`api/openapi.yaml`](../api/openapi.yaml). CI parses it
 and fails on a duplicate key, an unresolved local `$ref`, an operation with no
@@ -49,8 +57,11 @@ without the bytes, use `GET /v1/peers/{id}/stat`.
 
 ## Push a file
 
-The receiving device must be started with `--allow-writes`, and the sending
-device must be paired at tier `read-write`:
+The receiving device must be started with `--allow-writes`, and it must have
+paired the sender at tier `read-write`. The sender does not need a pairing of its
+own: it can address the receiver by raw peer ID, and the receiver's trust decides
+whether the write lands. An alias resolves against the sender's own pairings, so
+it only works when this device has paired the receiver.
 
 ```sh
 # on the receiving device
@@ -61,7 +72,7 @@ lantern daemon --shared-dirs ~/inbox --writable-dirs ~/inbox --allow-writes
 # from the sending device
 curl -s -X POST -H "Authorization: Bearer $LANTERN_DAEMON_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"to":"nas","path":"./report.txt"}' \
+  -d '{"to":"<receiver-peer-id>","path":"./report.txt"}' \
   http://127.0.0.1:43782/v1/pushes
 ```
 
