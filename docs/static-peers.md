@@ -15,9 +15,10 @@ lantern daemon --peer /ip4/192.168.1.20/tcp/41002/p2p/<peer-id>
 Each value is a full multiaddr ending in `/p2p/<peer-id>`. Pass several,
 comma-separated. A peer written into the config file instead uses `peer_addrs`.
 
-The address is kept permanently and dialed on demand. An unresolvable address is
-retried every 20 seconds until the other side appears, and once one works it is
-saved into the trust store so a restart keeps working.
+The address is kept permanently and dialed on demand. If the other side is not
+up yet, the daemon retries every 20 seconds until it connects. For a device you
+have paired, the configured address is also recorded in the trust store at
+startup, so a later restart can reach it without the flag.
 
 ## Pin the p2p port
 

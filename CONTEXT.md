@@ -61,10 +61,10 @@ path an agent uses for "get me this from the laptop".
 _Avoid_: calling it a fetch, download, pull
 
 **Fetch**:
-The command and tool name for consuming a share code into a directory. It is
-named for what the user does, not for the route: a fetch may end up on the
-read path or on a transfer, and which one it took is the serving device's
-decision.
+The concept of consuming a share code into a directory. The CLI spells the
+command `lantern receive`; the MCP tool is `fetch`. The name is for what the
+user does, not for the route: a fetch may end up on the read path or on a
+transfer, and which one it took is the serving device's decision.
 
 **Share code**:
 A high-entropy secret that names a share. It is a capability in its own right,
