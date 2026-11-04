@@ -39,6 +39,54 @@ lantern help daemon  # every daemon flag
 The daemon keeps its identity, pairings, and token in a per-user directory that
 survives a reboot. It prints the path on startup.
 
+## Install
+
+Releases are alpha builds. There is no installer, package-manager entry, SDK, or
+UI artifact. A release publishes six archives and one checksum file.
+
+| platform | archive |
+| --- | --- |
+| Linux amd64 | `lantern_v0.1.0-alpha.1_linux-amd64.tar.gz` |
+| Linux arm64 | `lantern_v0.1.0-alpha.1_linux-arm64.tar.gz` |
+| macOS amd64 | `lantern_v0.1.0-alpha.1_darwin-amd64.tar.gz` |
+| macOS arm64 | `lantern_v0.1.0-alpha.1_darwin-arm64.tar.gz` |
+| Windows amd64 | `lantern_v0.1.0-alpha.1_windows-amd64.zip` |
+| Windows arm64 | `lantern_v0.1.0-alpha.1_windows-arm64.zip` |
+
+`SHA256SUMS` carries one line per archive. Download it beside the archive you
+want, then check that one line and unpack.
+
+Linux amd64:
+
+```sh
+grep 'linux-amd64\.tar\.gz' SHA256SUMS | sha256sum -c -
+tar -xzf lantern_v0.1.0-alpha.1_linux-amd64.tar.gz
+cd linux-amd64
+./lantern version
+```
+
+macOS arm64:
+
+```sh
+grep 'darwin-arm64\.tar\.gz' SHA256SUMS | shasum -a 256 -c -
+tar -xzf lantern_v0.1.0-alpha.1_darwin-arm64.tar.gz
+cd darwin-arm64
+./lantern version
+```
+
+Windows amd64, in PowerShell:
+
+```powershell
+Get-FileHash .\lantern_v0.1.0-alpha.1_windows-amd64.zip -Algorithm SHA256
+# Compare the hash with the matching line in SHA256SUMS.
+Expand-Archive .\lantern_v0.1.0-alpha.1_windows-amd64.zip .
+.\windows-amd64\lantern.exe version
+```
+
+An archive contains the binary and the documentation it links to: `README.md`,
+`LICENSE`, `SECURITY.md`, `CONTEXT.md`, and `docs/`. `lantern version` prints the
+release version, commit, and build date.
+
 ## Pair, then read
 
 ```sh
