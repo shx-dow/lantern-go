@@ -1,6 +1,7 @@
 name: Release
 
-# Builds a GitHub release from a version tag.
+# Builds a GitHub release from a version tag, and can rehearse the same build
+# from workflow_dispatch without publishing anything.
 #
 # Deliberately hand-rolled rather than delegated to a release action. A release
 # action is a third-party dependency that runs with the repository token and
@@ -11,62 +12,132 @@ name: Release
 #
 # The binaries are CGO-free. Every dependency is pure Go, so there is no
 # toolchain to install per platform and no C library for a user to be missing.
+#
+# Permission is split by job. Everything that builds or checks an artifact runs
+# with contents: read. Only the publish job gets contents: write, and a dry run
+# never starts that job, so a rehearsal has no token that can create a release
+# or move a tag.
 
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, for example v0.1.0-alpha.1"
+        required: true
+        type: string
+      dry_run:
+        description: "Build and verify only; do not create a release or tag"
+        required: false
+        default: true
+        type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 env:
-  # The tag without its leading v, which is what the binary reports.
-  VERSION: ${{ github.ref_name }}
   MODULE: github.com/shx-dow/lantern-go
 
 jobs:
   # A tag that is not a commit on main is a mistyped or stale tag, and
   # publishing one is worse than failing. This runs before anything is built.
+  #
+  # A dispatch has no tag. It must name a version and point at a commit on
+  # main, and with dry_run=true it stops after the artifacts are verified.
   verify:
-    name: Verify tag
+    name: Verify version
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
       prerelease: ${{ steps.check.outputs.prerelease }}
+      publish: ${{ steps.check.outputs.publish }}
     steps:
       - uses: actions/checkout@v4
         with:
+          # Tags and both candidate branches are needed for the ancestry
+          # checks below.
           fetch-depth: 0
 
       - id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          version="${tag#v}"
-          if [ "$version" = "$tag" ]; then
-            echo "::error::tag $tag does not start with v"
+
+          if [ "$EVENT_NAME" = "push" ]; then
+            tag="$REF_NAME"
+            source="tag push"
+          else
+            tag="$INPUT_VERSION"
+            source="workflow_dispatch"
+          fi
+
+          if [[ "$tag" != v* ]]; then
+            echo "::error::$source version $tag does not start with v"
             exit 1
           fi
-          if [ -z "$version" ]; then
-            echo "::error::tag $tag carries no version"
+          version="${tag#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "::error::$source version $tag is not vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-PRERELEASE"
             exit 1
           fi
 
-          # Reachable from an origin branch, rather than only from some commit
-          # that happens to exist. An unreferenced tag is a mistake worth
-          # stopping for.
-          found=no
-          for ref in origin/main origin/release; do
-            if git merge-base --is-ancestor "$GITHUB_SHA" "$ref" 2>/dev/null; then
-              echo "tag $tag is on $ref"
-              found=yes
-              break
+          if [ "$EVENT_NAME" = "push" ]; then
+            # Reachable from an origin branch, rather than only from some
+            # commit that happens to exist. An unreferenced tag is a mistake
+            # worth stopping for.
+            found=no
+            for ref in origin/main origin/release; do
+              if git merge-base --is-ancestor "$SHA" "$ref" 2>/dev/null; then
+                echo "tag $tag is on $ref"
+                found=yes
+                break
+              fi
+            done
+            if [ "$found" = no ]; then
+              echo "::error::tag $tag ($SHA) is not on main or release"
+              exit 1
             fi
-          done
-          if [ "$found" = no ]; then
-            echo "::error::tag $tag ($GITHUB_SHA) is not on main or release"
-            exit 1
+            publish=true
+            mode="publish"
+          else
+            if ! git merge-base --is-ancestor "$SHA" origin/main; then
+              echo "::error::dispatch commit $SHA is not on main"
+              exit 1
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              publish=false
+              mode="dry run, no release or tag will be created"
+            else
+              # A non-dry dispatch can retry a release, but it cannot mint a
+              # tag. The tag must already exist and point at this commit, so
+              # the workflow keeps the same tag-only publish rule as a push.
+              if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+                echo "::error::tag $tag does not exist; dispatch only rehearses. Push the tag to publish."
+                exit 1
+              fi
+              tag_commit="$(git rev-parse "$tag^{commit}")"
+              if [ "$tag_commit" != "$SHA" ]; then
+                echo "::error::tag $tag points at $tag_commit, not dispatched commit $SHA"
+                exit 1
+              fi
+              publish=true
+              mode="publish, using existing tag $tag at this commit"
+            fi
+            {
+              echo "### Dispatch build"
+              echo ""
+              echo "- Version: \`$tag\`"
+              echo "- Commit: \`$SHA\` (on main)"
+              echo "- Mode: $mode"
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
           # A version with a hyphen is a pre-release. The project is pre-alpha,
@@ -81,9 +152,13 @@ jobs:
           else
             prerelease=false
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
-          echo "building $version (prerelease=$prerelease)"
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+          echo "$source: building $version (prerelease=$prerelease, publish=$publish)"
 
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
@@ -100,6 +175,11 @@ jobs:
           - { goos: darwin, goarch: arm64 }
           - { goos: windows, goarch: amd64 }
           - { goos: windows, goarch: arm64 }
+    env:
+      # The effective version, from the tag or the dispatch input. Never
+      # github.ref_name unconditionally: on a dispatch that is a branch name.
+      VERSION: ${{ needs.verify.outputs.version }}
+      TAG: ${{ needs.verify.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -133,7 +213,7 @@ jobs:
           fi
           go build -trimpath \
             -ldflags "-s -w \
-              -X $MODULE/internal/version.Version=${{ needs.verify.outputs.version }} \
+              -X $MODULE/internal/version.Version=$VERSION \
               -X $MODULE/internal/version.Commit=$GITHUB_SHA \
               -X $MODULE/internal/version.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o "dist/${{ matrix.goos }}-${{ matrix.goarch }}/lantern${ext}" \
@@ -143,7 +223,7 @@ jobs:
         run: |
           set -euo pipefail
           stage="dist/${{ matrix.goos }}-${{ matrix.goarch }}"
-          base="lantern_${GITHUB_REF_NAME}_${{ matrix.goos }}-${{ matrix.goarch }}"
+          base="lantern_${TAG}_${{ matrix.goos }}-${{ matrix.goarch }}"
           cp LICENSE README.md "$stage/"
           if [ "${{ matrix.goos }}" = "windows" ]; then
             (cd dist && zip -q -r "$base.zip" "${{ matrix.goos }}-${{ matrix.goarch }}")
@@ -169,10 +249,14 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
           if-no-files-found: error
-          retention-days: 1
+          # Long enough to retry a publish from the same run's artifacts,
+          # rather than rebuilding and hoping the inputs were identical.
+          retention-days: 7
 
+  # Downloads every archive, checks the sums, and runs the binary that a user
+  # would download. This job has no write token and runs on both paths.
   release:
-    name: Publish release
+    name: Verify artifacts
     needs: [verify, build]
     runs-on: ubuntu-latest
     steps:
@@ -191,6 +275,101 @@ jobs:
           sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
           cat SHA256SUMS
 
+      - name: Smoke-test archives
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cd dist
+
+          if ! sha256sum -c SHA256SUMS; then
+            echo "::error::SHA256SUMS does not match the downloaded archives"
+            exit 1
+          fi
+
+          shopt -s nullglob
+          archives=(./*.tar.gz ./*.zip)
+          if [ "${#archives[@]}" -ne 6 ]; then
+            echo "::error::expected 6 archives, found ${#archives[@]}"
+            printf '%s\n' "${archives[@]}"
+            exit 1
+          fi
+          for suffix in \
+            linux-amd64.tar.gz linux-arm64.tar.gz \
+            darwin-amd64.tar.gz darwin-arm64.tar.gz \
+            windows-amd64.zip windows-arm64.zip; do
+            if [ ! -f "lantern_${TAG}_${suffix}" ]; then
+              echo "::error::missing archive lantern_${TAG}_${suffix}"
+              exit 1
+            fi
+          done
+
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          tar -xzf "lantern_${TAG}_linux-amd64.tar.gz" -C "$tmp"
+          bin="$(find "$tmp" -type f -name lantern -print -quit)"
+          if [ -z "$bin" ]; then
+            echo "::error::linux-amd64 archive contains no lantern binary"
+            exit 1
+          fi
+
+          out="$("$bin" version)"
+          echo "lantern version: $out"
+          prefix="$VERSION ($COMMIT, "
+          if [[ "$out" != "$prefix"* ]]; then
+            echo "::error::version output does not start with '$prefix': $out"
+            exit 1
+          fi
+          rest="${out#"$prefix"}"
+          build_date="${rest%%) *}"
+          if ! [[ "$build_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]]; then
+            echo "::error::build date is empty or not RFC 3339: '$build_date'"
+            exit 1
+          fi
+          echo "artifact smoke test passed for $TAG at $COMMIT, built $build_date"
+
+  # The only job with a write token. It is skipped unless the verify job said
+  # publish=true, which for a dispatch means dry_run was explicitly false and
+  # the tag already points at the dispatched commit.
+  publish:
+    name: Publish release
+    needs: [verify, release]
+    if: needs.verify.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # Read this before the token is used. A dispatch with dry_run unset or
+      # true must not reach gh, even if a future edit loosens the job
+      # condition.
+      - name: Refuse a dry run
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DRY_RUN" != "false" ]; then
+            echo "::error::refusing to publish: this dispatch is a dry run"
+            exit 1
+          fi
+          echo "publish requested for $TAG"
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -l
+          sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
+          cat SHA256SUMS
+
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -199,10 +378,15 @@ jobs:
           # which repository. Without this, gh release view finds nothing and
           # gh release create fails for the same reason.
           GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.verify.outputs.tag }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
         run: |
           set -euo pipefail
-          args=(--title "$GITHUB_REF_NAME" --generate-notes --verify-tag)
-          if [ "${{ needs.verify.outputs.prerelease }}" = "true" ]; then
+          # --verify-tag is unconditional: a tag is the only thing this
+          # workflow publishes. A dispatch may retry an existing tag, but it
+          # never creates one.
+          args=(--title "$TAG" --generate-notes --verify-tag)
+          if [ "$PRERELEASE" = "true" ]; then
             args+=(--prerelease)
           fi
           # Named globs, not dist/*.
@@ -222,11 +406,11 @@ jobs:
             fi
           done
 
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+          if gh release view "$TAG" >/dev/null 2>&1; then
             # A re-run after a partial failure replaces the assets it already
             # published. Deleting the release instead would fail --verify-tag,
             # because --cleanup-tag removes the tag that triggered this run.
-            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+            gh release upload "$TAG" "${assets[@]}" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "${args[@]}" "${assets[@]}"
+            gh release create "$TAG" "${args[@]}" "${assets[@]}"
           fi
