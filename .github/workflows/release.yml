@@ -224,7 +224,12 @@ jobs:
           set -euo pipefail
           stage="dist/${{ matrix.goos }}-${{ matrix.goarch }}"
           base="lantern_${TAG}_${{ matrix.goos }}-${{ matrix.goarch }}"
-          cp LICENSE README.md "$stage/"
+          # README links to CONTEXT.md, SECURITY.md, and the files under docs/
+          # with relative paths. Ship them so an unpacked archive is readable
+          # offline. LICENSE alone was not enough, and the links resolved to
+          # nothing in the download.
+          cp LICENSE README.md SECURITY.md "$stage/"
+          cp -R CONTEXT.md docs "$stage/"
           if [ "${{ matrix.goos }}" = "windows" ]; then
             (cd dist && zip -q -r "$base.zip" "${{ matrix.goos }}-${{ matrix.goarch }}")
           else
@@ -309,6 +314,25 @@ jobs:
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
           tar -xzf "lantern_${TAG}_linux-amd64.tar.gz" -C "$tmp"
+          top="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          if [ -z "$top" ] || [ "$(find "$tmp" -mindepth 1 -maxdepth 1 | wc -l)" -ne 1 ]; then
+            echo "::error::archive must contain exactly one top-level directory"
+            find "$tmp" -mindepth 1 -maxdepth 1
+            exit 1
+          fi
+          # The README links to these by relative path. A download that cannot
+          # follow them is not the documentation the repository publishes.
+          for f in \
+            README.md LICENSE SECURITY.md CONTEXT.md \
+            docs/daemon-api.md docs/static-peers.md docs/write-path-audit.md \
+            docs/adr/0001-directory-push-expands-receiver-side.md \
+            docs/adr/0002-new-pairings-default-to-read.md \
+            docs/adr/0003-content-without-a-digest-is-refused.md; do
+            if [ ! -f "$top/$f" ]; then
+              echo "::error::archive is missing $f"
+              exit 1
+            fi
+          done
           bin="$(find "$tmp" -type f -name lantern -print -quit)"
           if [ -z "$bin" ]; then
             echo "::error::linux-amd64 archive contains no lantern binary"
