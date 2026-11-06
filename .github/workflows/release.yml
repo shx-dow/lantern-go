@@ -324,7 +324,7 @@ jobs:
           # follow them is not the documentation the repository publishes.
           for f in \
             README.md LICENSE SECURITY.md CONTEXT.md \
-            docs/daemon-api.md docs/static-peers.md docs/write-path-audit.md \
+            docs/daemon-api.md \
             docs/adr/0001-directory-push-expands-receiver-side.md \
             docs/adr/0002-new-pairings-default-to-read.md \
             docs/adr/0003-content-without-a-digest-is-refused.md; do
