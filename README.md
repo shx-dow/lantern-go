@@ -148,8 +148,23 @@ non-zero when a check fails, so it works as a CI gate.
 Two results are warnings rather than failures: an mDNS check that hears
 nothing, and an idle paired device. Neither means the setup is broken.
 
-Discovery that cannot introduce two devices is covered in
-[static peers](docs/static-peers.md).
+### Static peers
+
+If discovery cannot introduce two devices, for example a WSL2 NAT, a Docker
+bridge, or Wi-Fi that blocks multicast, name the address directly:
+
+```sh
+lantern daemon --peer /ip4/192.168.1.20/tcp/41002/p2p/<peer-id>
+```
+
+Each value is a full multiaddr ending in `/p2p/<peer-id>`. The address is kept
+for the running process and dialed on demand. A paired device's address is also
+recorded in the trust store, so it survives a restart. Pin the p2p port with
+`--p2p-port` on both sides, or the address goes stale on every restart.
+
+In WSL2, use the Windows host's vEthernet address on the WSL side and the WSL
+address on the Windows side. Run `lantern doctor --probe-peers` on both after
+starting them.
 
 ## Development
 
@@ -183,11 +198,6 @@ in [`docs/adr/`](docs/adr/). Two to read first:
   stopped being able to push after an upgrade
 - [0003](docs/adr/0003-content-without-a-digest-is-refused.md) if a push **to**
   this device stopped working after an upgrade
-
-[`docs/write-path-audit.md`](docs/write-path-audit.md) records an internal
-adversarial pass over the push path, the two findings it made and their fixes
-(`384b753`, `ab0223b`), and the properties that held. It is still not an
-independent audit.
 
 ## Security notes
 

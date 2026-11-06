@@ -74,9 +74,10 @@ The vocabulary for all of these is in [`CONTEXT.md`](CONTEXT.md).
 ## Known limitations
 
 **No independent audit.** Nobody outside this project has reviewed the write
-path. An internal adversarial pass is recorded in
-[`docs/write-path-audit.md`](docs/write-path-audit.md); both findings it made
-are fixed, and it is still not an independent audit.
+path. An internal adversarial pass found two issues, both fixed: an absent
+digest was treated as a verified copy (`384b753`), and a pushed directory was
+world-accessible inside a private root (`ab0223b`). It is still not an
+independent audit.
 
 **Writes are the newer half.** Reads are encrypted and authenticated by the
 libp2p transport. A push has no application-layer key exchange of its own,

@@ -1,5 +1,8 @@
 # lantern-py
 
+Source only. No SDK package is published with a release; the alpha ships
+binaries.
+
 Thin zero-dependency Python client for **lanternd** (see `api/openapi.yaml`).
 File bytes never flow through here — the client trades share codes and
 streams progress while the p2p data plane moves content.
