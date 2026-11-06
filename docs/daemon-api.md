@@ -125,7 +125,7 @@ LANTERN_DAEMON_TOKEN = "<the token in your data dir>"
 ```
 
 Set `LANTERND_URL` to the daemon's real `--addr`. A daemon on `:43792`, as in
-the [static peers](static-peers.md) guide, is not the default port.
+the README's static peers example, is not the default port.
 
 Restart the client after editing, because MCP servers load at startup. Then ask
 it for something real: `devices` first, then a `read`, then a `push`.

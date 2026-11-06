@@ -192,7 +192,7 @@ func TestShareTransferRefusesToReplaceAnExistingFile(t *testing.T) {
 // A download takes its permissions from the directory it lands in, the same way
 // a push does. It used to hardcode 0644 for the file and 0755 for any directory
 // it had to create, so receiving into a 0700 directory produced a world-readable
-// file — the exact bug write-path-audit Finding 2 recorded for the push side.
+// file, the same bug the push side fixed in ab0223b.
 func TestFetchInheritsPermissionsFromDestination(t *testing.T) {
 	posixOnly(t)
 
