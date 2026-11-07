@@ -96,6 +96,7 @@ confirms the archive arrived intact.
 macOS, after unpacking:
 
 ```sh
+# from the directory containing the archive
 cd darwin-arm64
 xattr -dr com.apple.quarantine .
 ./lantern version
