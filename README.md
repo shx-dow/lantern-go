@@ -44,23 +44,29 @@ survives a reboot. It prints the path on startup.
 Releases are alpha builds. There is no installer, package-manager entry, SDK, or
 UI artifact. A release publishes six archives and one checksum file.
 
+Download the archive for your platform from the
+[releases page](https://github.com/shx-dow/lantern-go/releases). Each archive
+name carries the release tag, shown here as `<version>`:
+
 | platform | archive |
 | --- | --- |
-| Linux amd64 | `lantern_v0.1.0-alpha.1_linux-amd64.tar.gz` |
-| Linux arm64 | `lantern_v0.1.0-alpha.1_linux-arm64.tar.gz` |
-| macOS amd64 | `lantern_v0.1.0-alpha.1_darwin-amd64.tar.gz` |
-| macOS arm64 | `lantern_v0.1.0-alpha.1_darwin-arm64.tar.gz` |
-| Windows amd64 | `lantern_v0.1.0-alpha.1_windows-amd64.zip` |
-| Windows arm64 | `lantern_v0.1.0-alpha.1_windows-arm64.zip` |
+| Linux amd64 | `lantern_<version>_linux-amd64.tar.gz` |
+| Linux arm64 | `lantern_<version>_linux-arm64.tar.gz` |
+| macOS amd64 | `lantern_<version>_darwin-amd64.tar.gz` |
+| macOS arm64 | `lantern_<version>_darwin-arm64.tar.gz` |
+| Windows amd64 | `lantern_<version>_windows-amd64.zip` |
+| Windows arm64 | `lantern_<version>_windows-arm64.zip` |
 
 `SHA256SUMS` carries one line per archive. Download it beside the archive you
-want, then check that one line and unpack.
+want, then check that one line and unpack. Set `VERSION` to the tag you
+downloaded, for example `v0.1.0-alpha.1`.
 
 Linux amd64:
 
 ```sh
+VERSION=v0.1.0-alpha.1
 grep 'linux-amd64\.tar\.gz' SHA256SUMS | sha256sum -c -
-tar -xzf lantern_v0.1.0-alpha.1_linux-amd64.tar.gz
+tar -xzf "lantern_${VERSION}_linux-amd64.tar.gz"
 cd linux-amd64
 ./lantern version
 ```
@@ -68,8 +74,9 @@ cd linux-amd64
 macOS arm64:
 
 ```sh
+VERSION=v0.1.0-alpha.1
 grep 'darwin-arm64\.tar\.gz' SHA256SUMS | shasum -a 256 -c -
-tar -xzf lantern_v0.1.0-alpha.1_darwin-arm64.tar.gz
+tar -xzf "lantern_${VERSION}_darwin-arm64.tar.gz"
 cd darwin-arm64
 ./lantern version
 ```
@@ -77,9 +84,10 @@ cd darwin-arm64
 Windows amd64, in PowerShell:
 
 ```powershell
-Get-FileHash .\lantern_v0.1.0-alpha.1_windows-amd64.zip -Algorithm SHA256
+$version = "v0.1.0-alpha.1"
+Get-FileHash ".\lantern_${version}_windows-amd64.zip" -Algorithm SHA256
 # Compare the hash with the matching line in SHA256SUMS.
-Expand-Archive .\lantern_v0.1.0-alpha.1_windows-amd64.zip .
+Expand-Archive ".\lantern_${version}_windows-amd64.zip" .
 .\windows-amd64\lantern.exe version
 ```
 
