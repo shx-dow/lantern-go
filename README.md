@@ -87,6 +87,43 @@ An archive contains the binary and the documentation it links to: `README.md`,
 `LICENSE`, `SECURITY.md`, `CONTEXT.md`, and `docs/`. `lantern version` prints the
 release version, commit, and build date.
 
+## First run
+
+The binaries are unsigned. macOS and Windows warn the first time one runs. The
+warning is about the missing signature, not a damaged file. The checksum above
+confirms the archive arrived intact.
+
+macOS, after unpacking:
+
+```sh
+cd darwin-arm64
+xattr -dr com.apple.quarantine .
+./lantern version
+```
+
+Use `darwin-amd64` on Intel. If macOS still refuses, open System Settings,
+Privacy & Security, and allow `lantern` there.
+
+Windows, in PowerShell:
+
+```powershell
+Unblock-File .\windows-amd64\lantern.exe
+.\windows-amd64\lantern.exe version
+```
+
+If SmartScreen appears, choose More info, then Run anyway. Linux needs no extra
+step.
+
+Start the daemon in its own terminal and leave it running:
+
+```sh
+lantern daemon --shared-dirs ~/Share --device-name laptop
+```
+
+Then run `lantern doctor` in another terminal. The CLI and the MCP server talk
+to the daemon over the local API. Closing the daemon's terminal stops it, and
+commands fail until it is started again.
+
 ## Pair, then read
 
 ```sh
