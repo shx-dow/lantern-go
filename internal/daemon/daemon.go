@@ -160,7 +160,7 @@ func (d *Daemon) Share(path string, ttl time.Duration) (*Record, error) {
 		rec.ttlTimer = time.AfterFunc(ttl, func() { d.Cancel(rec.ID) })
 	}
 	d.mu.Unlock()
-	go d.watch(session, rec.ID)
+	go d.watch(session.Events(), rec.ID)
 	return rec, nil
 }
 
@@ -197,7 +197,7 @@ func (d *Daemon) Fetch(code, outDir string) (*Record, error) {
 	d.mu.Lock()
 	d.records[rec.ID] = rec
 	d.mu.Unlock()
-	go d.watch(session, rec.ID)
+	go d.watch(session.Events(), rec.ID)
 	return rec, nil
 }
 
@@ -358,14 +358,36 @@ func (d *Daemon) broadcast(e EventDTO) {
 	for _, ch := range d.subs {
 		select {
 		case ch <- e:
+			continue
+		default:
+		}
+		if !isTerminalEvent(e.Type) {
+			continue
+		}
+		// A terminal event must not be lost behind a full buffer. Drop the
+		// oldest queued event, which is at worst progress for a client that is
+		// already behind, and make room for the ending.
+		select {
+		case <-ch:
+		default:
+		}
+		select {
+		case ch <- e:
 		default:
 		}
 	}
 }
 
-func (d *Daemon) watch(session *lantern.Session, id string) {
+// isTerminalEvent reports whether an event ends its transfer. These events are
+// exempt from the drop-on-backpressure rule: a client that misses one waits on
+// a stream that is still open, so it never reaches the polling fallback.
+func isTerminalEvent(t string) bool {
+	return t == "done" || t == "error" || t == "cancelled"
+}
+
+func (d *Daemon) watch(events <-chan lantern.Event, id string) {
 	recorded := false
-	for e := range session.Events() {
+	for e := range events {
 		d.mu.Lock()
 		rec, ok := d.records[id]
 		if !ok {
@@ -427,14 +449,27 @@ func (d *Daemon) watch(session *lantern.Session, id string) {
 	// terminal branch above already did.
 	d.mu.Lock()
 	rec, ok := d.records[id]
-	if ok && !recorded {
-		if rec.State == StateRunning {
-			rec.State = StateCanceled
-			rec.UpdatedAt = time.Now()
-		}
-		d.pushHistoryLocked(rec.snapshot())
+	if !ok || recorded {
+		d.mu.Unlock()
+		return
 	}
+	ending := ""
+	if rec.State == StateRunning {
+		rec.State = StateCanceled
+		rec.UpdatedAt = time.Now()
+		ending = "cancelled"
+	}
+	d.pushHistoryLocked(rec.snapshot())
 	d.mu.Unlock()
+	// A session can close without ever sending a terminal event of its own.
+	// The record flipped to its terminal state above, but until this broadcast
+	// existed nothing told a subscriber: the SSE stream stayed open, so the
+	// client never reached its polling fallback and waited forever. State that
+	// was already terminal (Cancel) broadcast its own event, so only the
+	// transition here needs one.
+	if ending != "" {
+		d.broadcast(EventDTO{Type: ending, ID: id})
+	}
 }
 
 func (d *Daemon) pushHistoryLocked(rec Record) {
