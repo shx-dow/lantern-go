@@ -3,6 +3,7 @@ package p2p
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shx-dow/lantern-go/internal/paths"
@@ -27,6 +28,46 @@ func TestIdentityPersistsAcrossLoads(t *testing.T) {
 	}
 	if a.Equals(other) {
 		t.Fatal("different dirs returned identical keys")
+	}
+}
+
+// A file that exists but cannot be parsed must not be replaced. Replacing it
+// mints a new peer ID, and every pairing on every other device silently stops
+// recognising this one. The damaged file is also the only thing an operator
+// could restore, so it must survive the failed load unchanged.
+func TestIdentityRefusesToReplaceCorruptKey(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"garbage", "this is not a marshalled private key"},
+		{"empty", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if _, err := LoadOrCreatePrivKey(dir); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, identityFileName)
+			if err := os.WriteFile(path, []byte(tc.body), 0600); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := LoadOrCreatePrivKey(dir)
+			if err == nil {
+				t.Fatal("a corrupt identity was silently replaced with a new one")
+			}
+			if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "refusing to replace") {
+				t.Fatalf("error does not name the file and the refusal: %v", err)
+			}
+			got, readErr := os.ReadFile(path)
+			if readErr != nil {
+				t.Fatalf("the damaged identity must be left in place: %v", readErr)
+			}
+			if string(got) != tc.body {
+				t.Fatalf("the damaged identity was changed from %q to %q", tc.body, got)
+			}
+		})
 	}
 }
 
