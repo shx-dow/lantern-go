@@ -57,8 +57,46 @@ const (
 const (
 	DefaultReadLength = 256 * 1024
 	MaxReadLength     = 8 * 1024 * 1024
-	fsiOTimeout       = 30 * time.Second
+
+	// fsContentChunk bounds how much content one stream write carries. It is
+	// the unit at which a sender refreshes its deadline, so it is also the
+	// amount of progress a slow receiver must accept before the transfer is
+	// considered idle.
+	fsContentChunk = 32 * 1024
 )
+
+// fsiOTimeout bounds how long an fs stream waits for progress, and how long
+// the dial and stream setup before it may take. On the content stream it
+// measures silence rather than total transfer time, so a slow link that keeps
+// delivering bytes is allowed to finish. It is a variable so tests can
+// shorten it.
+var fsiOTimeout = 30 * time.Second
+
+// idleStream refreshes a stream's deadline around every read and write, so
+// fsiOTimeout bounds how long a peer may stay silent rather than how long a
+// transfer may take. An absolute deadline on the whole stream made a large
+// push fail after 30 seconds even while it was still moving bytes.
+//
+// It embeds network.Stream so callers keep every other method, including
+// Close, Reset, and Conn.
+type idleStream struct {
+	network.Stream
+	timeout time.Duration
+}
+
+func (c idleStream) Read(p []byte) (int, error) {
+	if err := c.Stream.SetReadDeadline(time.Now().Add(c.timeout)); err != nil {
+		return 0, err
+	}
+	return c.Stream.Read(p)
+}
+
+func (c idleStream) Write(p []byte) (int, error) {
+	if err := c.Stream.SetWriteDeadline(time.Now().Add(c.timeout)); err != nil {
+		return 0, err
+	}
+	return c.Stream.Write(p)
+}
 
 // FSRequest is one filesystem operation. Path is always resolved by the
 // serving side inside its shared roots; the caller cannot widen scope.
@@ -198,13 +236,16 @@ func (n *Node) RegisterFSHandler() {
 	})
 }
 
-func (n *Node) serveFS(s network.Stream) {
-	defer s.Close()
-	remote := s.Conn().RemotePeer().String()
+func (n *Node) serveFS(raw network.Stream) {
+	defer raw.Close()
+	remote := raw.Conn().RemotePeer().String()
 
-	if err := s.SetDeadline(time.Now().Add(fsiOTimeout)); err != nil {
-		return
-	}
+	// Every read and write below goes through the idle wrapper, so the
+	// deadline bounds silence rather than the whole transfer. Before this, a
+	// push that took longer than 30 seconds failed even while it was still
+	// moving bytes.
+	s := idleStream{Stream: raw, timeout: fsiOTimeout}
+
 	var req FSRequest
 	if err := protocol.ReadMetadata(s, &req); err != nil {
 		_ = protocol.WriteMetadata(s, fail("bad request"))
@@ -1030,14 +1071,12 @@ func (n *Node) writeFS(ctx context.Context, pi peer.AddrInfo, path string, conte
 	if err := n.Host.Connect(ctx, pi); err != nil {
 		return FSEntry{}, nil, "", fmt.Errorf("connect: %w", err)
 	}
-	s, err := n.Host.NewStream(ctx, pi.ID, FSProtocolID)
+	raw, err := n.Host.NewStream(ctx, pi.ID, FSProtocolID)
 	if err != nil {
 		return FSEntry{}, nil, "", fmt.Errorf("open stream: %w", err)
 	}
-	defer s.Close()
-	if err := s.SetDeadline(time.Now().Add(fsiOTimeout)); err != nil {
-		return FSEntry{}, nil, "", err
-	}
+	defer raw.Close()
+	s := idleStream{Stream: raw, timeout: fsiOTimeout}
 
 	// The digest travels with the request so the receiving device can verify
 	// what arrived before it places anything, rather than telling us afterwards
@@ -1068,8 +1107,18 @@ func (n *Node) writeFS(ctx context.Context, pi peer.AddrInfo, path string, conte
 		return FSEntry{}, nil, "", errors.New("remote did not accept the write")
 	}
 
-	if err := protocol.WriteFull(s, content); err != nil {
-		return FSEntry{}, nil, "", fmt.Errorf("send content: %w", err)
+	// Send in bounded chunks, resetting the deadline before each one. A
+	// single Write carrying the whole file blocks inside the transport and
+	// never gives the idle wrapper a chance to refresh the deadline, so a
+	// slow but healthy receiver would still time out here.
+	for off := 0; off < len(content); off += fsContentChunk {
+		end := off + fsContentChunk
+		if end > len(content) {
+			end = len(content)
+		}
+		if err := protocol.WriteFull(s, content[off:end]); err != nil {
+			return FSEntry{}, nil, "", fmt.Errorf("send content: %w", err)
+		}
 	}
 
 	var resp FSResponse
@@ -1100,14 +1149,12 @@ func (n *Node) ReadFS(ctx context.Context, pi peer.AddrInfo, req FSRequest) ([]F
 	if err := n.Host.Connect(ctx, pi); err != nil {
 		return nil, nil, nil, false, fmt.Errorf("connect: %w", err)
 	}
-	s, err := n.Host.NewStream(ctx, pi.ID, FSProtocolID)
+	raw, err := n.Host.NewStream(ctx, pi.ID, FSProtocolID)
 	if err != nil {
 		return nil, nil, nil, false, fmt.Errorf("open stream: %w", err)
 	}
-	defer s.Close()
-	if err := s.SetDeadline(time.Now().Add(fsiOTimeout)); err != nil {
-		return nil, nil, nil, false, err
-	}
+	defer raw.Close()
+	s := idleStream{Stream: raw, timeout: fsiOTimeout}
 	// Fill the base64 companion here rather than trusting the caller. Callers
 	// live in another package and cannot reach the setter, and a path that
 	// loses a byte here is lost for the whole transfer.
