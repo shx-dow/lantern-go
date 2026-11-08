@@ -7,6 +7,9 @@ easier to review, test, and undo than a broad one.
 
 - **Suspected vulnerability**: report it privately through
   [SECURITY.md](SECURITY.md). Do not open an issue or a pull request for it.
+- **A question about running Lantern**: ask in
+  [Discussions](https://github.com/shx-dow/lantern-go/discussions). The issue
+  tracker is for defects and work that has been agreed first.
 - **Non-obvious bug or behaviour change**: open an issue and agree on the
   approach first. A pull request that solves the wrong problem costs more than
   the discussion would have.
