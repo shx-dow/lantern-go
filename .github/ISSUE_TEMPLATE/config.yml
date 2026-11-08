@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Ask a usage question
+    url: https://github.com/shx-dow/lantern-go/discussions/categories/q-a
+    about: Questions about running Lantern belong in Discussions, not the issue tracker.
+  - name: Report a vulnerability privately
+    url: https://github.com/shx-dow/lantern-go/security/advisories/new
+    about: Do not open a public issue for a suspected vulnerability.
