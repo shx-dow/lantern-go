@@ -185,7 +185,10 @@ func NewNode(port int, bootstrapPeers []string, key crypto.PrivKey, dataDir stri
 		dhtOpts = append(dhtOpts, dht.BootstrapPeers(*ai))
 	}
 
-	d, err := dht.New(ctx, h, dhtOpts...)
+	// dht.New stopped taking a context in v0.43: the DHT derives its own from
+	// context.Background and cancels it in Close. Node.Close still closes the
+	// DHT before the host, so the lifecycle is unchanged.
+	d, err := dht.New(h, dhtOpts...)
 	if err != nil {
 		cancel()
 		return nil, errors.Join(fmt.Errorf("create dht: %w", err), h.Close())
