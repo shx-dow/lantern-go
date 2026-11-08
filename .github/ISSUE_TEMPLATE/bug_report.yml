@@ -1,0 +1,89 @@
+name: Bug report
+description: Something behaved differently from what the documentation says
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not open a public issue for a suspected vulnerability. Use
+        [private reporting](https://github.com/shx-dow/lantern-go/security/advisories/new)
+        instead; see [SECURITY.md](https://github.com/shx-dow/lantern-go/blob/main/SECURITY.md).
+
+        Remove share codes, peer IDs, identity keys, and private paths from
+        anything you paste here.
+
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: The command you ran and what came back.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Enough detail that someone else can reach the same state.
+      placeholder: |
+        1. Run `lantern serve ...`
+        2. On the other device, run `lantern send ...`
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: Point at the README or docs section if it promises this.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `lantern version`.
+      placeholder: v0.1.0-alpha.2
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux amd64
+        - Linux arm64
+        - macOS amd64
+        - macOS arm64
+        - Windows amd64
+        - Windows arm64
+        - Built from source
+    validations:
+      required: true
+
+  - type: dropdown
+    id: pairing
+    attributes:
+      label: Device setup
+      description: What the other device was allowed to do, if a second device was involved.
+      options:
+        - Single device
+        - Paired, read only
+        - Paired, read-write
+        - Not paired
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant CLI or daemon output, redacted.
+      render: text
+    validations:
+      required: false
