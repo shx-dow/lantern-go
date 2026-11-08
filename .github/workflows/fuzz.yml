@@ -99,7 +99,7 @@ jobs:
       # The name uses matrix.label, since matrix.package contains slashes.
       - name: Upload any failing input
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-corpus-${{ matrix.label }}
           path: ${{ matrix.package }}/testdata/fuzz/
