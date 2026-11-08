@@ -247,7 +247,7 @@ jobs:
       # off that means six failures and a release job that is skipped. A single
       # step matching both patterns always finds at least one file, which is
       # what if-no-files-found actually asks.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: "lantern-${{ matrix.goos }}-${{ matrix.goarch }}"
           path: |
