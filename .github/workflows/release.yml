@@ -55,7 +55,7 @@ jobs:
       prerelease: ${{ steps.check.outputs.prerelease }}
       publish: ${{ steps.check.outputs.publish }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Tags and both candidate branches are needed for the ancestry
           # checks below.
@@ -181,7 +181,7 @@ jobs:
       VERSION: ${{ needs.verify.outputs.version }}
       TAG: ${{ needs.verify.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
