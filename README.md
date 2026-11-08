@@ -225,6 +225,9 @@ go test -race ./...
 CI runs `staticcheck` on Linux. The test suite runs on Linux, Windows, and
 macOS, each with `go test -race`.
 
+What a pull request needs, and how to report a problem:
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 The framing and the AEAD have fuzz targets, because both trust a length or a
 nonce that arrived over a connection. They run their seed corpus as part of
 `go test`, and search nightly:
