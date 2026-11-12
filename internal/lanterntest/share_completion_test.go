@@ -101,6 +101,9 @@ func pending(events <-chan lantern.Event) []lantern.Event {
 // asked for. A peer that reads the path directly, without ever presenting the
 // code, is reading -- not fetching.
 func TestAReaderThatNeverPresentedTheCodeDoesNotCompleteTheShare(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits for a share deadline; run without -short")
+	}
 	shared := t.TempDir()
 	const name = "notes.txt"
 	const content = "read directly, not fetched"
