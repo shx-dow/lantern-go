@@ -375,7 +375,11 @@ func (h *Handler) patchTrust(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.Alias != "" {
-		entry.Alias = strings.TrimSpace(req.Alias)
+		entry, err = store.SetAlias(peerID, req.Alias)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, entry)
 }

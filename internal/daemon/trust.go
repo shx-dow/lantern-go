@@ -331,6 +331,21 @@ func (s *TrustStore) SetTier(peerID, tier string) (TrustEntry, error) {
 	return e, s.saveLocked()
 }
 
+// SetAlias renames one paired device, leaving its tier, roots, and cached
+// addresses alone.
+func (s *TrustStore) SetAlias(peerID, alias string) (TrustEntry, error) {
+	peerID = peerIDOf(peerID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.byID[peerID]
+	if !ok {
+		return TrustEntry{}, fmt.Errorf("peer not found")
+	}
+	e.Alias = strings.TrimSpace(alias)
+	s.byID[peerID] = e
+	return e, s.saveLocked()
+}
+
 // SetWritableRoots confines one paired device to a subset of this device's
 // writable roots. Passing none clears the restriction, returning the device to
 // its full writable roots.
