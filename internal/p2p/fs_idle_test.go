@@ -31,6 +31,9 @@ func withFSTimeout(t *testing.T, d time.Duration) {
 // the transfer off mid-body and the push failed even though bytes were still
 // arriving; an idle deadline only fires when the peer actually stops.
 func TestFSWriteSurvivesTransferLongerThanTimeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("outlives an idle deadline; run without -short")
+	}
 	root := t.TempDir()
 	provider := fsHost(t)
 	requester := fsHost(t)

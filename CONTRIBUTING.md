@@ -19,16 +19,28 @@ easier to review, test, and undo than a broad one.
 
 ## Build and check
 
+Fast loop, while iterating:
+
 ```sh
 gofmt -l .          # must print nothing
 go vet ./...
-go test ./...
+go test -short ./...
+```
+
+`-short` skips tests that measure a deadline, wait for a TTL, or move
+megabytes over a real stream. It is a feedback loop, not a release gate. Use it
+to find a red test quickly, then run the full suite.
+
+Before a pull request:
+
+```sh
 go test -race ./...
 staticcheck ./...
 ```
 
-CI runs the same checks on Linux, macOS, and Windows. A change that passes only
-on the machine it was written on is not passing.
+CI runs the full suite, without `-short`, on Linux, macOS, and Windows, plus
+Staticcheck on Linux. A change that passes only on the machine it was written
+on is not passing.
 
 Fuzz targets run their seed corpus as part of `go test` and search nightly. A
 new parser or framing layer should come with one; see the

@@ -27,6 +27,9 @@ import (
 // only the long one can tell the two halves of the option apart. Neither
 // encodes what those defaults are.
 func TestWithDialTimeoutMovesTheDialDeadline(t *testing.T) {
+	if testing.Short() {
+		t.Skip("measures a dial deadline; run without -short")
+	}
 	// Accepts the connection and then says nothing, so the dial dies in the
 	// security handshake — the stage the Windows failure actually reached. An
 	// unroutable address would never get past TCP and would only measure the

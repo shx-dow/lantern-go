@@ -141,6 +141,9 @@ func TestShareHandshakeRejectsOversizedRequest(t *testing.T) {
 // regression net: it passes without the fix because there was no deadline to
 // clear, and it fails if a fix adds the deadline but forgets the clear.
 func TestShareHandshakeClearsDeadlineBeforeStreaming(t *testing.T) {
+	if testing.Short() {
+		t.Skip("measures a handshake deadline; run without -short")
+	}
 	const timeout = 250 * time.Millisecond
 	withShareHandshakeTimeout(t, timeout)
 
