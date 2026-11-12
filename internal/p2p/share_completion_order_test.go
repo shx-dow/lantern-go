@@ -72,6 +72,9 @@ func TestAReadThatDeliversEveryByteCompletesTheShare(t *testing.T) {
 // protocol chunks at 256 KiB, so every read of a larger file but the last is
 // this case, and none of them may complete the share.
 func TestAPartialReadDoesNotCompleteTheShare(t *testing.T) {
+	if testing.Short() {
+		t.Skip("moves megabytes over a real stream; run without -short")
+	}
 	root := t.TempDir()
 	body := make([]byte, 8<<20)
 	for i := range body {
