@@ -23,7 +23,11 @@ import (
 // rather than only under load.
 func TestASuccessfulFetchIsNeverReportedAsCancelled(t *testing.T) {
 	const runs = 20
-	for i := range runs {
+	iterations := runs
+	if testing.Short() {
+		iterations = 3
+	}
+	for i := range iterations {
 		out, name, err := fetchInto(t, nil)
 		if err != nil {
 			t.Fatalf("iteration %d: a fetch that saved the file reported %v", i, err)

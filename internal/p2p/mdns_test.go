@@ -62,6 +62,9 @@ func TestMDNSIgnoresEmptyAddresses(t *testing.T) {
 // Recorded addresses must expire, or a device that moved would be dialed at
 // an address that no longer belongs to it for ever.
 func TestSeenAddressTTLIsShort(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits for a TTL to expire; run without -short")
+	}
 	if SeenAddressTTL > 30*time.Minute {
 		t.Fatalf("seen addresses live too long to notice a device moving: %v", SeenAddressTTL)
 	}
