@@ -454,7 +454,7 @@ func entryFor(fi os.FileInfo) *FSEntry {
 }
 
 func (n *Node) fsStat(roots []string, path string) FSResponse {
-	resolved, err := resolveWithinRoots(roots, path)
+	resolved, err := resolveRequestedPath(roots, path)
 	if err != nil {
 		return fail(err.Error())
 	}
@@ -502,7 +502,7 @@ func (n *Node) fsRead(s network.Stream, remote string, roots []string, req FSReq
 		_ = protocol.WriteMetadata(s, fail("offset must not be negative"))
 		return
 	}
-	resolved, err := resolveWithinRoots(roots, req.Path)
+	resolved, err := resolveRequestedPath(roots, req.Path)
 	if err != nil {
 		_ = protocol.WriteMetadata(s, fail(err.Error()))
 		return
