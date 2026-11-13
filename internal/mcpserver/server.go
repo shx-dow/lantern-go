@@ -103,13 +103,13 @@ func tools() []toolDef {
 		{"devices", "List paired devices with aliases and status. Start here when the user names a device. Probe=true dials each one to test real reachability; by default 'online' only means a connection is open right now, so an idle device looks offline.", obj(map[string]any{"probe": boolean("Dial each device and report reachability (default false)")})},
 		{"read", "Read a file from a paired device. Device may be an alias or a peer ID. Text comes back as text, binary as base64.", obj(map[string]any{
 			"device": str("Device alias (e.g. laptop) or peer ID"),
-			"path":   str("Absolute path on that device"),
+			"path":   str("Path inside a shared dir on that device; a bare name is resolved there"),
 			"offset": num("Byte offset to start from (default 0)"),
 			"length": num("Max bytes to return (default 256KB, max 8MB)"),
 		}, "device", "path")},
 		{"stat", "Get size and modification time for a path on a paired device", obj(map[string]any{
 			"device": str("Device alias or peer ID"),
-			"path":   str("Absolute path on that device"),
+			"path":   str("Path inside a shared dir on that device; a bare name is resolved there"),
 		}, "device", "path")},
 		{"push", "Send a local file or directory to a paired device. A directory is archived and expanded on the receiving side, creating a tree there. Fails if the target refuses writes, or if the destination exists (see overwrite).", obj(map[string]any{
 			"to":          str("Destination device alias (e.g. nas) or peer ID"),
