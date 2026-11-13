@@ -952,7 +952,7 @@ components:
           description: The hash the sender computed for the file, so the receiver can verify what it reads.
     ReadResponse:
       type: object
-      required: [device, path, offset, length, total, eof, encoding, content]
+      required: [device, path, offset, length, total, eof, encoding, content, sha256]
       properties:
         device:
           type: string
@@ -978,6 +978,9 @@ components:
         content:
           type: string
           description: File bytes, decoded per `encoding`.
+        sha256:
+          type: string
+          description: The serving device's hex digest of the bytes in `content`. A client that writes them to disk verifies this before placing anything; a download with no digest is refused.
         entry:
           $ref: '#/components/schemas/FileEntry'
         warning:

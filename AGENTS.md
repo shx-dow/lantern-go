@@ -27,8 +27,9 @@ root, Access tier). Use those words in code, docs, and commit messages.
 - A pairing is not a capability. Access tier and writable roots are checked on
   the serving device at the stream handler, not in the CLI or MCP layer.
 - Nothing is placed until the digest of what arrived has been verified. The fs
-  protocol is at revision 2: a write carries `FSRequest.SHA256`, and content
-  without a sender digest is refused, not skipped. See ADR 0003.
+  protocol is at revision 3: a write carries `FSRequest.SHA256`, a read response
+  carries `FSResponse.SHA256` over exactly the bytes it sent, and content
+  without a sender digest is refused, not skipped. See ADR 0003 and ADR 0005.
 - Peer-supplied paths are confined to shared roots for reads and writable
   roots for writes. Use the existing containment helpers; do not join a path
   by hand.

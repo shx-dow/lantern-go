@@ -176,14 +176,16 @@ type FSResponse struct {
 	// would silently replace with U+FFFD. Only OpResolveShare sets it, and a
 	// fetch is built from it, so a lost byte there asks for the wrong file.
 	PathB64 string `json:"path_b64,omitempty"`
-	// SHA256 is the lowercase hex digest of what was stored, returned on a
-	// successful OpWrite so the sender can confirm what landed.
+	// SHA256 is the lowercase hex digest of what was stored or served.
 	//
-	// On an OpResolveShare it is the digest of the file being offered, and it is
-	// the digest the fetching device verifies against before placing anything. An
-	// OpRead response carries no digest: the read is verified against the one from
-	// the resolve, not one repeated per chunk.
+	// On a successful OpWrite it is the digest of what landed, so the sender can
+	// confirm the copy. On an OpResolveShare it is the digest of the file being
+	// offered, and it is the digest the fetching device verifies against before
+	// placing anything. On an OpRead it is the digest of the content bytes that
+	// follow this frame, so a download can verify a chunk before it writes it;
+	// see ADR 0005.
 	SHA256 string `json:"sha256,omitempty"`
+
 	// Version is the fs protocol revision the responder speaks, sent on every
 	// response so a peer can see what it is talking to. A revision 1 peer leaves
 	// it zero.
@@ -209,11 +211,12 @@ type FSResponse struct {
 //
 // Revision 2 is the one in which a write carries the sender's digest
 // (FSRequest.SHA256) and every response that serves content reports one
-// (FSResponse.SHA256). A revision 1 peer may omit either, and content with no
-// digest cannot be verified, so a revision 2 device refuses it rather than
-// placing bytes it cannot vouch for. Refusing is deliberate and is a break:
-// upgrade both ends of the pair.
-const FSProtocolVersion = 2
+// (FSResponse.SHA256). Revision 3 adds the digest to an OpRead response, so a
+// download can verify each chunk before placing it. A peer may omit a digest
+// and content with no digest cannot be verified, so this build refuses to
+// place it rather than storing bytes it cannot vouch for. Refusing is
+// deliberate and is a break: upgrade both ends of the pair.
+const FSProtocolVersion = 3
 
 // fail builds a refusal. It stamps the protocol version so the peer can be told
 // which revision it was talking to, which is the difference between an
@@ -548,7 +551,26 @@ func (n *Node) fsRead(s network.Stream, remote string, roots []string, req FSReq
 		_ = protocol.WriteMetadata(s, fail(err.Error()))
 		return
 	}
-	if err := protocol.WriteMetadata(s, stamped(FSResponse{Entry: entryFor(fi), Bytes: length, EOF: eof})); err != nil {
+
+	// Read the range before sending its header, because the header carries the
+	// digest of exactly these bytes. The read length is capped at MaxReadLength,
+	// so this buffers at most 8 MiB per call; a trailer frame after the content
+	// would avoid that at the cost of changing the framing every reader knows.
+	content := make([]byte, length)
+	if length > 0 {
+		if _, err := io.ReadFull(f, content); err != nil {
+			_ = protocol.WriteMetadata(s, fail(fmt.Sprintf("read %d bytes at offset %d: %v", length, req.Offset, err)))
+			return
+		}
+	}
+	sum := sha256.Sum256(content)
+	resp := stamped(FSResponse{
+		Entry:  entryFor(fi),
+		Bytes:  length,
+		EOF:    eof,
+		SHA256: hex.EncodeToString(sum[:]),
+	})
+	if err := protocol.WriteMetadata(s, resp); err != nil {
 		return
 	}
 
@@ -556,7 +578,7 @@ func (n *Node) fsRead(s network.Stream, remote string, roots []string, req FSReq
 		n.maybeCompleteShareRead(remote, resolved, eof, req.Offset, 0, fi.Size())
 		return
 	}
-	if _, err := io.CopyN(s, f, length); err != nil {
+	if err := protocol.WriteFull(s, content); err != nil {
 		// The header is already sent; there is no second channel to
 		// report on, so the receiver surfaces a short read instead.
 		return
@@ -1140,18 +1162,39 @@ func (n *Node) writeFS(ctx context.Context, pi peer.AddrInfo, path string, conte
 	return entry, resp.Entries, resp.SHA256, nil
 }
 
-// ReadFS runs one filesystem op against pi. It is the client half and the
-// only entry point callers outside this package need.
+// FSResult is the answer to one filesystem operation. Data carries the content
+// of an OpRead; SHA256 is the serving device's digest of exactly those bytes,
+// so the caller can verify them before it uses or places them. SHA256 is empty
+// on operations that serve no content, and on a peer too old to send one.
+type FSResult struct {
+	Entries []FSEntry
+	Entry   *FSEntry
+	Data    []byte
+	EOF     bool
+	SHA256  string
+}
+
+// ReadFS runs one filesystem op against pi and returns its parts. It is
+// ReadFSResult with the digest dropped, for callers that only need the
+// content.
 func (n *Node) ReadFS(ctx context.Context, pi peer.AddrInfo, req FSRequest) ([]FSEntry, *FSEntry, []byte, bool, error) {
+	res, err := n.ReadFSResult(ctx, pi, req)
+	return res.Entries, res.Entry, res.Data, res.EOF, err
+}
+
+// ReadFSResult runs one filesystem op against pi, keeping the serving device's
+// digest of any content it sent. It is the client half and the only entry
+// point callers outside this package need.
+func (n *Node) ReadFSResult(ctx context.Context, pi peer.AddrInfo, req FSRequest) (FSResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, fsiOTimeout)
 	defer cancel()
 
 	if err := n.Host.Connect(ctx, pi); err != nil {
-		return nil, nil, nil, false, fmt.Errorf("connect: %w", err)
+		return FSResult{}, fmt.Errorf("connect: %w", err)
 	}
 	raw, err := n.Host.NewStream(ctx, pi.ID, FSProtocolID)
 	if err != nil {
-		return nil, nil, nil, false, fmt.Errorf("open stream: %w", err)
+		return FSResult{}, fmt.Errorf("open stream: %w", err)
 	}
 	defer raw.Close()
 	s := idleStream{Stream: raw, timeout: fsiOTimeout}
@@ -1160,14 +1203,14 @@ func (n *Node) ReadFS(ctx context.Context, pi peer.AddrInfo, req FSRequest) ([]F
 	// loses a byte here is lost for the whole transfer.
 	req.setPath(req.Path)
 	if err := protocol.WriteMetadata(s, req); err != nil {
-		return nil, nil, nil, false, fmt.Errorf("send request: %w", err)
+		return FSResult{}, fmt.Errorf("send request: %w", err)
 	}
 	var resp FSResponse
 	if err := protocol.ReadMetadata(s, &resp); err != nil {
-		return nil, nil, nil, false, fmt.Errorf("read response: %w", err)
+		return FSResult{}, fmt.Errorf("read response: %w", err)
 	}
 	if resp.Error != "" {
-		return nil, nil, nil, false, fmt.Errorf("remote: %s", resp.Error)
+		return FSResult{}, fmt.Errorf("remote: %s", resp.Error)
 	}
 	// Names the serving device could not put in JSON arrive in NameB64.
 	// Restore them, or a listing hands back a name the asking device cannot
@@ -1178,30 +1221,37 @@ func (n *Node) ReadFS(ctx context.Context, pi peer.AddrInfo, req FSRequest) ([]F
 	for i := range resp.Entries {
 		n, err := resp.Entries[i].name()
 		if err != nil {
-			return nil, nil, nil, false, fmt.Errorf("remote entry %d: %w", i, err)
+			return FSResult{}, fmt.Errorf("remote entry %d: %w", i, err)
 		}
 		resp.Entries[i].setName(n)
 	}
 	if resp.Entry != nil {
 		n, err := resp.Entry.name()
 		if err != nil {
-			return nil, nil, nil, false, fmt.Errorf("remote entry: %w", err)
+			return FSResult{}, fmt.Errorf("remote entry: %w", err)
 		}
 		resp.Entry.setName(n)
 	}
+	out := FSResult{
+		Entries: resp.Entries,
+		Entry:   resp.Entry,
+		EOF:     resp.EOF,
+		SHA256:  resp.SHA256,
+	}
 	if resp.Bytes == 0 {
-		return resp.Entries, resp.Entry, nil, resp.EOF, nil
+		return out, nil
 	}
 	// The serving side clamps its own response, but that is its promise, not
 	// an invariant of this stream. A peer is free to answer with any int64 it
 	// likes, and a negative value would panic inside make while a huge one
 	// would be allocated on the peer's say-so. Validate before allocating.
 	if resp.Bytes < 0 || resp.Bytes > MaxReadLength {
-		return nil, nil, nil, false, fmt.Errorf("remote: implausible content length %d (max %d)", resp.Bytes, MaxReadLength)
+		return FSResult{}, fmt.Errorf("remote: implausible content length %d (max %d)", resp.Bytes, MaxReadLength)
 	}
 	data := make([]byte, resp.Bytes)
 	if _, err := io.ReadFull(s, data); err != nil {
-		return nil, nil, nil, false, fmt.Errorf("read content: %w", err)
+		return FSResult{}, fmt.Errorf("read content: %w", err)
 	}
-	return resp.Entries, resp.Entry, data, resp.EOF, nil
+	out.Data = data
+	return out, nil
 }
