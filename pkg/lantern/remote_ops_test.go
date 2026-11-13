@@ -116,6 +116,12 @@ func TestReadRemoteReturnsTheBytesAndTheEntry(t *testing.T) {
 	if res.Offset != 0 {
 		t.Fatalf("result claims offset %d", res.Offset)
 	}
+	// A caller that writes these bytes to disk has to be able to verify them
+	// first, so the wrapper must carry the serving device's digest.
+	want := sha256.Sum256([]byte(content))
+	if res.SHA256 != hex.EncodeToString(want[:]) {
+		t.Fatalf("read reported digest %q, want %s", res.SHA256, hex.EncodeToString(want[:]))
+	}
 }
 
 // A range read is the operation Fetch is built on, so a wrapper that ignored
@@ -137,6 +143,12 @@ func TestReadRemoteHonoursOffsetAndLength(t *testing.T) {
 	}
 	if res.Offset != 3 {
 		t.Fatalf("result claims offset %d", res.Offset)
+	}
+	// The digest covers the range that was sent, which is what a chunked
+	// download verifies each chunk against.
+	want := sha256.Sum256([]byte("3456"))
+	if res.SHA256 != hex.EncodeToString(want[:]) {
+		t.Fatalf("range read reported digest %q, want the digest of %q", res.SHA256, "3456")
 	}
 }
 

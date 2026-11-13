@@ -73,16 +73,20 @@ func writeDeviceError(w http.ResponseWriter, err error) {
 }
 
 type readResponse struct {
-	Device   string         `json:"device"`
-	Path     string         `json:"path"`
-	Offset   int64          `json:"offset"`
-	Length   int64          `json:"length"`
-	Total    int64          `json:"total"`
-	EOF      bool           `json:"eof"`
-	Encoding string         `json:"encoding"`
-	Content  string         `json:"content"`
-	Entry    *lantern.Entry `json:"entry,omitempty"`
-	Warning  string         `json:"warning,omitempty"`
+	Device   string `json:"device"`
+	Path     string `json:"path"`
+	Offset   int64  `json:"offset"`
+	Length   int64  `json:"length"`
+	Total    int64  `json:"total"`
+	EOF      bool   `json:"eof"`
+	Encoding string `json:"encoding"`
+	Content  string `json:"content"`
+	// SHA256 is the serving device's digest of the bytes in Content. A caller
+	// that writes them to disk compares this against its own hash before
+	// placing anything, which is what makes a download a verified landing.
+	SHA256  string         `json:"sha256"`
+	Entry   *lantern.Entry `json:"entry,omitempty"`
+	Warning string         `json:"warning,omitempty"`
 }
 
 // encodeContent picks how file bytes are carried in a read response: text
@@ -139,6 +143,7 @@ func (h *Handler) getRemoteRead(w http.ResponseWriter, r *http.Request) {
 		Length: int64(len(res.Data)),
 		Total:  res.Entry.Size,
 		EOF:    res.EOF,
+		SHA256: res.SHA256,
 		Entry:  &res.Entry,
 	}
 	out.Encoding, out.Content = encodeContent(res.Data)

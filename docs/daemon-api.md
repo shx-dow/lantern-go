@@ -55,6 +55,12 @@ Reads are capped at 8 MiB per call, with 256 KiB as the default. A partial read
 returns a `warning` naming the offset to resume from. To get size and mtime
 without the bytes, use `GET /v1/peers/{id}/stat`.
 
+`sha256` is the serving device's digest of `content`, covering exactly the bytes
+in that response. A client that writes them to disk verifies this before placing
+anything, so the bytes it keeps are the bytes the serving device hashed. A
+response with no digest cannot be verified and a download refuses it; that
+happens when the serving device predates fs protocol revision 3.
+
 ## Push a file
 
 The receiving device must be started with `--allow-writes`, and it must have
