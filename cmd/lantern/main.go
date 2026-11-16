@@ -565,8 +565,8 @@ func usage() {
     trust tier <peer-id|alias> T change what a paired device may do
     trust roots <peer-id|alias> [dirs...]  confine a device's writes
     trust remove <peer-id>       unpair a device
-    files [dir]                  list shared-dir files
-    remote-files <peer-id> [dir] list files on a connected peer
+    files [dir]                  list shared roots, or a directory under one
+    remote-files <peer-id> [dir] list a peer's shared roots or a directory
     daemon                       run the background service (lantern daemon --help)
     mcp                          run the MCP stdio server for agents
     doctor                       diagnose a setup and print the fix for each problem
@@ -860,14 +860,19 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 		if err != nil {
 			fatal(opts.jsonOut, err)
 		}
+		roots := listsRoots(dir)
 		if opts.jsonOut {
 			enc.Encode(map[string]any{"files": files})
 		} else if len(files) == 0 {
-			fmt.Println("no files (configure --shared-dirs on lanternd)")
-		} else {
-			for _, f := range files {
-				fmt.Printf("%s %d %s\n", f.Name, f.Size, f.ModTime)
+			if roots {
+				fmt.Println("no shared roots (configure --shared-dirs on lanternd)")
+			} else {
+				fmt.Printf("no files in %s\n", dir)
 			}
+		} else if roots {
+			renderRoots(os.Stdout, files)
+		} else {
+			renderListing(os.Stdout, files)
 		}
 	case "remote-files":
 		if len(opts.positional) < 1 {
@@ -881,14 +886,19 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 		if err != nil {
 			fatal(opts.jsonOut, err)
 		}
+		roots := listsRoots(dir)
 		if opts.jsonOut {
 			enc.Encode(map[string]any{"files": files})
 		} else if len(files) == 0 {
-			fmt.Println("no files")
-		} else {
-			for _, f := range files {
-				fmt.Printf("%s %d %s\n", f.Name, f.Size, f.ModTime)
+			if roots {
+				fmt.Println("no shared roots")
+			} else {
+				fmt.Printf("no files in %s\n", dir)
 			}
+		} else if roots {
+			renderRoots(os.Stdout, files)
+		} else {
+			renderListing(os.Stdout, files)
 		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", opts.command)
