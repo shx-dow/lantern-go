@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -100,6 +101,19 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	return fmt.Sprintf("daemon: %s (status %d)", e.Message, e.Code)
+}
+
+// IsUnavailable reports whether err says the requested listing does not exist
+// on this daemon: a route an older daemon does not serve (404), or a feature
+// it was not started with (503, for example /v1/devices without a trust
+// store). A caller that already has something to show can treat that as an
+// empty listing; every other error is real.
+func IsUnavailable(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.Code == http.StatusNotFound || apiErr.Code == http.StatusServiceUnavailable
 }
 
 // FileEntry is one local or remote file listing entry.

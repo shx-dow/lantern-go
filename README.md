@@ -147,6 +147,11 @@ lantern trust add <peer-id> laptop
 lantern remote-files laptop
 ```
 
+`lantern discover` lists the devices already paired with this one, connected
+or not, so running it again after `trust add` is how you confirm the pairing
+took. `not connected, no known address` means this device has never seen the
+other one on the network.
+
 The alias given at pairing time is the name you address. See
 [the daemon API](docs/daemon-api.md) for reading a file by path and for
 pushing.
