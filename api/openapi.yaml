@@ -808,6 +808,14 @@ components:
         p2p_port:
           type: integer
           description: Fixed p2p listen port; 0 means it is random and changes on every restart.
+        shared_dirs:
+          type: array
+          items:
+            type: string
+          description: |-
+            Directories paired devices may read, as the daemon resolved them.
+            A root that does not exist on disk serves nothing, so `lantern
+            doctor` checks each one. Absent from older builds.
     PeerInfo:
       type: object
       required: [id, addrs, connected]

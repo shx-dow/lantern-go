@@ -232,6 +232,11 @@ func (h *Handler) getHistory(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) getStatus(w http.ResponseWriter, _ *http.Request) {
+	// A nil slice would encode as null; clients iterate this list.
+	shared := []string{}
+	if h.daemon != nil && h.daemon.SharedDirs != nil {
+		shared = h.daemon.SharedDirs
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"peer_id":     h.peerID,
 		"addrs":       h.addrs,
@@ -250,6 +255,10 @@ func (h *Handler) getStatus(w http.ResponseWriter, _ *http.Request) {
 		// and any --peer address recorded elsewhere goes stale. Reporting it
 		// is what lets `lantern doctor` say so instead of guessing.
 		"p2p_port": h.p2pPort,
+		// shared_dirs is what paired devices may read, as the daemon
+		// resolved it. A root that does not exist on disk is invisible at
+		// every later step, so doctor needs the paths to check them.
+		"shared_dirs": shared,
 	})
 }
 
