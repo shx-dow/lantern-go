@@ -868,7 +868,11 @@ components:
       properties:
         peer_id:
           type: string
-          description: Peer ID, or an alias of an already paired device.
+          description: |-
+            The other device's libp2p peer ID, such as the one `lantern status`
+            prints there. A value that does not decode is a 400: pairing an
+            alias or a typo would store a device no dial can ever reach.
+            Use PATCH /v1/trust/{id} to change an existing pairing by alias.
         alias:
           type: string
         tier:
