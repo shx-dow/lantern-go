@@ -87,6 +87,25 @@ Lists files in the daemon's shared directories.
 
 Lists files a connected peer shares.
 `
+	case "get":
+		return `lantern get <device>:<path> [dest] [--json]
+
+Copies one file from a paired device. <device> is a paired alias or a peer ID;
+<path> is resolved by that device inside its shared dirs, so a name a listing
+printed works as typed.
+
+[dest] may be a file name, an existing directory (the remote name is used
+inside it), or omitted to write into the current directory. An existing file is
+never replaced; the download refuses instead. The destination directory must
+already exist, and the new file inherits its permissions.
+
+Every chunk is checked against the digest the sending device computed before
+anything is placed, so a corrupted or truncated copy leaves nothing behind.
+
+Flags:
+  --json           machine-readable JSONL on stdout
+  --daemon-url URL daemon to talk to (default http://127.0.0.1:43782)
+`
 	case "help":
 		return `lantern help [command]
 
