@@ -14,12 +14,15 @@ import (
 // Entry is one file or directory reported by a remote filesystem call.
 type Entry = p2p.FSEntry
 
-// ReadResult is one byte range pulled from a paired device.
+// ReadResult is one byte range pulled from a paired device. SHA256 is the
+// serving device's digest of Data, so a caller that places the bytes can verify
+// them first. It is empty on a peer that does not report a digest.
 type ReadResult struct {
 	Entry  Entry
 	Data   []byte
 	Offset int64
 	EOF    bool
+	SHA256 string
 }
 
 // resolvePeer turns a peer reference into a dialable address. It prefers a
@@ -68,7 +71,7 @@ func (l *Lantern) ReadRemote(ctx context.Context, ref, path string, offset, leng
 	if err != nil {
 		return ReadResult{}, err
 	}
-	_, entry, data, eof, err := l.node.ReadFS(ctx, pi, p2p.FSRequest{
+	res, err := l.node.ReadFSResult(ctx, pi, p2p.FSRequest{
 		Op:     p2p.OpRead,
 		Path:   path,
 		Offset: offset,
@@ -78,10 +81,10 @@ func (l *Lantern) ReadRemote(ctx context.Context, ref, path string, offset, leng
 		return ReadResult{}, err
 	}
 	var head Entry
-	if entry != nil {
-		head = *entry
+	if res.Entry != nil {
+		head = *res.Entry
 	}
-	return ReadResult{Entry: head, Data: data, Offset: offset, EOF: eof}, nil
+	return ReadResult{Entry: head, Data: res.Data, Offset: offset, EOF: res.EOF, SHA256: res.SHA256}, nil
 }
 
 // ProbePeer reports whether a paired device can be reached right now, by
