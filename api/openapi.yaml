@@ -876,7 +876,11 @@ components:
       properties:
         peer_id:
           type: string
-          description: Peer ID, or an alias of an already paired device.
+          description: |-
+            The other device's libp2p peer ID, such as the one `lantern status`
+            prints there. A value that does not decode is a 400: pairing an
+            alias or a typo would store a device no dial can ever reach.
+            Use PATCH /v1/trust/{id} to change an existing pairing by alias.
         alias:
           type: string
         tier:
@@ -960,7 +964,7 @@ components:
           description: The hash the sender computed for the file, so the receiver can verify what it reads.
     ReadResponse:
       type: object
-      required: [device, path, offset, length, total, eof, encoding, content]
+      required: [device, path, offset, length, total, eof, encoding, content, sha256]
       properties:
         device:
           type: string
@@ -986,6 +990,9 @@ components:
         content:
           type: string
           description: File bytes, decoded per `encoding`.
+        sha256:
+          type: string
+          description: The serving device's hex digest of the bytes in `content`. A client that writes them to disk verifies this before placing anything; a download with no digest is refused.
         entry:
           $ref: '#/components/schemas/FileEntry'
         warning:

@@ -192,7 +192,7 @@ type cliOptions struct {
 // fresh in-process node for them — so they are deliberately absent.
 func commandNeedsDaemon(command string) bool {
 	switch command {
-	case "status", "discover", "peers", "list", "trust", "files", "remote-files":
+	case "status", "discover", "peers", "list", "trust", "files", "remote-files", "get":
 		return true
 	}
 	return false
@@ -567,6 +567,7 @@ func usage() {
     trust remove <peer-id>       unpair a device
     files [dir]                  list shared-dir files
     remote-files <peer-id> [dir] list files on a connected peer
+    get <device>:<path> [dest]   copy a file from a paired device (verified)
     daemon                       run the background service (lantern daemon --help)
     mcp                          run the MCP stdio server for agents
     doctor                       diagnose a setup and print the fix for each problem
@@ -596,6 +597,7 @@ examples:
   lantern send --json ./photo.jpg
   lantern --daemon send ./photo.jpg
   lantern --daemon receive <code> --out ./inbox
+  lantern get laptop:notes.md
   lantern status`)
 }
 
@@ -890,6 +892,8 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 				fmt.Printf("%s %d %s\n", f.Name, f.Size, f.ModTime)
 			}
 		}
+	case "get":
+		runGet(ctx, c, opts)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", opts.command)
 		usage()
