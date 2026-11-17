@@ -559,7 +559,7 @@ func usage() {
     status                       daemon status
     list [transfers|history]     daemon transfers
     peers                        connected peers
-    discover                     self + connected peers
+    discover                     self + paired devices + connected peers
     trust list                   paired devices
     trust add <peer-id> [alias]  pair a device, at --tier (default read)
     trust tier <peer-id|alias> T change what a paired device may do
@@ -682,21 +682,17 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 		if err != nil {
 			fatal(opts.jsonOut, err)
 		}
+		devices, pairingKnown, err := fetchDevices(c)
+		if err != nil {
+			fatal(opts.jsonOut, err)
+		}
+		if devices == nil {
+			devices = []lanternclient.Device{}
+		}
 		if opts.jsonOut {
-			enc.Encode(map[string]any{"self": st, "peers": peers})
+			enc.Encode(map[string]any{"self": st, "devices": devices, "peers": peers})
 		} else {
-			fmt.Printf("self: %s (%s)\n", st.DeviceName, st.PeerID)
-			if len(peers) == 0 {
-				fmt.Println("no connected peers")
-			} else {
-				fmt.Println("peers:")
-				for _, p := range peers {
-					fmt.Printf("  %s\n", p.ID)
-					for _, a := range p.Addrs {
-						fmt.Printf("    %s\n", a)
-					}
-				}
-			}
+			renderDiscover(os.Stdout, discoverView{Self: st, Devices: devices, Peers: peers, PairingKnown: pairingKnown})
 		}
 	case "peers":
 		peers, err := c.Peers()

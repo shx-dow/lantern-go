@@ -164,6 +164,11 @@ The second command is what allows the desktop to read the laptop. The first
 gives the laptop the same access to the desktop, and gives the desktop the name
 and address it needs to dial.
 
+`lantern discover` lists the devices already paired with this one, connected or
+not, so running it again after `trust add` is how you confirm the pairing took.
+`not connected, no known address` means this device has never seen the other one
+on the network.
+
 Put a file in the laptop's shared directory, then ask for it from the desktop:
 
 ```sh

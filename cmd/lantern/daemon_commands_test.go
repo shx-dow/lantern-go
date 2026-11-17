@@ -114,7 +114,7 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 			}})
 		case "/v1/devices":
 			ok(map[string]any{"devices": []map[string]any{
-				{"peer_id": "12D3kooONE", "alias": "nas", "online": true},
+				{"peer_id": "12D3kooONE", "alias": "nas", "tier": "read-write", "online": true, "known_addresses": 1},
 			}})
 		case "/v1/transfers":
 			ok(map[string]any{"transfers": []map[string]any{

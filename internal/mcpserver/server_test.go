@@ -85,6 +85,70 @@ func TestToolsCallStatusProxiesDaemon(t *testing.T) {
 	}
 }
 
+// discover is the tool an agent uses to choose a target. A paired device that
+// is merely idle still has to be in the answer, or the agent concludes the
+// pairing never happened and skips a device that would work.
+func TestToolsCallDiscoverIncludesPairedDevices(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"peer_id": "p1", "device_name": "box"})
+	})
+	mux.HandleFunc("GET /v1/peers", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"peers": []any{}})
+	})
+	mux.HandleFunc("GET /v1/devices", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"devices": []map[string]any{
+			{"peer_id": "p2", "alias": "laptop", "tier": "read", "online": false, "known_addresses": 0},
+		}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	s, buf := testServer(t, lanternclient.New(srv.URL, ""))
+	params, _ := json.Marshal(map[string]any{"name": "discover", "arguments": map[string]any{}})
+	s.handle(rpcRequest{JSONRPC: "2.0", ID: 5, Method: "tools/call", Params: params})
+	resp := lastResponse(t, buf)
+	if resp.Error != nil {
+		t.Fatalf("tools/call error: %+v", resp.Error)
+	}
+	body, _ := json.Marshal(resp.Result)
+	for _, want := range []string{"laptop", `\"devices\"`} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("discover result is missing %s: %s", want, body)
+		}
+	}
+}
+
+// A daemon too old to serve /v1/devices, or one without a trust store, has no
+// paired devices to report, and that must not turn discover into an error.
+func TestToolsCallDiscoverToleratesNoDeviceListing(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"peer_id": "p1", "device_name": "box"})
+	})
+	mux.HandleFunc("GET /v1/peers", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"peers": []any{}})
+	})
+	mux.HandleFunc("GET /v1/devices", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "pairing is not configured on this daemon"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	s, buf := testServer(t, lanternclient.New(srv.URL, ""))
+	params, _ := json.Marshal(map[string]any{"name": "discover", "arguments": map[string]any{}})
+	s.handle(rpcRequest{JSONRPC: "2.0", ID: 6, Method: "tools/call", Params: params})
+	resp := lastResponse(t, buf)
+	if resp.Error != nil {
+		t.Fatalf("discover failed on a daemon without a trust store: %+v", resp.Error)
+	}
+	body, _ := json.Marshal(resp.Result)
+	if !strings.Contains(string(body), "box") {
+		t.Errorf("discover lost the status it did get: %s", body)
+	}
+}
+
 func TestUnknownMethodErrors(t *testing.T) {
 	s, buf := testServer(t, envClient(t))
 	s.handle(rpcRequest{JSONRPC: "2.0", ID: 4, Method: "nope/method"})

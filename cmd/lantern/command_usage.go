@@ -55,7 +55,13 @@ Lists the devices currently connected to the daemon.
 	case "discover":
 		return `lantern discover [--json]
 
-Prints this device and the peers it can see.
+Prints this device, the devices paired with it, and the peers it is connected
+to.
+
+A paired device is listed even when it is not connected: pairing does not open
+a connection, and Lantern dials when a command needs the device. "not
+connected, no known address" means this device has never seen it on the
+network -- check that both are on the same LAN, or pass --peer on the daemon.
 `
 	case "trust":
 		return `lantern trust <command> [args] [flags]
