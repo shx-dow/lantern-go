@@ -327,6 +327,10 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 		// An agent client needs this token and nothing else reveals it, so
 		// say where it is rather than making people search the filesystem.
 		fmt.Fprintf(stderr, "  daemon token:          %s\n", daemon.TokenPath(dir))
+		// What is shared, and whether each root can actually be read, is the
+		// one piece of configuration whose absence is invisible later: the
+		// listing simply omits the root and a read looks like a missing file.
+		printSharedDirs(stderr, d.SharedDirs)
 		// Two daemons on one machine keep failing the same way: the second
 		// run is the same identity, so it dials itself. The way out is a
 		// separate --data-dir and a --peer to the first, so give both,
@@ -365,6 +369,38 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 		logger.Printf("shutdown: %v", err)
 	}
 	return nil
+}
+
+// printSharedDirs prints what this device shares and, per root, why it will
+// serve nothing. It does not fail startup: a root on removable media is
+// legitimately absent at boot, and taking the daemon down would also take
+// down pushes and share codes. The line is here because silence is what made
+// this hard to find -- the daemon started, pairing worked, and every read
+// failed at the other end as if the file were not there.
+func printSharedDirs(w io.Writer, dirs []string) {
+	if len(dirs) == 0 {
+		fmt.Fprintln(w, "  shared dirs:           none; paired devices cannot read anything (pass --shared-dirs DIR)")
+		return
+	}
+	fmt.Fprintf(w, "  shared dirs:           %s\n", strings.Join(dirs, ", "))
+	for _, dir := range dirs {
+		fi, err := os.Stat(dir)
+		switch {
+		case os.IsNotExist(err):
+			fmt.Fprintf(w, "warning: shared dir %s does not exist, so reads from it will fail (mkdir -p %s)\n", dir, shQuote(dir))
+		case err != nil:
+			fmt.Fprintf(w, "warning: shared dir %s cannot be used: %v\n", dir, err)
+		case !fi.IsDir():
+			fmt.Fprintf(w, "warning: shared dir %s is not a directory, so reads from it will fail\n", dir)
+		default:
+			f, err := os.Open(dir)
+			if err != nil {
+				fmt.Fprintf(w, "warning: shared dir %s cannot be read: %v\n", dir, err)
+				continue
+			}
+			_ = f.Close()
+		}
+	}
 }
 
 // aliasOrID names a paired device for a log line.

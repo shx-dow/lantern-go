@@ -225,3 +225,28 @@ func TestNewFromEnvNeverReturnsNil(t *testing.T) {
 		t.Errorf("an unreadable file must leave no token, got %q", c.token)
 	}
 }
+
+// IsUnavailable is how a caller with something to show treats a listing the
+// daemon does not have. It must not swallow a real refusal: a wrong token or
+// a broken daemon still has to stop the caller.
+func TestIsUnavailableOnlyCoversAMissingListing(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"no trust store", &APIError{Code: http.StatusServiceUnavailable, Message: "pairing is not configured"}, true},
+		{"older daemon", &APIError{Code: http.StatusNotFound, Message: "no route"}, true},
+		{"wrong token", &APIError{Code: http.StatusUnauthorized, Message: "bad token"}, false},
+		{"daemon error", &APIError{Code: http.StatusInternalServerError, Message: "boom"}, false},
+		{"not an API error", os.ErrNotExist, false},
+		{"no error", nil, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := IsUnavailable(c.err); got != c.want {
+				t.Errorf("IsUnavailable(%v) = %v, want %v", c.err, got, c.want)
+			}
+		})
+	}
+}

@@ -80,7 +80,7 @@ func tools() []toolDef {
 		{"share", "Advertise a local file and return its share code", obj(map[string]any{"path": str("Local file path to share"), "ttl_seconds": num("Auto-cancel after N seconds (0 = daemon default)")}, "path")},
 		{"fetch", "Fetch a share code into out_dir", obj(map[string]any{"code": str("Share code"), "out_dir": str("Destination directory (default .)")}, "code")},
 		{"status", "Daemon and device status (peer ID, device name, LAN mode)", obj(map[string]any{})},
-		{"discover", "Self status plus connected peers", obj(map[string]any{})},
+		{"discover", "Self status, paired devices (listed even when not connected), and connected peers", obj(map[string]any{})},
 		{"transfers", "List live transfers", obj(map[string]any{"kind": str("Filter: share|fetch (omit for all)")})},
 		{"transfer", "Get one transfer snapshot", obj(map[string]any{"id": str("Transfer ID (= share code)")}, "id")},
 		{"history", "Recent terminal transfers", obj(map[string]any{})},
@@ -103,13 +103,13 @@ func tools() []toolDef {
 		{"devices", "List paired devices with aliases and status. Start here when the user names a device. Probe=true dials each one to test real reachability; by default 'online' only means a connection is open right now, so an idle device looks offline.", obj(map[string]any{"probe": boolean("Dial each device and report reachability (default false)")})},
 		{"read", "Read a file from a paired device. Device may be an alias or a peer ID. Text comes back as text, binary as base64.", obj(map[string]any{
 			"device": str("Device alias (e.g. laptop) or peer ID"),
-			"path":   str("Absolute path on that device"),
+			"path":   str("Path inside a shared dir on that device; a bare name is resolved there"),
 			"offset": num("Byte offset to start from (default 0)"),
 			"length": num("Max bytes to return (default 256KB, max 8MB)"),
 		}, "device", "path")},
 		{"stat", "Get size and modification time for a path on a paired device", obj(map[string]any{
 			"device": str("Device alias or peer ID"),
-			"path":   str("Absolute path on that device"),
+			"path":   str("Path inside a shared dir on that device; a bare name is resolved there"),
 		}, "device", "path")},
 		{"push", "Send a local file or directory to a paired device. A directory is archived and expanded on the receiving side, creating a tree there. Fails if the target refuses writes, or if the destination exists (see overwrite).", obj(map[string]any{
 			"to":          str("Destination device alias (e.g. nas) or peer ID"),
@@ -172,7 +172,20 @@ func callTool(c *daemonClient, name string, args map[string]any) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"self": self, "peers": (func() any {
+		// Paired devices are listed even when they are not connected: pairing
+		// opens no connection, and an agent that sees only live peers cannot
+		// tell a missing pairing from an idle device.
+		devices, err := c.Devices(false)
+		if err != nil {
+			if !lanternclient.IsUnavailable(err) {
+				return nil, err
+			}
+			devices = nil
+		}
+		if devices == nil {
+			devices = []lanternclient.Device{}
+		}
+		return map[string]any{"self": self, "devices": devices, "peers": (func() any {
 			if m, ok := peers.(map[string]any); ok {
 				return m["peers"]
 			}

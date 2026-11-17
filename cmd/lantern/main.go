@@ -192,7 +192,7 @@ type cliOptions struct {
 // fresh in-process node for them — so they are deliberately absent.
 func commandNeedsDaemon(command string) bool {
 	switch command {
-	case "status", "discover", "peers", "list", "trust", "files", "remote-files":
+	case "status", "discover", "peers", "list", "trust", "files", "remote-files", "get":
 		return true
 	}
 	return false
@@ -559,7 +559,7 @@ func usage() {
     status                       daemon status
     list [transfers|history]     daemon transfers
     peers                        connected peers
-    discover                     self + connected peers
+    discover                     self + paired devices + connected peers
     trust list                   paired devices
     trust add <peer-id> [alias]  pair a device, at --tier (default read)
     trust tier <peer-id|alias> T change what a paired device may do
@@ -567,6 +567,7 @@ func usage() {
     trust remove <peer-id>       unpair a device
     files [dir]                  list shared roots, or a directory under one
     remote-files <peer-id> [dir] list a peer's shared roots or a directory
+    get <device>:<path> [dest]   copy a file from a paired device (verified)
     daemon                       run the background service (lantern daemon --help)
     mcp                          run the MCP stdio server for agents
     doctor                       diagnose a setup and print the fix for each problem
@@ -596,6 +597,7 @@ examples:
   lantern send --json ./photo.jpg
   lantern --daemon send ./photo.jpg
   lantern --daemon receive <code> --out ./inbox
+  lantern get laptop:notes.md
   lantern status`)
 }
 
@@ -680,21 +682,17 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 		if err != nil {
 			fatal(opts.jsonOut, err)
 		}
+		devices, pairingKnown, err := fetchDevices(c)
+		if err != nil {
+			fatal(opts.jsonOut, err)
+		}
+		if devices == nil {
+			devices = []lanternclient.Device{}
+		}
 		if opts.jsonOut {
-			enc.Encode(map[string]any{"self": st, "peers": peers})
+			enc.Encode(map[string]any{"self": st, "devices": devices, "peers": peers})
 		} else {
-			fmt.Printf("self: %s (%s)\n", st.DeviceName, st.PeerID)
-			if len(peers) == 0 {
-				fmt.Println("no connected peers")
-			} else {
-				fmt.Println("peers:")
-				for _, p := range peers {
-					fmt.Printf("  %s\n", p.ID)
-					for _, a := range p.Addrs {
-						fmt.Printf("    %s\n", a)
-					}
-				}
-			}
+			renderDiscover(os.Stdout, discoverView{Self: st, Devices: devices, Peers: peers, PairingKnown: pairingKnown})
 		}
 	case "peers":
 		peers, err := c.Peers()
@@ -900,6 +898,8 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 		} else {
 			renderListing(os.Stdout, files)
 		}
+	case "get":
+		runGet(ctx, c, opts)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", opts.command)
 		usage()

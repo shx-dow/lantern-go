@@ -6,7 +6,9 @@ package lanternclient
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,6 +53,10 @@ type Status struct {
 	HTTPAddr string `json:"http_addr"`
 	// StateDir is the resolved --data-dir: where the token and pairings live.
 	StateDir string `json:"state_dir"`
+	// SharedDirs is what paired devices may read, as the daemon resolved it.
+	// Nil from a daemon older than the field, which is why doctor skips its
+	// root check rather than reporting every device as sharing nothing.
+	SharedDirs []string `json:"shared_dirs"`
 }
 
 // PeerInfo mirrors one connected peer.
@@ -100,6 +107,19 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	return fmt.Sprintf("daemon: %s (status %d)", e.Message, e.Code)
+}
+
+// IsUnavailable reports whether err says the requested listing does not exist
+// on this daemon: a route an older daemon does not serve (404), or a feature
+// it was not started with (503, for example /v1/devices without a trust
+// store). A caller that already has something to show can treat that as an
+// empty listing; every other error is real.
+func IsUnavailable(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.Code == http.StatusNotFound || apiErr.Code == http.StatusServiceUnavailable
 }
 
 // FileEntry is one local or remote file listing entry.
@@ -538,4 +558,59 @@ func (c *Client) RemoteFiles(peerID, dir string) ([]FileEntry, error) {
 		Files []FileEntry `json:"files"`
 	}
 	return out.Files, c.roundTrip(http.MethodGet, path, nil, &out)
+}
+
+// ReadChunk is one byte range of a file on a paired device, as the daemon
+// serves it. Data is decoded from Content per Encoding. SHA256 is the serving
+// device's digest of exactly those bytes; a caller that writes them somewhere
+// must verify it first.
+type ReadChunk struct {
+	Device   string     `json:"device"`
+	Path     string     `json:"path"`
+	Offset   int64      `json:"offset"`
+	Length   int64      `json:"length"`
+	Total    int64      `json:"total"`
+	EOF      bool       `json:"eof"`
+	Encoding string     `json:"encoding"`
+	Content  string     `json:"content"`
+	SHA256   string     `json:"sha256"`
+	Entry    *FileEntry `json:"entry,omitempty"`
+	Warning  string     `json:"warning,omitempty"`
+
+	// Data is Content decoded: raw bytes, whatever the encoding was.
+	Data []byte `json:"-"`
+}
+
+// Read pulls offset..offset+length from path on a paired device. A zero length
+// asks for the daemon's default, and both zero means the start of the file.
+// peer is a paired alias or a peer ID.
+func (c *Client) Read(peer, path string, offset, length int64) (ReadChunk, error) {
+	q := url.Values{}
+	q.Set("path", path)
+	q.Set("offset", strconv.FormatInt(offset, 10))
+	if length != 0 {
+		q.Set("length", strconv.FormatInt(length, 10))
+	}
+	var chunk ReadChunk
+	err := c.roundTrip(http.MethodGet,
+		"/v1/peers/"+url.PathEscape(peer)+"/read?"+q.Encode(), nil, &chunk)
+	if err != nil {
+		return ReadChunk{}, err
+	}
+	switch chunk.Encoding {
+	case "", "utf-8":
+		chunk.Data = []byte(chunk.Content)
+	case "base64":
+		data, err := base64.StdEncoding.DecodeString(chunk.Content)
+		if err != nil {
+			return ReadChunk{}, fmt.Errorf("decode %s from %s: %w", path, peer, err)
+		}
+		chunk.Data = data
+	default:
+		return ReadChunk{}, fmt.Errorf("daemon sent unknown content encoding %q", chunk.Encoding)
+	}
+	if int64(len(chunk.Data)) != chunk.Length {
+		return ReadChunk{}, fmt.Errorf("daemon sent %d bytes but reported %d", len(chunk.Data), chunk.Length)
+	}
+	return chunk, nil
 }

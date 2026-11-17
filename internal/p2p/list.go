@@ -276,7 +276,7 @@ func listRootsLocal(roots []string, dir string) ([]ListEntry, error) {
 		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 		return out, nil
 	}
-	resolved, err := resolveWithinRoots(roots, clean)
+	resolved, err := resolveRequestedPath(roots, clean)
 	if err != nil {
 		return nil, err
 	}
@@ -300,6 +300,64 @@ func listRootsLocal(roots []string, dir string) ([]ListEntry, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// resolveRequestedPath resolves one path a peer asked for over the wire.
+//
+// An absolute path must sit inside a shared root. A relative path is resolved
+// inside the shared roots, never against this process's working directory: a
+// peer asking for "notes.md" means a file the device shares, not a file beside
+// the daemon. Resolving against the cwd made browsing depend on where the
+// operator happened to start the daemon, and it made the names a listing
+// showed unusable unless copied as absolute paths.
+//
+// A bare name that matches a shared root's own name addresses that root, so
+// the name in a root listing works as typed. When more than one root holds the
+// requested name, the path is ambiguous and refused rather than guessed.
+//
+// Containment is still decided by resolveWithinRoots, so this adds a name
+// resolution step and no new way out of the roots.
+func resolveRequestedPath(roots []string, path string) (string, error) {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	if filepath.IsAbs(trimmed) {
+		return resolveWithinRoots(roots, trimmed)
+	}
+	rel := filepath.Clean(trimmed)
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path %q must name a file or directory inside a shared dir", path)
+	}
+
+	var candidates []string
+	seen := make(map[string]bool)
+	add := func(candidate string) {
+		resolved, err := resolveWithinRoots(roots, candidate)
+		if err != nil || seen[resolved] {
+			return
+		}
+		seen[resolved] = true
+		candidates = append(candidates, resolved)
+	}
+	for _, root := range roots {
+		if filepath.Base(filepath.Clean(root)) == rel {
+			add(root)
+		}
+	}
+	for _, root := range roots {
+		add(filepath.Join(root, rel))
+	}
+
+	switch len(candidates) {
+	case 0:
+		return "", fmt.Errorf("path %q is not in any shared dir on this device", path)
+	case 1:
+		return candidates[0], nil
+	default:
+		return "", fmt.Errorf("path %q is ambiguous: it exists at %s; use the full path",
+			path, strings.Join(candidates, " and "))
+	}
 }
 
 // resolveWithinRoots canonicalizes path (absolute + symlinks evaluated)

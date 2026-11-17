@@ -123,32 +123,75 @@ Unblock-File .\windows-amd64\lantern.exe
 If SmartScreen appears, choose More info, then Run anyway. Linux needs no extra
 step.
 
-Start the daemon in its own terminal and leave it running:
+Create the directory this device shares, then start the daemon in its own
+terminal and leave it running:
 
 ```sh
+mkdir -p ~/Share
 lantern daemon --shared-dirs ~/Share --device-name laptop
 ```
+
+Give each device a different `--device-name`. It is the label the other devices
+see. The daemon serves only inside the directories it is given.
 
 Then run `lantern doctor` in another terminal. The CLI and the MCP server talk
 to the daemon over the local API. Closing the daemon's terminal stops it, and
 commands fail until it is started again.
 
-## Pair, then read
+## Pair two devices, then read a file
+
+A pairing is one direction at a time: the device that runs `trust add` lets the
+named device read from it. Run it on both devices to read in both directions.
+
+Print the ID each device needs from the other:
 
 ```sh
-# on both devices
-lantern daemon --shared-dirs ~/Share --device-name laptop
-
-# pair them, each side naming the other
-lantern discover
-lantern trust add <peer-id> laptop
-
-# from the asking device
-lantern remote-files laptop
+lantern status      # on the laptop:   peer: 12D3KooW...
+lantern status      # on the desktop:  peer: 12D3KooW...
 ```
 
-The alias given at pairing time is the name you address. See
-[the daemon API](docs/daemon-api.md) for reading a file by path and for
+Then pair each side, naming the other device with the alias you want to type:
+
+```sh
+# on the desktop: know the laptop as "laptop"
+lantern trust add <laptop-peer-id> laptop
+
+# on the laptop: know the desktop as "desktop" and allow it to read here
+lantern trust add <desktop-peer-id> desktop
+```
+
+The second command is what allows the desktop to read the laptop. The first
+gives the laptop the same access to the desktop, and gives the desktop the name
+and address it needs to dial.
+
+`lantern discover` lists the devices already paired with this one, connected or
+not, so running it again after `trust add` is how you confirm the pairing took.
+`not connected, no known address` means this device has never seen the other one
+on the network.
+
+Put a file in the laptop's shared directory, then ask for it from the desktop:
+
+```sh
+# on the laptop
+echo hello > ~/Share/notes.md
+
+# on the desktop
+lantern remote-files laptop     # the laptop's shared roots
+lantern get laptop:notes.md     # writes ./notes.md
+```
+
+`lantern get <device>:<path>` takes the alias from pairing or a peer ID. The
+path is resolved by the serving device inside its shared dirs, so a name a
+listing printed works as typed. `[dest]` may name a file or an existing
+directory, and is the current directory when omitted. An existing file is
+never replaced, and the destination directory must already exist.
+
+`lantern files` lists this device's shared roots the same way, and
+`lantern trust list` shows what this device is paired with. A pairing opens no
+connection: nothing is dialed until a transfer needs it, so an idle device is
+normal.
+
+See [the daemon API](docs/daemon-api.md) for reading a file by path and for
 pushing.
 
 Unpaired peers and whole directories use the share code:
