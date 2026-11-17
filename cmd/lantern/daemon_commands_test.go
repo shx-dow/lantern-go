@@ -362,7 +362,7 @@ func TestHelpMentionsTheCommandsThatExist(t *testing.T) {
 	// Every command the CLI actually has. push is not one: it is the
 	// /v1/pushes endpoint, and asking help for it asserts a command that does
 	// not exist.
-	for _, cmd := range []string{"send", "receive", "status", "list", "peers", "discover", "trust", "files", "remote-files", "doctor", "version"} {
+	for _, cmd := range []string{"send", "receive", "status", "list", "peers", "discover", "trust", "files", "remote-files", "get", "doctor", "version"} {
 		if !strings.Contains(out, cmd) {
 			t.Errorf("help does not mention %q", cmd)
 		}

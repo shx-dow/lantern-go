@@ -266,7 +266,7 @@ func TestDefaultsComeFromEnvironment(t *testing.T) {
 // here is the classification it keys off; TestDaemonCommandUsesTheDaemon
 // exercises the routing through the built binary.
 func TestDaemonCommandsRouteRegardlessOfFlag(t *testing.T) {
-	for _, cmd := range []string{"status", "discover", "peers", "files", "list", "trust", "remote-files"} {
+	for _, cmd := range []string{"status", "discover", "peers", "files", "list", "trust", "remote-files", "get"} {
 		if !commandNeedsDaemon(cmd) {
 			t.Errorf("%q is served only by the daemon but is not classified as one", cmd)
 		}

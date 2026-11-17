@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -41,5 +42,35 @@ func TestStatusReportsResolvedHTTPAddrAndStateDir(t *testing.T) {
 	}
 	if got["state_dir"] != "/tmp/lantern-state" {
 		t.Errorf("state_dir = %v, want the resolved data directory", got["state_dir"])
+	}
+}
+
+// Doctor can only check the roots it can see, and an empty or missing root is
+// indistinguishable from an unshared one in /v1/files. Status therefore names
+// them, and never as null: a client iterates the list.
+func TestStatusReportsSharedDirs(t *testing.T) {
+	d := New(nil)
+	d.SharedDirs = []string{"/srv/share", "/srv/notes"}
+	h := NewHandler(d, "peer-1", nil, true, 0, "")
+	rec := httptest.NewRecorder()
+	h.getStatus(rec, httptest.NewRequest(http.MethodGet, "/v1/status", nil))
+
+	var got struct {
+		SharedDirs []string `json:"shared_dirs"`
+	}
+	if err := json.NewDecoder(rec.Result().Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.SharedDirs) != 2 || got.SharedDirs[0] != "/srv/share" {
+		t.Fatalf("shared_dirs = %v, want the configured roots", got.SharedDirs)
+	}
+}
+
+func TestStatusReportsNoSharedDirsAsAnEmptyList(t *testing.T) {
+	h := NewHandler(New(nil), "peer-1", nil, true, 0, "")
+	rec := httptest.NewRecorder()
+	h.getStatus(rec, httptest.NewRequest(http.MethodGet, "/v1/status", nil))
+	if body := rec.Body.String(); strings.Contains(body, `"shared_dirs":null`) {
+		t.Fatalf("shared_dirs must be a list, never null: %s", body)
 	}
 }

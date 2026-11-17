@@ -9,7 +9,7 @@ import (
 // built binary because routing happens in main, not in parseArgs.
 var everyCommand = []string{
 	"send", "receive", "status", "list", "peers", "discover", "trust",
-	"files", "remote-files", "daemon", "mcp", "doctor", "version", "help",
+	"files", "remote-files", "get", "daemon", "mcp", "doctor", "version", "help",
 }
 
 // TestEveryCommandHelpExitsZeroAndNamesTheCommand is the control for
