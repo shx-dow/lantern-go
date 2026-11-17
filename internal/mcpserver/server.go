@@ -566,6 +566,15 @@ Register it with an MCP client as one command:
 
   {"mcpServers": {"lantern": {"command": "lantern", "args": ["mcp"]}}}
 
+Print that entry instead of running the server:
+
+  lantern mcp --print-config [--daemon-url URL] [--token-file FILE]
+
+The printed entry names this executable by absolute path, so a client started
+by a GUI with a different PATH still finds it. It sets LANTERND_URL only when
+the daemon is not at the default, and the token file only for a loopback
+daemon. The token itself is never printed.
+
 Tools:
   devices                      paired devices with aliases and status
                                (probe=true dials each for real reachability)

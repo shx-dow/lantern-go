@@ -225,7 +225,7 @@ func main() {
 				fmt.Fprint(os.Stderr, mcpserver.Usage)
 				return
 			}
-			runOrExit(mcpserver.Serve(ctx, os.Stdin, os.Stdout))
+			runOrExit(runMCP(ctx, rest, os.Stdin, os.Stdout))
 			return
 		case "version":
 			if wantsHelp(rest) {
