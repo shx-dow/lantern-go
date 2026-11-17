@@ -51,6 +51,13 @@ curl -s -H "Authorization: Bearer $LANTERN_DAEMON_TOKEN" \
 so it only works for a paired device. Content comes back as text when it is
 clean UTF-8 and base64 otherwise, with `encoding` saying which.
 
+`path` may be absolute or relative. An absolute path must sit inside one of the
+serving device's shared roots. A relative path is resolved inside those roots,
+never against the daemon's working directory, so `notes.md` means the shared
+`notes.md` and the names a listing returns work as printed. If two shared roots
+both hold that name the read is refused as ambiguous rather than guessing; use
+the fuller path. The same rules apply to `/stat` and to the listing endpoint.
+
 Reads are capped at 8 MiB per call, with 256 KiB as the default. A partial read
 returns a `warning` naming the offset to resume from. To get size and mtime
 without the bytes, use `GET /v1/peers/{id}/stat`.
