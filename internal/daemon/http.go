@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 // Handler exposes the daemon over localhost HTTP for the CLI, GUI, and
@@ -395,8 +397,23 @@ func (h *Handler) postTrust(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
 		return
 	}
+	// A peer ID that does not decode names a device that does not exist:
+	// nothing can ever dial it, and a "paired" device that can never be
+	// reached is the most confusing state this store can be in. Store the
+	// canonical form too, because every lookup at transfer time compares
+	// against the string libp2p reports, not against what was pasted.
+	wanted := strings.TrimSpace(req.PeerID)
+	if wanted == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("peer_id must not be empty"))
+		return
+	}
+	peerID, err := peer.Decode(wanted)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("peer_id %q is not a libp2p peer ID (paste the ID `lantern status` prints on the other device)", wanted))
+		return
+	}
 	entry, err := store.Add(TrustSpec{
-		PeerID:        strings.TrimSpace(req.PeerID),
+		PeerID:        peerID.String(),
 		Alias:         strings.TrimSpace(req.Alias),
 		Tier:          string(req.Tier),
 		WritableRoots: req.WritableRoots,

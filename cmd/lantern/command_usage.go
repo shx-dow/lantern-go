@@ -69,6 +69,10 @@ Commands:
   roots <peer-id|alias> [dirs...]  confine a device's writes (omit dirs to clear)
   remove <peer-id|alias>           unpair a device
 
+<peer-id> is the other device's ID, printed by "lantern status" there. A value
+that is not a peer ID is refused rather than paired: an unreachable pairing
+looks like a working one and is the harder problem to diagnose.
+
 Flags:
   --tier T                access tier for trust add
   --writable-roots DIRS   comma-separated directories a paired device may write
