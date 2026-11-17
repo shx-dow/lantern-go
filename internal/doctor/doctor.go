@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -123,6 +124,7 @@ func Run(ctx context.Context, client *lanternclient.Client, opts Options) Report
 
 	add(checkListenAddrs(status.Addrs))
 	add(checkP2PPortPinned(status))
+	add(checkSharedDirs(status))
 	add(checkMDNS(ctx, status.Addrs))
 	add(checkFirewall(status.Addrs))
 	add(checkDevices(ctx, client, opts.ProbePeers))
@@ -289,6 +291,100 @@ func checkP2PPortPinned(status lanternclient.Status) Check {
 		Status: Pass,
 		Detail: fmt.Sprintf("libp2p port pinned at %d, so --peer addresses stay valid across restarts", status.P2PPort),
 	}
+}
+
+// checkSharedDirs reports whether the directories the daemon shares exist and
+// can be read. A missing root fails rather than warns: the daemon was told to
+// share it, so the read path that was promised does not exist, and every later
+// symptom (an empty listing, a read that looks like a missing file) points
+// somewhere else.
+//
+// A daemon too old to report shared_dirs skips instead of guessing from
+// /v1/files, where a missing root is indistinguishable from a root with
+// nothing in it.
+func checkSharedDirs(status lanternclient.Status) Check {
+	if status.SharedDirs == nil {
+		return Check{
+			Name:   "shared-dirs",
+			Status: Skip,
+			Detail: "the daemon does not report its shared dirs (older build)",
+		}
+	}
+	if len(status.SharedDirs) == 0 {
+		return Check{
+			Name:   "shared-dirs",
+			Status: Warn,
+			Detail: "no shared directories: a paired device can list and read nothing here",
+			Fix:    "mkdir -p ~/Share && lantern daemon --shared-dirs ~/Share",
+		}
+	}
+
+	var missing, notDir, unreadable []string
+	for _, dir := range status.SharedDirs {
+		fi, err := os.Stat(dir)
+		switch {
+		case os.IsNotExist(err):
+			missing = append(missing, dir)
+		case err != nil:
+			unreadable = append(unreadable, fmt.Sprintf("%s (%v)", dir, err))
+		case !fi.IsDir():
+			notDir = append(notDir, dir)
+		default:
+			// Open is enough to learn whether the daemon's user can read the
+			// directory without walking it; ReadDir would read every name.
+			f, err := os.Open(dir)
+			if err != nil {
+				unreadable = append(unreadable, fmt.Sprintf("%s (%v)", dir, err))
+				continue
+			}
+			_ = f.Close()
+		}
+	}
+
+	if len(missing) == 0 && len(notDir) == 0 && len(unreadable) == 0 {
+		return Check{
+			Name:   "shared-dirs",
+			Status: Pass,
+			Detail: fmt.Sprintf("%d readable: %s", len(status.SharedDirs), strings.Join(status.SharedDirs, ", ")),
+		}
+	}
+
+	var problems []string
+	if len(missing) > 0 {
+		problems = append(problems, "does not exist: "+strings.Join(missing, ", "))
+	}
+	if len(notDir) > 0 {
+		problems = append(problems, "is not a directory: "+strings.Join(notDir, ", "))
+	}
+	if len(unreadable) > 0 {
+		problems = append(problems, "cannot be read: "+strings.Join(unreadable, ", "))
+	}
+	var fixes []string
+	if len(missing) > 0 {
+		fixes = append(fixes, "mkdir -p "+strings.Join(quotePaths(missing), " "))
+	}
+	if len(notDir) > 0 || len(unreadable) > 0 {
+		fixes = append(fixes, "move it out of the way or start the daemon with a different --shared-dirs")
+	}
+	return Check{
+		Name:   "shared-dirs",
+		Status: Fail,
+		Detail: "shared root " + strings.Join(problems, "; "),
+		Fix:    strings.Join(fixes, "   # "),
+	}
+}
+
+// quotePaths makes a path with spaces safe in the fix line without touching
+// paths that do not need it.
+func quotePaths(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if strings.ContainsAny(p, " \t'\"") {
+			p = "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // checkMDNS tests whether mDNS announcements can leave this host at all.

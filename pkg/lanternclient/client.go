@@ -52,6 +52,10 @@ type Status struct {
 	HTTPAddr string `json:"http_addr"`
 	// StateDir is the resolved --data-dir: where the token and pairings live.
 	StateDir string `json:"state_dir"`
+	// SharedDirs is what paired devices may read, as the daemon resolved it.
+	// Nil from a daemon older than the field, which is why doctor skips its
+	// root check rather than reporting every device as sharing nothing.
+	SharedDirs []string `json:"shared_dirs"`
 }
 
 // PeerInfo mirrors one connected peer.
