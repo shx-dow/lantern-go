@@ -86,12 +86,19 @@ Flags:
 	case "files":
 		return `lantern files [dir] [--json]
 
-Lists files in the daemon's shared directories.
+Lists the daemon's shared roots, or the files under one.
+
+With no dir, prints the roots themselves. With a dir, prints that directory:
+a name ending in "/" is a directory, and "lantern get" copies files only.
 `
 	case "remote-files":
 		return `lantern remote-files <peer-id|alias> [dir] [--json]
 
-Lists files a connected peer shares.
+Lists a peer's shared roots, or the files under one of them.
+
+With no dir, prints the roots the peer exposes. With a dir, prints that
+directory: a name ending in "/" is a directory, and "lantern get" copies
+files only.
 `
 	case "get":
 		return `lantern get <device>:<path> [dest] [--json]
