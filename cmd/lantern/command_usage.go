@@ -82,6 +82,8 @@ looks like a working one and is the harder problem to diagnose.
 Flags:
   --tier T                access tier for trust add
   --writable-roots DIRS   comma-separated directories a paired device may write
+
+"lantern devices" is the same as "lantern trust list".
 `
 	case "files":
 		return `lantern files [dir] [--json]
@@ -90,6 +92,8 @@ Lists the daemon's shared roots, or the files under one.
 
 With no dir, prints the roots themselves. With a dir, prints that directory:
 a name ending in "/" is a directory, and "lantern get" copies files only.
+
+"lantern ls" is the same command.
 `
 	case "remote-files":
 		return `lantern remote-files <peer-id|alias> [dir] [--json]
