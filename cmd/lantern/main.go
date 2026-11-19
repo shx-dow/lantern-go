@@ -281,6 +281,14 @@ func main() {
 		runOrExit(runDoctorFlags(ctx, opts, os.Stdout))
 		return
 	}
+	// ui opens the daemon's page. It needs the address from --daemon/--daemon-url
+	// but not the daemon itself: /ui is public, so this works with lanternd
+	// stopped and with no token file. Routing it before the daemon branch also
+	// keeps it from bringing up an in-process node.
+	if opts.command == "ui" {
+		runOrExit(runUIFlags(opts, os.Stdout, openBrowser))
+		return
+	}
 
 	// Commands the daemon serves go to the daemon, whether or not --daemon was
 	// passed. Asking for one without it used to be an error naming the flag, which
@@ -568,6 +576,7 @@ func usage() {
     files [dir]                  list shared roots, or a directory under one
     remote-files <peer-id> [dir] list a peer's shared roots or a directory
     get <device>:<path> [dest]   copy a file from a paired device (verified)
+    ui                           open the daemon's page in a browser
     daemon                       run the background service (lantern daemon --help)
     mcp                          run the MCP stdio server for agents
     doctor                       diagnose a setup and print the fix for each problem
