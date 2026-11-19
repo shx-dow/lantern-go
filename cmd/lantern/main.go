@@ -128,7 +128,15 @@ func wantsHelp(args []string) bool {
 }
 
 // usageFor returns the help text for a command, or "" when it is unknown.
+// An alias names the same help as its command, so `lantern help ls` explains
+// what `lantern ls` actually does.
 func usageFor(name string) string {
+	switch name {
+	case "ls":
+		name = "files"
+	case "devices":
+		name = "trust"
+	}
 	switch name {
 	case "daemon":
 		return daemonapp.Usage
@@ -501,6 +509,9 @@ func parseArgs(args []string) (cliOptions, error) {
 	if helpFirst {
 		opts.command = "help"
 	}
+	if err := applyAliases(&opts); err != nil {
+		return opts, err
+	}
 	return opts, nil
 }
 
@@ -583,6 +594,10 @@ func usage() {
                                 (lantern doctor --probe-peers for real reachability)
     version                      version, commit, build date, toolchain, platform
     help [command]               show help for a command
+
+  aliases:
+    ls [dir]                     same as "files [dir]"
+    devices                      same as "trust list"
 
 flags:
   -h, --help        show help (also <command> --help)
