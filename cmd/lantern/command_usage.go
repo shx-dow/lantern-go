@@ -123,6 +123,17 @@ Flags:
   --json           machine-readable JSONL on stdout
   --daemon-url URL daemon to talk to (default http://127.0.0.1:43782)
 `
+	case "ui":
+		return `lantern ui [--daemon-url URL]
+
+Opens the daemon's web page in the default browser. The page is public and
+holds no secrets; the API calls it makes carry the daemon token from browser
+storage.
+
+The address comes from --daemon[=URL], --daemon-url, or LANTERND_URL, and
+defaults to http://127.0.0.1:43782. If no browser can be started, the URL is
+printed so it can be opened by hand.
+`
 	case "help":
 		return `lantern help [command]
 
