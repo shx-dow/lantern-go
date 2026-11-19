@@ -45,6 +45,7 @@ var ownedSubcommands = map[string]bool{
 	"daemon":  true,
 	"doctor":  true,
 	"mcp":     true,
+	"setup":   true,
 	"version": true,
 }
 
@@ -144,6 +145,8 @@ func usageFor(name string) string {
 		return doctorUsage
 	case "mcp":
 		return mcpserver.Usage
+	case "setup":
+		return setupUsage
 	case "version":
 		return versionUsage
 	}
@@ -234,6 +237,13 @@ func main() {
 				return
 			}
 			runOrExit(runMCP(ctx, rest, os.Stdin, os.Stdout))
+			return
+		case "setup":
+			if wantsHelp(rest) {
+				fmt.Fprint(os.Stderr, setupUsage)
+				return
+			}
+			runOrExit(runSetup(rest, os.Stdin, os.Stdout))
 			return
 		case "version":
 			if wantsHelp(rest) {
@@ -588,6 +598,7 @@ func usage() {
     remote-files <peer-id> [dir] list a peer's shared roots or a directory
     get <device>:<path> [dest]   copy a file from a paired device (verified)
     ui                           open the daemon's page in a browser
+    setup                        write the daemon config for this device
     daemon                       run the background service (lantern daemon --help)
     mcp                          run the MCP stdio server for agents
     doctor                       diagnose a setup and print the fix for each problem
