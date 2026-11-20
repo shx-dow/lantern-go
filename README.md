@@ -144,6 +144,49 @@ Then run `lantern doctor` in another terminal. The CLI and the MCP server talk
 to the daemon over the local API. Closing the daemon's terminal stops it, and
 commands fail until it is started again.
 
+## Settings
+
+`lanternd.json` holds the daemon's settings. `lantern setup` writes it with the
+device name and shared directories; edit it directly for everything else, or
+point the daemon at another file with `--config PATH`. It is read at startup, so
+a change takes effect on the next start.
+
+| Platform | Path |
+| --- | --- |
+| Linux | `$XDG_CONFIG_HOME/lantern/lanternd.json`, else `~/.config/lantern/lanternd.json` |
+| macOS | `~/Library/Application Support/lantern/lanternd.json` |
+| Windows | `%AppData%\lantern\lanternd.json` |
+
+Every field is optional, and a flag beats the file:
+
+| Field | Flag | Meaning |
+| --- | --- | --- |
+| `addr` | `--addr` | HTTP API address, default `127.0.0.1:43782` |
+| `p2p_port` | `--p2p-port` | libp2p listen port; `0` or absent picks one |
+| `data_dir` | `--data-dir` | identity, pairings, and token |
+| `device_name` | `--device-name` | name other devices see |
+| `shared_dirs` | `--shared-dirs` | directories paired devices may read |
+| `bootstrap_peers` | `--bootstrap` | bootstrap multiaddrs; `["none"]` disables them |
+| `relay_addrs` | `--relay` | static relays for NAT traversal |
+| `peer_addrs` | `--peer` | full multiaddrs for devices discovery cannot introduce |
+| `lan_only` | `--lan` / `--no-lan` | `false` uses the public DHT instead of the LAN |
+| `default_ttl_seconds` | `--default-ttl` | share lifetime; `0` never expires |
+
+```json
+{
+  "device_name": "laptop",
+  "shared_dirs": ["/home/you/Share"]
+}
+```
+
+Two things are deliberately not in the file:
+
+- **The bearer token.** It lives next to the identity in the data directory, at
+  `<data-dir>/.lanternd-token`.
+- **Write access.** `--allow-writes` and `--writable-dirs` are start-time
+  decisions, because a pairing is not permission to write. The daemon is
+  read-only unless it is started with them.
+
 ## Pair two devices, then read a file
 
 A pairing is one direction at a time: the device that runs `trust add` lets the
