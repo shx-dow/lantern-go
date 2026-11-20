@@ -7,6 +7,7 @@ package doctor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shx-dow/lantern-go/internal/daemon"
 	"github.com/shx-dow/lantern-go/internal/paths"
 	"github.com/shx-dow/lantern-go/pkg/lanternclient"
 )
@@ -70,6 +72,9 @@ type Options struct {
 	// ProbePeers dials each paired device to test reachability rather than
 	// reporting only whether a connection is currently open.
 	ProbePeers bool
+	// ConfigPath is the daemon config file to inspect. Empty means no path was
+	// named, and the check is skipped.
+	ConfigPath string
 }
 
 // mdnsListenWindow is how long the mDNS check listens for an answer. It is
@@ -90,6 +95,7 @@ func Run(ctx context.Context, client *lanternclient.Client, opts Options) Report
 	}
 
 	add(checkBinary())
+	add(checkConfig(opts.ConfigPath))
 
 	host := clientHost(client)
 
@@ -140,6 +146,44 @@ func checkBinary() Check {
 		Status: Pass,
 		Detail: fmt.Sprintf("lantern %s on %s/%s", versionString(), runtime.GOOS, runtime.GOARCH),
 	}
+}
+
+// checkConfig reads the daemon's config file when one was named. A malformed
+// file is a startup failure that looks like a network problem from the CLI, so
+// the check runs before the daemon one and names the file. A missing file is
+// not a fault: the daemon runs on its built-in defaults without one.
+func checkConfig(path string) Check {
+	if strings.TrimSpace(path) == "" {
+		return Check{
+			Name:   "config",
+			Status: Skip,
+			Detail: "not checked: name a file with --config, or use a loopback daemon URL",
+		}
+	}
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Check{
+				Name:   "config",
+				Status: Pass,
+				Detail: fmt.Sprintf("no file at %s; built-in defaults apply", path),
+			}
+		}
+		return Check{
+			Name:   "config",
+			Status: Fail,
+			Detail: fmt.Sprintf("cannot read %s: %v", path, err),
+			Fix:    fmt.Sprintf("check the permissions on %s", path),
+		}
+	}
+	if _, err := daemon.LoadConfigFile(path); err != nil {
+		return Check{
+			Name:   "config",
+			Status: Fail,
+			Detail: err.Error(),
+			Fix:    fmt.Sprintf("repair the JSON in %s, or run \"lantern setup --force\" to replace it", path),
+		}
+	}
+	return Check{Name: "config", Status: Pass, Detail: fmt.Sprintf("read %s", path)}
 }
 
 // checkToken reports whether a token was supplied, since without one every
