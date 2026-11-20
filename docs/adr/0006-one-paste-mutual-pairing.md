@@ -1,6 +1,6 @@
 # One paste pairs two devices in both directions
 
-**Status:** proposed. No code until this is agreed.
+**Status:** accepted.
 
 Today pairing takes four commands and two hand-copied peer IDs:
 
