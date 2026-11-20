@@ -306,7 +306,7 @@ func TestStartupPrintsSecondDeviceCommand(t *testing.T) {
 }
 
 // splitArgs splits a command line into argv the way the shell the line is
-// written for would. It knows exactly the quoting shQuote emits: everything
+// written for would. It knows exactly the quoting ShellQuote emits: everything
 // single-quoted, with an embedded quote doubled on Windows (PowerShell reads
 // single quotes literally but has no backslash escape) and '\”-escaped on
 // POSIX shells.

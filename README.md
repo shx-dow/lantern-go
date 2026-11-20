@@ -123,16 +123,22 @@ Unblock-File .\windows-amd64\lantern.exe
 If SmartScreen appears, choose More info, then Run anyway. Linux needs no extra
 step.
 
-Create the directory this device shares, then start the daemon in its own
-terminal and leave it running:
+Name the device and choose what it shares once, then start the daemon in its
+own terminal and leave it running:
 
 ```sh
-mkdir -p ~/Share
-lantern daemon --shared-dirs ~/Share --device-name laptop
+lantern setup       # asks for a device name and shared directories
+lantern daemon
 ```
 
-Give each device a different `--device-name`. It is the label the other devices
-see. The daemon serves only inside the directories it is given.
+`lantern setup` writes the per-user `lanternd.json` and creates the shared
+directory if it is missing; `lantern daemon` reads that file on every start. To
+change the name or the directories later, edit the file or re-run
+`lantern setup --force`.
+
+Give each device a different name. It is the label the other devices see. The
+daemon serves only inside the directories it is given, and it stays read-only
+unless started with `--allow-writes`.
 
 Then run `lantern doctor` in another terminal. The CLI and the MCP server talk
 to the daemon over the local API. Closing the daemon's terminal stops it, and
