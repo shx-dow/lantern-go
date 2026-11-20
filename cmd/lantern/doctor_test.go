@@ -3,9 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/shx-dow/lantern-go/internal/daemon"
 	"github.com/shx-dow/lantern-go/internal/doctor"
 )
 
@@ -272,5 +276,49 @@ func TestDoctorMarkLinesUp(t *testing.T) {
 	}
 	if doctorMark(doctor.Status("other")) == "" {
 		t.Error("an unknown status has no mark, so its row has no status column")
+	}
+}
+
+// --config is how doctor is pointed at the file the daemon actually runs with.
+// A malformed one must be named rather than left as an unexplained refusal.
+func TestDoctorChecksTheConfigFileItIsGiven(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lanternd.json")
+	if err := os.WriteFile(path, []byte("{nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	err := runDoctor(t.Context(), []string{
+		"--config", path,
+		"--daemon-url", "http://127.0.0.1:1",
+	}, &buf)
+	if !errors.Is(err, errSilent) {
+		t.Fatalf("err = %v, want errSilent after printing the report", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"config", path, "fix:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report is missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// The per-user config says nothing about a daemon on another machine, so it is
+// only inspected for a loopback target. An explicit --config is still honoured.
+func TestDoctorConfigPathIsLoopbackOrExplicit(t *testing.T) {
+	def := daemon.DefaultConfigPath()
+	for _, tc := range []struct {
+		name, flag, url, want string
+	}{
+		{"default on loopback", "", "http://127.0.0.1:43782", def},
+		{"bare loopback host:port", "", "127.0.0.1:43782", def},
+		{"localhost", "", "http://localhost:43782", def},
+		{"remote is not checked", "", "http://192.0.2.10:43782", ""},
+		{"explicit wins on remote", "/tmp/x.json", "http://192.0.2.10:43782", "/tmp/x.json"},
+		{"explicit wins on loopback", "/tmp/x.json", "http://127.0.0.1:43782", "/tmp/x.json"},
+	} {
+		if got := doctorConfigPath(tc.flag, tc.url); got != tc.want {
+			t.Errorf("%s: doctorConfigPath(%q, %q) = %q, want %q", tc.name, tc.flag, tc.url, got, tc.want)
+		}
 	}
 }

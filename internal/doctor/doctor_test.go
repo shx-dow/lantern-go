@@ -664,3 +664,69 @@ func TestRunSkipsSharedDirsOnAnOlderDaemon(t *testing.T) {
 		t.Fatalf("shared-dirs = %+v, want skip without a reported list", c)
 	}
 }
+
+func TestCheckConfigAcceptsAMissingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lanternd.json")
+	c := checkConfig(path)
+	if c.Status != Pass {
+		t.Errorf("missing config is not a fault: %+v", c)
+	}
+	if !strings.Contains(c.Detail, path) {
+		t.Errorf("detail does not name the file: %+v", c)
+	}
+}
+
+func TestCheckConfigAcceptsAValidFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lanternd.json")
+	if err := os.WriteFile(path, []byte(`{"device_name":"laptop"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if c := checkConfig(path); c.Status != Pass {
+		t.Errorf("valid config failed: %+v", c)
+	}
+}
+
+func TestCheckConfigNamesAMalformedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lanternd.json")
+	if err := os.WriteFile(path, []byte("{nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := checkConfig(path)
+	if c.Status != Fail {
+		t.Fatalf("malformed config did not fail: %+v", c)
+	}
+	if !strings.Contains(c.Detail, path) {
+		t.Errorf("detail does not name the file: %+v", c)
+	}
+	if c.Fix == "" {
+		t.Errorf("failure has no fix: %+v", c)
+	}
+}
+
+// A daemon that will not start because its config is broken looks like a
+// network problem from the CLI. The config check must therefore run and be
+// reported even when the daemon cannot be reached.
+func TestRunReportsABadConfigWhenTheDaemonIsDown(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lanternd.json")
+	if err := os.WriteFile(path, []byte("{nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := Run(t.Context(), lanternclient.New("http://127.0.0.1:1", ""), Options{ConfigPath: path})
+	if c := find(t, r, "config"); c.Status != Fail {
+		t.Errorf("config check = %+v, want a failure", c)
+	}
+	if r.Healthy {
+		t.Error("a broken config was reported healthy")
+	}
+}
+
+func TestCheckConfigSkipsWithoutAPath(t *testing.T) {
+	c := checkConfig("")
+	if c.Status != Skip {
+		t.Errorf("no path should skip, not pass or fail: %+v", c)
+	}
+	if !strings.Contains(c.Detail, "--config") {
+		t.Errorf("skip does not say how to check it: %+v", c)
+	}
+}

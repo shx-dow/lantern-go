@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/shx-dow/lantern-go/internal/daemon"
 	"github.com/shx-dow/lantern-go/internal/doctor"
 	"github.com/shx-dow/lantern-go/pkg/lanternclient"
 )
@@ -27,6 +28,9 @@ device that is simply switched off all look identical from the outside.
 Flags:
   --probe-peers      dial each paired device to test reachability, rather than
                      reporting only whether a connection happens to be open
+  --config FILE      daemon config file to check (default: the per-user
+                     lanternd.json for a loopback daemon); pass the same file
+                     the daemon runs with
   --daemon-url URL   daemon base URL (same as $LANTERND_URL)
   --daemon-token T   daemon bearer token (same as $LANTERN_DAEMON_TOKEN)
   --token-file FILE  file holding the daemon token (same as
@@ -57,6 +61,7 @@ func runDoctor(ctx context.Context, args []string, out io.Writer) error {
 	fs.Usage = func() { fmt.Fprint(os.Stderr, doctorUsage) }
 	probe := fs.Bool("probe-peers", false, "dial each paired device to test reachability")
 	jsonOut := fs.Bool("json", false, "machine-readable JSON on stdout")
+	configPath := fs.String("config", "", "daemon config file to check")
 	base := fs.String("daemon-url", "", "daemon base URL (same as $LANTERND_URL)")
 	tokenFlag := fs.String("daemon-token", "", "daemon bearer token (same as $LANTERN_DAEMON_TOKEN)")
 	tokenFile := fs.String("token-file", "", "file holding the daemon bearer token (same as $LANTERN_DAEMON_TOKEN_FILE)")
@@ -76,7 +81,22 @@ func runDoctor(ctx context.Context, args []string, out io.Writer) error {
 	return runDoctorReport(ctx, lanternclient.New(normalizeBaseURL(addr), token), doctor.Options{
 		Token:      token,
 		ProbePeers: *probe,
+		ConfigPath: doctorConfigPath(*configPath, addr),
 	}, *jsonOut, out)
+}
+
+// doctorConfigPath picks the daemon config file to inspect. An explicit
+// --config always wins. Otherwise the per-user file is checked only for a
+// loopback daemon: a config on this machine says nothing about a daemon
+// running on another one, the same reason the token file is loopback-only.
+func doctorConfigPath(flagValue, daemonURL string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	if lanternclient.IsLoopbackURL(daemonURL) {
+		return daemon.DefaultConfigPath()
+	}
+	return ""
 }
 
 // runDoctorFlags serves doctor when it arrived with CLI flags parsed, so
@@ -89,6 +109,7 @@ func runDoctorFlags(ctx context.Context, opts cliOptions, out io.Writer) error {
 	report := doctor.Run(ctx, newDaemonClient(opts.daemonURL, token), doctor.Options{
 		Token:      token,
 		ProbePeers: opts.probePeers,
+		ConfigPath: doctorConfigPath("", opts.daemonURL),
 	})
 	renderDoctorReport(report, opts.jsonOut, out)
 	if report.Failed() {
