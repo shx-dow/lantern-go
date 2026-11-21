@@ -71,9 +71,11 @@ func pairingAlias(deviceName, peerID string) string {
 	if name == "" {
 		return shortPeer(peerID)
 	}
-	if len(name) > 64 {
-		// Aliases are typed by a person; a wall of text is not one.
-		name = strings.TrimSpace(name[:64])
+	if runes := []rune(name); len(runes) > 64 {
+		// Aliases are typed by a person; a wall of text is not one. Counted in
+		// runes, so a name in any script is cut between characters rather than
+		// inside one.
+		name = strings.TrimSpace(string(runes[:64]))
 	}
 	return name
 }

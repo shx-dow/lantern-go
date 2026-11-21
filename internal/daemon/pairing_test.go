@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -49,12 +50,16 @@ func TestAcceptPairingGrantsReadAndRecordsTheName(t *testing.T) {
 func TestAcceptPairingDoesNotDemoteAnExistingPairing(t *testing.T) {
 	d := pairingDaemon(t)
 	remote := peer.ID("12D3KooWTheDesktop")
+	// An absolute path from this platform, not "/srv/inbox": on Windows a
+	// leading slash is volume-relative, and the store resolves it before
+	// keeping it.
+	root := filepath.Join(t.TempDir(), "inbox")
 	if _, err := d.Trust.Add(TrustSpec{
 		PeerID:        remote.String(),
 		Alias:         "work-laptop",
 		Tier:          string(TierReadWrite),
-		WritableRoots: []string{"/srv/inbox"},
-		DeviceRoots:   []string{"/srv/inbox"},
+		WritableRoots: []string{root},
+		DeviceRoots:   []string{root},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +78,7 @@ func TestAcceptPairingDoesNotDemoteAnExistingPairing(t *testing.T) {
 	if entry.Tier != TierReadWrite {
 		t.Errorf("stored tier = %q, want read-write kept", entry.Tier)
 	}
-	if len(entry.WritableRoots) != 1 || entry.WritableRoots[0] != "/srv/inbox" {
+	if len(entry.WritableRoots) != 1 || entry.WritableRoots[0] != root {
 		t.Errorf("writable roots = %v, want the existing subset kept", entry.WritableRoots)
 	}
 }
