@@ -271,7 +271,7 @@ func TestRunWarnsWhenNothingIsPaired(t *testing.T) {
 	if !r.Healthy {
 		t.Fatalf("an unpaired single device is not unhealthy: %+v", r.Checks)
 	}
-	if d := find(t, r, "paired-devices"); d.Status != Warn || !contains(d.Fix, "trust add") {
+	if d := find(t, r, "paired-devices"); d.Status != Warn || !contains(d.Fix, "pair") {
 		t.Fatalf("paired-devices = %+v", d)
 	}
 }

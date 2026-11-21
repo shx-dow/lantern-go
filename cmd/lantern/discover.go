@@ -79,8 +79,9 @@ func renderDiscover(w io.Writer, v discoverView) {
 			return
 		}
 		fmt.Fprintln(w, "no paired devices or connected peers")
-		fmt.Fprintln(w, "on the other device, run `lantern status` for its peer ID, then:")
-		fmt.Fprintln(w, "  lantern trust add <peer-id> [alias]")
+		fmt.Fprintln(w, "run `lantern pair` here and paste the invitation on the other device:")
+		fmt.Fprintln(w, "  lantern pair")
+		fmt.Fprintln(w, "or pair by peer ID: `lantern status` there, then `lantern trust add <peer-id> [alias]`")
 	}
 }
 

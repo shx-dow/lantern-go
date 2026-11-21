@@ -189,19 +189,33 @@ Two things are deliberately not in the file:
 
 ## Pair two devices, then read a file
 
-A pairing is one direction at a time: the device that runs `trust add` lets the
-named device read from it. Run it on both devices to read in both directions.
+On one device, print an invitation:
 
-Print the ID each device needs from the other:
+```sh
+lantern pair
+```
+
+Send the string it prints to the other device, however you like, and run this
+there:
+
+```sh
+lantern pair <invitation>
+```
+
+One paste pairs both directions: each device knows the other's name and may read
+inside the other's shared directories. The invitation is single use, expires in
+ten minutes, and lives only in the daemon's memory, so restarting the daemon
+cancels it. It cannot grant writes, because that stays a start-time decision on
+the serving device.
+
+If the two devices cannot dial each other, pair each side by peer ID instead. A
+pairing is one direction at a time: the device that runs `trust add` lets the
+named device read from it.
 
 ```sh
 lantern status      # on the laptop:   peer: 12D3KooW...
 lantern status      # on the desktop:  peer: 12D3KooW...
-```
 
-Then pair each side, naming the other device with the alias you want to type:
-
-```sh
 # on the desktop: know the laptop as "laptop"
 lantern trust add <laptop-peer-id> laptop
 
@@ -214,7 +228,7 @@ gives the laptop the same access to the desktop, and gives the desktop the name
 and address it needs to dial.
 
 `lantern discover` lists the devices already paired with this one, connected or
-not, so running it again after `trust add` is how you confirm the pairing took.
+not, so running it again after pairing is how you confirm it took.
 `not connected, no known address` means this device has never seen the other one
 on the network.
 

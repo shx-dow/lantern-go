@@ -186,6 +186,7 @@ type cliOptions struct {
 	daemonToken   string
 	tokenFile     string
 	probePeers    bool
+	pairTTL       time.Duration
 	tier          string
 	writableRoots []string
 	command       string
@@ -203,7 +204,7 @@ type cliOptions struct {
 // fresh in-process node for them — so they are deliberately absent.
 func commandNeedsDaemon(command string) bool {
 	switch command {
-	case "status", "discover", "peers", "list", "trust", "files", "remote-files", "get":
+	case "status", "discover", "peers", "list", "trust", "files", "remote-files", "get", "pair":
 		return true
 	}
 	return false
@@ -448,6 +449,7 @@ func parseArgs(args []string) (cliOptions, error) {
 		opts.probePeers = truthyFlag(v)
 		return nil
 	})
+	fs.DurationVar(&opts.pairTTL, "ttl", 0, "lifetime of a lantern pair invitation (default 10m)")
 	var helpRequested bool
 	fs.BoolVar(&helpRequested, "help", false, "show help")
 	fs.BoolVar(&helpRequested, "h", false, "shorthand for --help")
@@ -594,6 +596,7 @@ func usage() {
     trust tier <peer-id|alias> T change what a paired device may do
     trust roots <peer-id|alias> [dirs...]  confine a device's writes
     trust remove <peer-id>       unpair a device
+    pair [invitation]            pair two devices with one paste, both ways
     files [dir]                  list shared roots, or a directory under one
     remote-files <peer-id> [dir] list a peer's shared roots or a directory
     get <device>:<path> [dest]   copy a file from a paired device (verified)
@@ -632,6 +635,7 @@ examples:
   lantern send --json ./photo.jpg
   lantern --daemon send ./photo.jpg
   lantern --daemon receive <code> --out ./inbox
+  lantern pair
   lantern get laptop:notes.md
   lantern status`)
 }
@@ -699,6 +703,8 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 		if runDaemonTransfer(ctx, c, enc, opts.jsonOut, rec.ID, "received:", "") {
 			os.Exit(1)
 		}
+	case "pair":
+		runPair(c, opts)
 	case "status":
 		st, err := c.Status()
 		if err != nil {

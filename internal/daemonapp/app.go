@@ -245,6 +245,7 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 	}
 	d.WritesEnabled = *allowWrite
 	d.MaxWriteBytes = *maxWriteF
+	d.PairingName = name
 
 	if node := ln.Node(); node != nil && node.Host != nil {
 		// Reads and writes are gated per peer, not by pairing alone. A device
@@ -252,6 +253,12 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 		node.SetReadAccess(d.ReadableRootsFor)
 		node.RegisterListHandler()
 		node.RegisterFSHandler()
+
+		// An invitation pairs a peer at read. The decision, and the tier it
+		// records, stay on the device accepting it; the transport only checks
+		// that the secret was this device's and had not been spent.
+		node.SetPairAcceptor(d.AcceptPairing)
+		node.RegisterPairHandler()
 
 		// Writes are opt-in twice over: this device must allow writes at all,
 		// and the peer must be at read-write. Without --allow-writes the
