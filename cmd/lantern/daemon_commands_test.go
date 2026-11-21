@@ -112,6 +112,14 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 			ok(map[string]any{"trusted": []map[string]any{
 				{"peer_id": "12D3kooONE", "alias": "nas", "tier": "read-write"},
 			}})
+		case "/v1/pairing/invitations":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"invitation":"lantern-pair1.invitation","expires_at":"2026-11-21T10:10:00Z"}`))
+		case "/v1/pairing/redeem":
+			ok(map[string]any{
+				"peer_id": "12D3kooLAPTOP", "device_name": "laptop", "tier": "read",
+			})
 		case "/v1/devices":
 			ok(map[string]any{"devices": []map[string]any{
 				{"peer_id": "12D3kooONE", "alias": "nas", "tier": "read-write", "online": true, "known_addresses": 1},

@@ -103,6 +103,8 @@ func (h *Handler) routeTable() []route {
 		{Route{"POST", "/v1/trust"}, h.postTrust},
 		{Route{"PATCH", "/v1/trust/{id}"}, h.patchTrust},
 		{Route{"DELETE", "/v1/trust/{id}"}, h.deleteTrust},
+		{Route{"POST", "/v1/pairing/invitations"}, h.postPairingInvitations},
+		{Route{"POST", "/v1/pairing/redeem"}, h.postPairingRedeem},
 		{Route{"GET", "/v1/files"}, h.getFiles},
 		{Route{"GET", "/v1/devices"}, h.getDevices},
 		{Route{"GET", "/v1/peers/{id}/files"}, h.getRemoteFiles},

@@ -321,6 +321,80 @@ paths:
           description: The unpair could not be persisted; the pairing is still in effect.
         '503':
           description: Pairing is not configured on this daemon.
+  /v1/pairing/invitations:
+    post:
+      summary: Mint a single-use pairing invitation
+      description: |-
+        Returns one string to paste on the other device, and when it stops
+        working. The invitation carries this device's peer ID, its current
+        dialable addresses, an expiry, and a random secret. It is held in
+        memory only: restarting the daemon invalidates any outstanding
+        invitation.
+
+        An invitation pairs exactly one device, at tier `read`, and is spent by
+        the first redemption that reaches this daemon, successful or not. It
+        cannot grant a write: `--allow-writes` and the writable dirs stay
+        start-time decisions on the serving device.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ttl_seconds:
+                  type: integer
+                  minimum: 1
+                  description: |-
+                    Lifetime. Absent or 0 means the default of 600 seconds; the
+                    maximum is 86400, so an invitation always expires.
+      responses:
+        '201':
+          description: Invitation minted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairInvitation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Pairing is not configured on this daemon.
+  /v1/pairing/redeem:
+    post:
+      summary: Redeem a pairing invitation
+      description: |-
+        Dials the device named by the invitation and presents its secret. On
+        success that device has recorded this one, and this device records it
+        back at tier `read`, which makes the pairing mutual. An existing
+        pairing keeps its tier and name.
+
+        A refusal names the reason: expired, already used, or unknown to that
+        device (usually because its daemon restarted).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [invitation]
+              properties:
+                invitation:
+                  type: string
+      responses:
+        '200':
+          description: Both devices are now paired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Pairing is not configured on this daemon.
   /v1/files:
     get:
       summary: List local shared-dir files
@@ -895,6 +969,34 @@ components:
             Restricts this device to a subset of the daemon's writable dirs.
             Only meaningful with tier `read-write`. Each root must sit inside
             the daemon's own writable dirs; anything else is a 400.
+    PairInvitation:
+      type: object
+      required: [invitation, expires_at]
+      properties:
+        invitation:
+          type: string
+          description: |-
+            The string to paste on the other device. It is a bearer capability:
+            treat it like a password until it is used or expires.
+        expires_at:
+          type: string
+          format: date-time
+    PairResult:
+      type: object
+      required: [peer_id, tier]
+      properties:
+        peer_id:
+          type: string
+          description: The device this one paired with.
+        device_name:
+          type: string
+          description: That device's name, when it has one; empty otherwise.
+        tier:
+          type: string
+          enum: [none, read, read-write]
+          description: |-
+            What this device now has on the other one. A new pairing is
+            `read`; redeeming an invitation never demotes an existing pairing.
     FileEntry:
       type: object
       required: [name, size, mod_time, is_dir]

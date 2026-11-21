@@ -523,7 +523,7 @@ func checkDevices(ctx context.Context, client *lanternclient.Client, probe bool)
 			Name:   "paired-devices",
 			Status: Warn,
 			Detail: "no devices are paired, so nothing can be read from or pushed to",
-			Fix:    "lantern --daemon trust add <peer-id> <alias>   # run on both devices; trust is one-directional",
+			Fix:    "lantern --daemon pair   # paste the invitation on the other device; or trust add <peer-id> <alias> on each, since trust is one-directional",
 		}
 	}
 

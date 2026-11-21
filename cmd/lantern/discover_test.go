@@ -108,7 +108,7 @@ func TestDiscoverWithNothingPairedSaysHowToPair(t *testing.T) {
 		PairingKnown: true,
 	})
 	out := buf.String()
-	for _, want := range []string{"no paired devices or connected peers", "lantern trust add <peer-id> [alias]"} {
+	for _, want := range []string{"no paired devices or connected peers", "lantern pair", "lantern trust add <peer-id> [alias]"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output is missing %q:\n%s", want, out)
 		}

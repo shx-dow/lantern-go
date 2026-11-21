@@ -62,6 +62,10 @@ type Node struct {
 	// to the same partial file cannot overlap. See claimDownload.
 	downloadsMu sync.Mutex
 	downloads   map[string]struct{}
+
+	// pair holds this node's outstanding invitations and its pairing decision.
+	// See pairing.go.
+	pair pairState
 }
 
 // NodeOption configures a Node at construction.

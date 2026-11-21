@@ -102,6 +102,9 @@ type Daemon struct {
 	WritesEnabled bool
 	// MaxWriteBytes caps one push. Zero means p2p.DefaultMaxWriteBytes.
 	MaxWriteBytes int64
+	// PairingName is this device's name, reported to a peer that redeems an
+	// invitation so the pairing needs no manual naming step.
+	PairingName string
 
 	subsMu  sync.Mutex
 	subs    map[uint64]chan EventDTO

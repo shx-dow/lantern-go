@@ -85,6 +85,8 @@ Flags:
 
 "lantern devices" is the same as "lantern trust list".
 `
+	case "pair":
+		return pairUsage
 	case "files":
 		return `lantern files [dir] [--json]
 

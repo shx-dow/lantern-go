@@ -518,6 +518,36 @@ func (c *Client) TrustRemove(peerID string) error {
 	return c.roundTrip(http.MethodDelete, "/v1/trust/"+peerID, nil, nil, http.StatusNoContent, http.StatusOK)
 }
 
+// PairInvitation is a single-use invitation and the moment it stops working.
+type PairInvitation struct {
+	Invitation string `json:"invitation"`
+	ExpiresAt  string `json:"expires_at"`
+}
+
+// PairResult says who a redeemed invitation paired with this device.
+type PairResult struct {
+	PeerID     string `json:"peer_id"`
+	DeviceName string `json:"device_name"`
+	Tier       string `json:"tier"`
+}
+
+// PairInvite mints a pairing invitation valid for ttlSeconds. Zero means the
+// daemon's default, which is ten minutes.
+func (c *Client) PairInvite(ttlSeconds int64) (PairInvitation, error) {
+	var inv PairInvitation
+	body := map[string]any{}
+	if ttlSeconds > 0 {
+		body["ttl_seconds"] = ttlSeconds
+	}
+	return inv, c.roundTrip(http.MethodPost, "/v1/pairing/invitations", body, &inv, http.StatusCreated)
+}
+
+// PairRedeem redeems an invitation, pairing both devices at read.
+func (c *Client) PairRedeem(invitation string) (PairResult, error) {
+	var res PairResult
+	return res, c.roundTrip(http.MethodPost, "/v1/pairing/redeem", map[string]any{"invitation": invitation}, &res)
+}
+
 // Files lists local shared-dir files.
 func (c *Client) Files(dir string) ([]FileEntry, error) {
 	path := "/v1/files"
