@@ -6,12 +6,15 @@ package daemon
 // the one-directional `trust add` cannot do that in one step.
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 	"github.com/shx-dow/lantern-go/pkg/lanternclient"
 )
@@ -19,6 +22,7 @@ import (
 type pairingDevice struct {
 	daemon *Daemon
 	store  *TrustStore
+	ln     *lantern.Lantern
 	node   string
 	api    *httptest.Server
 	client *lanternclient.Client
@@ -57,9 +61,24 @@ func newPairingDevice(t *testing.T, base, dir, name string) *pairingDevice {
 	return &pairingDevice{
 		daemon: d,
 		store:  store,
+		ln:     ln,
 		node:   ln.Node().Host.ID().String(),
 		api:    srv,
 		client: lanternclient.New(srv.URL, "test-token"),
+	}
+}
+
+// connect stands in for the connection two devices already have when they are
+// on one LAN (mDNS) or were started with --peer. Without it these fixtures
+// have no DHT peer at all, and an address-free invitation has no route to the
+// inviter to test.
+func connect(t *testing.T, from, to *pairingDevice) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	info := peer.AddrInfo{ID: to.ln.Node().Host.ID(), Addrs: to.ln.Node().Host.Addrs()}
+	if err := from.ln.Node().Host.Connect(ctx, info); err != nil {
+		t.Fatalf("connect the two devices: %v", err)
 	}
 }
 
@@ -67,6 +86,7 @@ func TestPairingOnePastePairsBothDevices(t *testing.T) {
 	base := t.TempDir()
 	laptop := newPairingDevice(t, base, "laptop", "laptop")
 	desktop := newPairingDevice(t, base, "desktop", "desktop")
+	connect(t, desktop, laptop)
 
 	inv, err := laptop.client.PairInvite(0)
 	if err != nil {
@@ -74,6 +94,12 @@ func TestPairingOnePastePairsBothDevices(t *testing.T) {
 	}
 	if !strings.HasPrefix(inv.Invitation, "lantern-pair1.") {
 		t.Errorf("invitation = %q, want the pasteable prefix", inv.Invitation)
+	}
+	if len(inv.Invitation) > 100 {
+		t.Errorf("invitation is %d characters, want the address-free shape", len(inv.Invitation))
+	}
+	if strings.Contains(inv.Invitation, "ip4/") || strings.Contains(inv.Invitation, "ip6/") {
+		t.Errorf("invitation leaks a dial address: %q", inv.Invitation)
 	}
 
 	res, err := desktop.client.PairRedeem(inv.Invitation)
@@ -118,6 +144,7 @@ func TestPairingDoesNotDemoteAnExistingGrant(t *testing.T) {
 	base := t.TempDir()
 	laptop := newPairingDevice(t, base, "laptop", "laptop")
 	desktop := newPairingDevice(t, base, "desktop", "desktop")
+	connect(t, desktop, laptop)
 
 	if _, err := laptop.store.Add(TrustSpec{
 		PeerID: desktop.node,
