@@ -4,10 +4,9 @@ import (
 	"net/http"
 )
 
-// CORS lets the desktop webview (Wails asset origin) and any browser page
-// call the localhost daemon API directly. The bearer token stays mandatory,
-// so reflecting the Origin is safe: the server only binds loopback, and a
-// caller without the token still gets 401. Preflights (OPTIONS) are answered
+// CORS lets a browser page on another origin call the localhost daemon API
+// directly. The bearer token stays mandatory, so reflecting the Origin is safe:
+// a caller without the token still gets 401. Preflights (OPTIONS) are answered
 // here, before RequireAuth, because they never carry credentials.
 func CORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
