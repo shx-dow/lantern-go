@@ -35,6 +35,11 @@ func newPairingDevice(t *testing.T, base, dir, name string) *pairingDevice {
 		DataDir:   filepath.Join(base, dir),
 		Bootstrap: []string{"none"},
 		NoMDNS:    true,
+		// The devices dial each other over loopback. The swarm's own limit for
+		// a private address is 5 seconds, which a security handshake under
+		// -race on a loaded runner can outlast; a longer caller context does
+		// not raise it.
+		DialTimeout: 60 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
