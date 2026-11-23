@@ -209,11 +209,13 @@ func lyingReceiverDaemon(t *testing.T, reportedDigest, content string) (*Daemon,
 	// test then fails on the dial instead of on the digest it exists to check.
 	// Raising the swarm's limit is the only lever: it is enforced inside
 	// go-libp2p, and writeFS caps its own context at fsiOTimeout, so a longer
-	// caller context is discarded rather than honoured.
+	// caller context is discarded rather than honoured. testDialTimeout is that
+	// limit, shared with the other fixtures in this package so the two cannot
+	// drift apart.
 	ln, err := lantern.New(lantern.Config{
 		Port:        0,
 		DataDir:     filepath.Join(dir, "sender"),
-		DialTimeout: 60 * time.Second,
+		DialTimeout: testDialTimeout,
 	})
 	if err != nil {
 		node.Close()
