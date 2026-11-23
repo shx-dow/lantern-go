@@ -3,20 +3,25 @@ package p2p
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/multiformats/go-multiaddr"
 )
 
 // pairingNodes is an inviter and a redeemer that can reach each other on
 // loopback. The fs host keeps these tests off the DHT and mDNS, which have
-// nothing to do with pairing.
+// nothing to do with pairing; a shared rendezvous directory stands in for the
+// DHT lookup an invitation now relies on.
 func pairingNodes(t *testing.T) (*Node, *Node) {
 	t.Helper()
-	return fsHost(t), fsHost(t)
+	inviter, redeemer := fsHost(t), fsHost(t)
+	dir := t.TempDir()
+	inviter.localDir = dir
+	redeemer.localDir = dir
+	return inviter, redeemer
 }
 
 // One paste is the whole claim: the inviter records the redeemer, the redeemer
@@ -38,6 +43,17 @@ func TestPairingPairsBothSidesInOnePaste(t *testing.T) {
 	}
 	if !strings.HasPrefix(text, invitationPrefix) {
 		t.Errorf("invitation %q does not carry the prefix", text)
+	}
+	if !strings.Contains(text, ".") || strings.Count(strings.TrimPrefix(text, invitationPrefix), ".") != 1 {
+		t.Errorf("invitation %q is not <secret>.<expiry>", text)
+	}
+	if len(text) > 100 {
+		t.Errorf("invitation is %d characters; the address-free form should be about 70", len(text))
+	}
+	for _, leak := range []string{"ip4", "ip6", "tcp", "udp", inviter.Host.ID().String()} {
+		if strings.Contains(text, leak) {
+			t.Errorf("invitation %q leaks %q", text, leak)
+		}
 	}
 	if wait := time.Until(expires); wait < DefaultPairTTL-time.Minute || wait > DefaultPairTTL {
 		t.Errorf("expiry is %s away, want about %s", wait, DefaultPairTTL)
@@ -126,8 +142,9 @@ func TestPairingExpiredInvitationIsRefused(t *testing.T) {
 	// Reach into the store rather than sleeping: the expiry clock is what
 	// matters, not how long a test is willing to wait.
 	inviter.pair.mu.Lock()
-	for k := range inviter.pair.invites {
-		inviter.pair.invites[k] = time.Now().Add(-time.Second)
+	for k, inv := range inviter.pair.invites {
+		inv.expires = time.Now().Add(-time.Second)
+		inviter.pair.invites[k] = inv
 	}
 	inviter.pair.mu.Unlock()
 
@@ -145,6 +162,9 @@ func TestPairingRefusesTextThatIsNotAnInvitation(t *testing.T) {
 		"0123456789abcdef0123456789abcdef", // a share code
 		"12D3KooWpeer",
 		invitationPrefix + "!!!",
+		invitationPrefix + "eyJ2ZXJzaW9uIjoxfQ", // the first, address-carrying format
+		invitationPrefix + "AAAA.AAAA",
+		invitationPrefix + "AAAA.1.2",
 	} {
 		_, err := redeemer.RedeemInvitation(context.Background(), text, "desktop")
 		if err == nil {
@@ -169,19 +189,50 @@ func TestMintInvitationBoundsItsLifetime(t *testing.T) {
 	}
 }
 
-// An invitation is read on another machine, so loopback addresses are dropped
-// when there is anywhere else to dial. When loopback is all a node has -- a
-// container, a test -- keeping it is the difference between an invitation that
-// works and one that carries no address at all.
-func TestDialableAddrsDropsLoopbackOnlyWhenSomethingElseIsDialable(t *testing.T) {
-	lo := multiaddr.StringCast("/ip4/127.0.0.1/tcp/4001")
-	lan := multiaddr.StringCast("/ip4/192.168.1.5/tcp/4001")
-	v6 := multiaddr.StringCast("/ip6/::1/tcp/4001")
-
-	if got := dialableAddrs([]multiaddr.Multiaddr{lo, lan}); len(got) != 1 || got[0] != lan.String() {
-		t.Errorf("with a LAN address, got %v, want only %s", got, lan)
+// The invitation is a secret and an expiry, so the only thing a chat window or
+// screenshot can retain is a capability that dies after one use. The inviter's
+// addresses live in rendezvous, keyed by a hash the holder of the secret can
+// derive and nobody else can.
+func TestPairingRendezvousNameNeedsTheSecretAndIsNotTheSecret(t *testing.T) {
+	inviter, _ := pairingNodes(t)
+	text, _, err := inviter.MintInvitation(0)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := dialableAddrs([]multiaddr.Multiaddr{lo, v6}); len(got) != 2 {
-		t.Errorf("with only loopback, got %v, want both kept", got)
+	inv, err := parseInvitation(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := pairLookupKey(inv.Secret)
+	if strings.Contains(key, inv.Secret) {
+		t.Errorf("rendezvous name %q contains the secret", key)
+	}
+	if key == pairLookupKey(inv.Secret+"x") {
+		t.Error("a different secret derived the same rendezvous name")
+	}
+}
+
+// An invitation has to become findable for the holder of the secret, or the
+// paste has nothing to connect to. The path is the hash-derived name, not the
+// secret or an address.
+func TestPairingInvitationIsAdvertisedUnderItsRendezvousName(t *testing.T) {
+	inviter, _ := pairingNodes(t)
+	text, _, err := inviter.MintInvitation(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv, err := parseInvitation(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := inviter.peerFilePath(pairLookupKey(inv.Secret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the invitation was not advertised: %v", err)
+	}
+	if strings.Contains(path, inv.Secret) {
+		t.Errorf("advertisement path %q contains the secret", path)
 	}
 }

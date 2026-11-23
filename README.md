@@ -208,8 +208,10 @@ ten minutes, and lives only in the daemon's memory, so restarting the daemon
 cancels it. It cannot grant writes, because that stays a start-time decision on
 the serving device.
 
-If the two devices cannot dial each other, pair each side by peer ID instead. A
-pairing is one direction at a time: the device that runs `trust add` lets the
+The invitation carries only a secret and an expiry. The redeeming device finds
+the inviter over the DHT, or over mDNS on a LAN, so both devices must be online
+and able to reach each other. If they cannot, pair each side by peer ID instead.
+A pairing is one direction at a time: the device that runs `trust add` lets the
 named device read from it.
 
 ```sh
