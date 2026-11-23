@@ -88,6 +88,21 @@ planned and does not exist yet.
 beyond `read` by default, but it has no natural end point. Revoke one you no
 longer want with `lantern trust remove <peer-id>`.
 
+## The web page
+
+`lanternd` serves a small page at `/ui` and redirects `/` to it. The page is
+served without authentication, by design: it contains no data and no secrets,
+and every `/v1/` request it makes still needs the bearer token, which the
+operator pastes in and the browser keeps in local storage. A caller without the
+token gets the HTML and nothing else.
+
+With `--allow-remote`, the page is reachable from the network along with the
+API. That does not widen what an unauthenticated caller can do, because the API
+stays token-gated. It does mean the page source is public, and that a token
+entered on a remote page crosses the network in cleartext. The daemon prints
+that warning at startup. If either is unacceptable, bind loopback and reach the
+daemon through an SSH tunnel or a TLS proxy.
+
 ## Version compatibility
 
 Releases are alpha only. No version is supported, so there is no version table
