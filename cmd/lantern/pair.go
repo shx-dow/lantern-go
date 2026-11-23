@@ -27,9 +27,10 @@ daemon invalidates any outstanding invitation, and it cannot grant writes:
 write access remains a start-time decision on the serving device
 (--allow-writes, --writable-dirs).
 
-If the two devices cannot dial each other -- separate networks without a
-relay, or a firewall -- "lantern trust add" with a peer ID from
-"lantern status" still works.
+Both devices must be able to find each other: on a LAN through mDNS, or
+across networks through the DHT. If they cannot -- a firewall, or no route
+to a DHT peer -- "lantern trust add" with a peer ID from "lantern status"
+still works.
 
 Flags:
   --ttl DURATION   how long the invitation stays valid (default 10m)

@@ -11,17 +11,16 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/multiformats/go-multiaddr"
 	"github.com/shx-dow/lantern-go/internal/protocol"
 )
 
@@ -93,13 +92,22 @@ type PairResult struct {
 	Addrs      []string
 }
 
-// invitation is the decoded form of the string minted by MintInvitation.
+// invitation is the decoded form of the string minted by MintInvitation. It
+// names the secret and its expiry, and nothing else: who the inviter is comes
+// from the rendezvous lookup the secret enables, never from text that a
+// chat window, a log, or a screenshot could retain.
 type invitation struct {
-	Version   int      `json:"version"`
-	PeerID    string   `json:"peer_id"`
-	Addrs     []string `json:"addrs,omitempty"`
-	Secret    string   `json:"secret"`
-	ExpiresAt int64    `json:"expires_at"`
+	Secret    string
+	ExpiresAt int64
+}
+
+// pairInvite is one outstanding invitation on the minting device. cancel stops
+// the advertisement that makes the inviter findable; it runs when the
+// invitation expires or the node closes.
+type pairInvite struct {
+	expires time.Time
+	lookup  string
+	cancel  context.CancelFunc
 }
 
 // pairState is a Node's outstanding invitations and its pairing decision. It
@@ -107,7 +115,7 @@ type invitation struct {
 // (which every test has) never see each other's invitations.
 type pairState struct {
 	mu      sync.Mutex
-	invites map[[32]byte]time.Time
+	invites map[[32]byte]pairInvite
 	accept  func(remote peer.ID, peerName string) (deviceName, tier string, err error)
 	once    sync.Once
 }
@@ -153,40 +161,88 @@ func (n *Node) MintInvitation(ttl time.Duration) (string, time.Time, error) {
 	}
 	secret := base64.RawURLEncoding.EncodeToString(raw)
 	expires := time.Now().Add(ttl).UTC()
-
-	inv := invitation{
-		Version:   PairVersion,
-		PeerID:    n.Host.ID().String(),
-		Addrs:     dialableAddrs(n.Host.Addrs()),
-		Secret:    secret,
-		ExpiresAt: expires.Unix(),
-	}
-	payload, err := json.Marshal(inv)
-	if err != nil {
-		return "", time.Time{}, fmt.Errorf("encode invitation: %w", err)
-	}
+	lookup := pairLookupKey(secret)
 
 	sum := sha256.Sum256([]byte(secret))
+	ctx, cancel := context.WithDeadline(n.context(), expires)
+	if err := ctx.Err(); err != nil {
+		cancel()
+		return "", time.Time{}, errors.New("pairing is not available on a closed node")
+	}
+
+	var expired []string
 	n.pair.mu.Lock()
 	if n.pair.invites == nil {
-		n.pair.invites = make(map[[32]byte]time.Time)
+		n.pair.invites = make(map[[32]byte]pairInvite)
 	}
-	n.pair.invites[sum] = expires
+	n.pair.invites[sum] = pairInvite{expires: expires, lookup: lookup, cancel: cancel}
 	// Expired invitations are unusable anyway; dropping them keeps a device
 	// that mints many from holding them forever.
-	for k, exp := range n.pair.invites {
-		if time.Now().After(exp) {
+	for k, inv := range n.pair.invites {
+		if time.Now().After(inv.expires) {
+			inv.cancel()
+			expired = append(expired, inv.lookup)
 			delete(n.pair.invites, k)
 		}
 	}
 	n.pair.mu.Unlock()
 
-	return invitationPrefix + base64.RawURLEncoding.EncodeToString(payload), expires, nil
+	for _, key := range expired {
+		n.ClearLocal(key)
+	}
+	n.advertisePairInvitation(ctx, lookup)
+
+	text := invitationPrefix + secret + "." + strconv.FormatInt(expires.Unix(), 10)
+	return text, expires, nil
 }
 
-// RedeemInvitation dials the inviter named by invitation and presents its
-// secret. On success the inviter has recorded this device, and the result says
-// who this device just paired with.
+// pairLookupKey is the rendezvous name for one invitation. Hashing the secret
+// under a domain separator means only a holder of the pasted string can derive
+// the name, and the name cannot collide with a share code.
+func pairLookupKey(secret string) string {
+	sum := sha256.Sum256([]byte("lantern/pair-lookup/1\x00" + secret))
+	return "pair-" + base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// advertisePairInvitation makes the inviter findable under the secret-derived
+// lookup name. The local advertisement makes two nodes in one process (and two
+// daemons sharing a data directory) resolve without a DHT round trip; the DHT
+// advertisement is what reaches another device.
+//
+// Both are best effort. A minted invitation whose advertisement failed cannot
+// be redeemed, but refusing to mint would not help the caller, and the DHT
+// Provide path retries until the invitation expires.
+func (n *Node) advertisePairInvitation(ctx context.Context, lookup string) {
+	if err := n.AdvertiseLocal(lookup); err != nil {
+		fmt.Fprintf(os.Stderr, "lantern: publish pairing invitation: %v\n", err)
+	}
+	go func() {
+		<-ctx.Done()
+		n.ClearLocal(lookup)
+	}()
+	if n.DHT == nil {
+		return
+	}
+	go func() {
+		if err := n.Advertise(ctx, lookup); err != nil && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "lantern: advertise pairing invitation: %v\n", err)
+		}
+	}()
+}
+
+// context is the node's lifetime. A hand-built Node in a test may not have one,
+// in which case the invitation's own deadline still bounds the advertisement.
+func (n *Node) context() context.Context {
+	if n.ctx != nil {
+		return n.ctx
+	}
+	return context.Background()
+}
+
+// RedeemInvitation finds the inviter through the rendezvous name derived from
+// the invitation's secret, then presents that secret. On success the inviter
+// has recorded this device, and the result says who this device just paired
+// with.
 func (n *Node) RedeemInvitation(ctx context.Context, invitationText, deviceName string) (PairResult, error) {
 	inv, err := parseInvitation(invitationText)
 	if err != nil {
@@ -196,19 +252,11 @@ func (n *Node) RedeemInvitation(ctx context.Context, invitationText, deviceName 
 		return PairResult{}, ErrPairExpired
 	}
 
-	id, err := peer.Decode(inv.PeerID)
+	pi, err := n.discover(ctx, pairLookupKey(inv.Secret), true)
 	if err != nil {
-		return PairResult{}, fmt.Errorf("invitation names an invalid peer ID: %w", err)
+		return PairResult{}, fmt.Errorf("find the device that minted this invitation (are both devices online?): %w", err)
 	}
-	pi := peer.AddrInfo{ID: id}
-	for _, a := range inv.Addrs {
-		if ma, err := multiaddr.NewMultiaddr(a); err == nil {
-			pi.Addrs = append(pi.Addrs, ma)
-		}
-	}
-	if len(pi.Addrs) == 0 {
-		return PairResult{}, errors.New("invitation carries no address to dial; ask for a new one")
-	}
+	id := pi.ID
 
 	ctx, cancel := context.WithTimeout(ctx, fsiOTimeout)
 	defer cancel()
@@ -233,13 +281,18 @@ func (n *Node) RedeemInvitation(ctx context.Context, invitationText, deviceName 
 	if resp.Error != "" {
 		return PairResult{}, errors.New(resp.Error)
 	}
-	if resp.PeerID != inv.PeerID {
+	if resp.PeerID != id.String() {
 		// The connection already authenticates the peer, so this can only mean
-		// the invitation was rewritten. Refusing keeps a doctored invitation
-		// from producing a pairing with a device the operator did not name.
-		return PairResult{}, fmt.Errorf("pairing answer came from %s, not the device the invitation named", shortPairPeer(resp.PeerID))
+		// the provider record named one device and a different one answered.
+		// Refusing keeps a stale or doctored record from producing a pairing
+		// with a device this one did not reach.
+		return PairResult{}, fmt.Errorf("pairing answer came from %s, not the device that was reached", shortPairPeer(resp.PeerID))
 	}
-	return PairResult{PeerID: resp.PeerID, DeviceName: resp.DeviceName, Tier: resp.Tier, Addrs: inv.Addrs}, nil
+	addrs := make([]string, 0, len(pi.Addrs))
+	for _, a := range pi.Addrs {
+		addrs = append(addrs, a.String())
+	}
+	return PairResult{PeerID: resp.PeerID, DeviceName: resp.DeviceName, Tier: resp.Tier, Addrs: addrs}, nil
 }
 
 func (n *Node) servePair(raw network.Stream) {
@@ -296,76 +349,52 @@ func (n *Node) consumeInvitation(secret string) error {
 	sum := sha256.Sum256([]byte(secret))
 
 	n.pair.mu.Lock()
-	defer n.pair.mu.Unlock()
-	exp, ok := n.pair.invites[sum]
+	inv, ok := n.pair.invites[sum]
 	if ok {
 		delete(n.pair.invites, sum)
 	}
+	n.pair.mu.Unlock()
 	if !ok {
 		return ErrPairUnknown
 	}
-	if time.Now().After(exp) {
+	if time.Now().After(inv.expires) {
+		// An expired invitation is not worth advertising; withdrawing the
+		// local copy now is the one cleanup an unextended redemption can do.
+		inv.cancel()
+		n.ClearLocal(inv.lookup)
 		return ErrPairExpired
 	}
+	// A spent invitation stays advertised until its deadline, matching the
+	// provider record the DHT keeps anyway. A second attempt therefore reaches
+	// this device and is refused as used, instead of looking like an unknown
+	// device after the invitation has already done its work.
 	return nil
 }
 
 // parseInvitation accepts only the exact shape this build minted. A share
-// code, a peer ID, or a truncated paste is named as such rather than failing
-// somewhere inside the dial.
+// code, a peer ID, a truncated paste, or an invitation from an older build is
+// named as such rather than failing somewhere inside the lookup.
 func parseInvitation(text string) (invitation, error) {
 	trimmed := strings.TrimSpace(text)
 	if !strings.HasPrefix(trimmed, invitationPrefix) {
 		return invitation{}, fmt.Errorf("that is not a pairing invitation (it starts with %q)", invitationPrefix)
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(trimmed, invitationPrefix))
-	if err != nil {
-		return invitation{}, fmt.Errorf("malformed invitation: %w", err)
+	rest := strings.TrimPrefix(trimmed, invitationPrefix)
+	secret, expiryText, ok := strings.Cut(rest, ".")
+	if !ok || strings.Contains(expiryText, ".") {
+		// The first format encoded a JSON payload in one segment. Say what to
+		// do instead of failing on a shape this build no longer speaks.
+		return invitation{}, errors.New("malformed invitation: expected <secret>.<expiry>; run \"lantern pair\" on the other device for a new one")
 	}
-	var inv invitation
-	if err := json.Unmarshal(payload, &inv); err != nil {
-		return invitation{}, fmt.Errorf("malformed invitation: %w", err)
+	raw, err := base64.RawURLEncoding.DecodeString(secret)
+	if err != nil || len(raw) != pairSecretBytes {
+		return invitation{}, errors.New("malformed invitation: bad secret")
 	}
-	if inv.Version != PairVersion {
-		return invitation{}, fmt.Errorf("invitation version %d, want %d; upgrade both devices", inv.Version, PairVersion)
+	expiresAt, err := strconv.ParseInt(expiryText, 10, 64)
+	if err != nil || expiresAt <= 0 {
+		return invitation{}, errors.New("malformed invitation: bad expiry")
 	}
-	if strings.TrimSpace(inv.Secret) == "" || strings.TrimSpace(inv.PeerID) == "" {
-		return invitation{}, errors.New("malformed invitation: missing peer ID or secret")
-	}
-	return inv, nil
-}
-
-// dialableAddrs drops loopback addresses. They are meaningful on this machine
-// only, and an invitation is read on another one. A node that has nothing but
-// loopback addresses -- a container, a test -- keeps them, because an
-// invitation with no address cannot be redeemed at all.
-func dialableAddrs(addrs []multiaddr.Multiaddr) []string {
-	out := make([]string, 0, len(addrs))
-	for _, a := range addrs {
-		if isLoopbackMultiaddr(a) {
-			continue
-		}
-		out = append(out, a.String())
-	}
-	if len(out) == 0 {
-		for _, a := range addrs {
-			out = append(out, a.String())
-		}
-	}
-	return out
-}
-
-func isLoopbackMultiaddr(a multiaddr.Multiaddr) bool {
-	for _, proto := range []int{multiaddr.P_IP4, multiaddr.P_IP6} {
-		v, err := a.ValueForProtocol(proto)
-		if err != nil {
-			continue
-		}
-		if ip := net.ParseIP(v); ip != nil && ip.IsLoopback() {
-			return true
-		}
-	}
-	return false
+	return invitation{Secret: secret, ExpiresAt: expiresAt}, nil
 }
 
 // shortPairPeer trims a peer ID for an error message. A full ID is 52
