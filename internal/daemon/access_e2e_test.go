@@ -18,6 +18,15 @@ import (
 	"github.com/shx-dow/lantern-go/pkg/lantern"
 )
 
+// testDialTimeout is what fixture nodes in this package give one dial.
+//
+// The swarm enforces this itself, and 5 seconds is its limit for a private
+// address — so it, not the caller's context, was failing these dials under
+// -race on a loaded Windows runner, where a loopback security handshake can
+// take longer than the cap. internal/p2p raised it in its own fixtures for the
+// same reason; this package's fixtures were the ones that missed it.
+const testDialTimeout = 60 * time.Second
+
 // pair is a serving device and a client that dials it, both real
 // lantern.Lantern instances.
 type pair struct {
@@ -46,9 +55,10 @@ func (p pair) push(remotePath, content string) error {
 }
 
 func pushCtx() context.Context {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	// A generous leak is fine for tests; the context is short enough that a
-	// stuck dial still ends the test.
+	// Well past the 5 seconds the swarm would otherwise allow for a private
+	// address, so a slow handshake is not reported as a broken connection.
+	// A stuck call still ends the test rather than hanging it.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	_ = cancel
 	return ctx
 }
@@ -61,11 +71,19 @@ func tierPair(t *testing.T, root string, deviceRoots []string, writesEnabled boo
 	t.Helper()
 	base := t.TempDir()
 
-	ln, err := lantern.New(lantern.Config{Port: 0, DataDir: filepath.Join(base, "server")})
+	ln, err := lantern.New(lantern.Config{
+		Port:        0,
+		DataDir:     filepath.Join(base, "server"),
+		DialTimeout: testDialTimeout,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := lantern.New(lantern.Config{Port: 0, DataDir: filepath.Join(base, "client")})
+	client, err := lantern.New(lantern.Config{
+		Port:        0,
+		DataDir:     filepath.Join(base, "client"),
+		DialTimeout: testDialTimeout,
+	})
 	if err != nil {
 		ln.Close()
 		t.Fatal(err)
