@@ -41,9 +41,10 @@ requirement `trust add` already has.
 
 ## Decision
 
-`lantern pair` on one device mints an invitation: a single string carrying the
-inviter's peer ID, its current dialable multiaddrs, an expiry, and a random
-secret. `lantern pair <invitation>` on the other device dials the inviter,
+`lantern pair` on one device mints an invitation: a single string carrying an
+expiry and a random secret. (The first version also carried the inviter's peer
+ID and addresses; see the [amendment](#amendment-2026-11-21-the-invitation-names-no-address)
+below.) `lantern pair <invitation>` on the other device finds the inviter,
 presents the secret, and both devices store a pairing for the other at tier
 `read`.
 
@@ -89,6 +90,45 @@ this change.
   one implementation. The CLI holds no pairing logic, as with `trust add`
   today.
 
+## Amendment (2026-11-21): the invitation names no address
+
+The original decision put the inviter's peer ID and dialable multiaddrs in the
+invitation. That made the string about 430 characters, exposed LAN and public
+addresses in whatever chat window carried it, and went stale when DHCP moved the
+inviter between minting and redemption.
+
+The invitation is now:
+
+```
+lantern-pair1.<secret>.<expiry>
+```
+
+`secret` is 32 random bytes, base64url without padding; `expiry` is Unix
+seconds. The string is about 70 characters. Nothing else is in it.
+
+The inviter publishes its addresses in the DHT under a name derived from
+`sha256("lantern/pair-lookup/1\x00" + secret)`, using the same
+`Provide`/`FindProviders` path as a share code. The redeemer derives the same
+name, looks up the provider, dials it, and sends the existing `PairRequest`.
+Only a holder of the pasted string can derive the name. The inviter's peer ID is
+not a field: the connection authenticates it, and the response is checked
+against the peer that was reached. A local advertisement carries the same lookup
+between two nodes that share a data directory, which is what the same-process
+tests use.
+
+What does not change: the secret is the only thing a redeemer presents; the
+invitation is burned by the first attempt that reaches the inviter; the TTL, the
+read-only default, and the memory-only store are unchanged. A burned invitation
+stays findable until its deadline because the DHT provider record does too, so a
+second attempt is refused as used rather than reported as an unknown device.
+
+The cost is reachability. The old string carried an address that worked even
+when discovery did not. Now both devices must be able to find each other: on a
+LAN through mDNS, on separate networks through the public DHT, or after a
+`--peer` connection has put them in each other's routing table. When none of
+those is true, `lantern pair` cannot find the inviter, and manual pairing by
+peer ID (`lantern trust add`) remains the documented fallback.
+
 ## Consequences
 
 - **First run is one paste.** The laptop runs `lantern pair` and sends the
@@ -113,9 +153,6 @@ this change.
 ## Not decided here
 
 - QR or clipboard presentation of the same invitation.
-- Shortening the token below peer ID plus addresses. If a full token proves
-  awkward to paste, a later change can drop addresses and rely on discovery,
-  but that trades reachability for length and needs its own measurements.
 - Whether an invitation may name a non-default tier. Rejected for now on
   least-privilege grounds; a `read-write` invitation would turn one paste into
   a write grant, which the current model deliberately keeps separate.
