@@ -13,15 +13,16 @@ package daemon
 
 import (
 	"context"
+	"crypto/rand"
 	"io"
 	"net"
 	"strconv"
 	"testing"
 	"time"
 
+	libpcrypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
-	"github.com/shx-dow/lantern-go/internal/p2p"
 )
 
 func TestFixtureDialsOutliveTheSwarmDefault(t *testing.T) {
@@ -50,13 +51,18 @@ func TestFixtureDialsOutliveTheSwarmDefault(t *testing.T) {
 		}
 	}()
 
-	// A peer ID nothing is listening for, so the dial cannot succeed and the
-	// only question is how long the fixture is willing to wait.
-	stranger, err := p2p.NewNode(0, []string{"none"}, nil, t.TempDir())
+	// A peer ID with no host behind it. Using a real node here is not enough:
+	// discovery can hand the dial that node's real address, the dial then
+	// succeeds, and the test measures nothing. A key that no host holds leaves
+	// the silent listener as the only address to try.
+	strangerKey, _, err := libpcrypto.GenerateEd25519Key(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stranger.Close()
+	stranger, err := peer.IDFromPrivateKey(strangerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	addr, err := multiaddr.NewMultiaddr("/ip4/127.0.0.1/tcp/" + strconv.Itoa(silent.Addr().(*net.TCPAddr).Port))
 	if err != nil {
@@ -69,7 +75,7 @@ func TestFixtureDialsOutliveTheSwarmDefault(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
 	defer cancel()
 	start := time.Now()
-	err = p.client.Node().Host.Connect(ctx, peer.AddrInfo{ID: stranger.Host.ID(), Addrs: []multiaddr.Multiaddr{addr}})
+	err = p.client.Node().Host.Connect(ctx, peer.AddrInfo{ID: stranger, Addrs: []multiaddr.Multiaddr{addr}})
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("the dial to a silent peer succeeded; the test cannot measure a limit it never reached")
