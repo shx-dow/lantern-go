@@ -171,6 +171,14 @@ func (n *Node) Advertise(ctx context.Context, code string) error {
 // Discover returns the first provider for code, preferring local
 // advertisements. Without a caller deadline it waits defaultDiscoverTimeout.
 func (n *Node) Discover(ctx context.Context, code string) (peer.AddrInfo, error) {
+	return n.discover(ctx, code, false)
+}
+
+// discover is Discover with control over whether a hit consumes the local
+// advertisement. A pairing keeps it until the invitation expires, so a second
+// attempt still reaches the inviter and is refused as used rather than looking
+// like an offline device.
+func (n *Node) discover(ctx context.Context, code string, keepLocal bool) (peer.AddrInfo, error) {
 	c := codeToCID(code)
 
 	deadline, ok := ctx.Deadline()
@@ -185,20 +193,29 @@ func (n *Node) Discover(ctx context.Context, code string) (peer.AddrInfo, error)
 	defer poll.Stop()
 	for {
 		if pi, err := n.DiscoverLocal(ctx, code); err == nil {
-			n.ClearLocal(code)
+			if !keepLocal {
+				n.ClearLocal(code)
+			}
 			return *pi, nil
 		}
 
-		dhtCtx, dhtCancel := context.WithTimeout(ctx, dhtLookupTimeout)
-		peers, err := n.DHT.FindProviders(dhtCtx, c)
-		dhtCancel()
-		if err == nil {
-			for _, p := range peers {
-				if p.ID == n.Host.ID() {
-					continue
-				}
-				return p, nil
+		// A hand-built Node in a test has no DHT; local advertisements are the
+		// only rendezvous it can offer, so do not dereference it.
+		var peers []peer.AddrInfo
+		if n.DHT != nil {
+			dhtCtx, dhtCancel := context.WithTimeout(ctx, dhtLookupTimeout)
+			var err error
+			peers, err = n.DHT.FindProviders(dhtCtx, c)
+			dhtCancel()
+			if err != nil {
+				peers = nil
 			}
+		}
+		for _, p := range peers {
+			if p.ID == n.Host.ID() {
+				continue
+			}
+			return p, nil
 		}
 
 		select {
