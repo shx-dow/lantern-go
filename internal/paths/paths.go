@@ -63,9 +63,10 @@ func Data() string {
 //
 // That costs less than it sounds. The shared directory is created 0700 by
 // EnsureData, ~/Library/Application Support is not iCloud-synced by default,
-// and nothing ever writes the config file — it is read, never written. So an
-// operator copying this directory to back up their settings also copies the key
-// and the token, and nothing is exposed unless they do. See issue #30.
+// and the config file holds no secrets -- `lantern setup` writes paths and a
+// device name, never the token. So an operator copying this directory to back
+// up their settings also copies the key and the token, and nothing is exposed
+// unless they do. See issue #30.
 func Config() string {
 	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 		if dir, err := os.UserConfigDir(); err == nil && dir != "" {

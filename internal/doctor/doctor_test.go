@@ -74,6 +74,7 @@ func TestRunHealthySetup(t *testing.T) {
 				"/ip4/172.27.236.57/tcp/41001",
 				"/ip4/127.0.0.1/udp/41001/quic-v1",
 			},
+			SharedDirs: []string{t.TempDir()},
 		},
 		devices: []lanternclient.Device{{PeerID: "p2", Alias: "windows", Online: true, KnownAddresses: 15}},
 	}
@@ -89,6 +90,9 @@ func TestRunHealthySetup(t *testing.T) {
 	}
 	if c := find(t, r, "listen-addresses"); c.Status != Pass {
 		t.Fatalf("listen-addresses = %+v", c)
+	}
+	if c := find(t, r, "shared-dirs"); c.Status != Pass {
+		t.Fatalf("shared-dirs = %+v", c)
 	}
 	if c := find(t, r, "paired-devices"); c.Status != Pass {
 		t.Fatalf("paired-devices = %+v", c)
@@ -267,7 +271,7 @@ func TestRunWarnsWhenNothingIsPaired(t *testing.T) {
 	if !r.Healthy {
 		t.Fatalf("an unpaired single device is not unhealthy: %+v", r.Checks)
 	}
-	if d := find(t, r, "paired-devices"); d.Status != Warn || !contains(d.Fix, "trust add") {
+	if d := find(t, r, "paired-devices"); d.Status != Warn || !contains(d.Fix, "pair") {
 		t.Fatalf("paired-devices = %+v", d)
 	}
 }
@@ -545,3 +549,184 @@ func contains(haystack, needle string) bool {
 }
 
 func isWindows() bool { return runtime.GOOS == "windows" }
+
+// A shared root that was configured but does not exist is the silent failure
+// this check exists for: the daemon starts, pairing works, and every read of
+// that root looks like a missing file at the other end.
+func TestRunFailsWhenASharedDirDoesNotExist(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	missing := filepath.Join(t.TempDir(), "Share")
+	s := &stubDaemon{status: lanternclient.Status{
+		PeerID:     "p1",
+		Addrs:      []string{"/ip4/192.168.1.11/tcp/41001"},
+		SharedDirs: []string{missing},
+	}}
+	srv := s.start(t)
+	defer srv.Close()
+
+	r := Run(t.Context(), lanternclient.New(srv.URL, "tok"), Options{Token: "tok"})
+	c := find(t, r, "shared-dirs")
+	if c.Status != Fail {
+		t.Fatalf("shared-dirs = %+v, want fail for a missing root", c)
+	}
+	if !contains(c.Detail, missing) || !contains(c.Detail, "does not exist") {
+		t.Errorf("detail does not name the missing root: %+v", c)
+	}
+	if !contains(c.Fix, "mkdir -p") {
+		t.Errorf("fix does not say how to create it: %+v", c)
+	}
+	if r.Healthy || !r.Failed() {
+		t.Errorf("a promised read root that does not exist must make the setup unhealthy: %+v", r.Checks)
+	}
+}
+
+// A file where a directory was configured is the same problem with a clearer
+// cause, and mkdir would not fix it.
+func TestRunFailsWhenASharedDirIsAFile(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	file := filepath.Join(t.TempDir(), "Share")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &stubDaemon{status: lanternclient.Status{
+		PeerID:     "p1",
+		Addrs:      []string{"/ip4/192.168.1.11/tcp/41001"},
+		SharedDirs: []string{file},
+	}}
+	srv := s.start(t)
+	defer srv.Close()
+
+	r := Run(t.Context(), lanternclient.New(srv.URL, "tok"), Options{Token: "tok"})
+	c := find(t, r, "shared-dirs")
+	if c.Status != Fail || !contains(c.Detail, "is not a directory") {
+		t.Fatalf("shared-dirs = %+v", c)
+	}
+	if contains(c.Fix, "mkdir -p") {
+		t.Errorf("mkdir does not fix a file in the way: %+v", c)
+	}
+}
+
+// An existing root that this user can read is a pass, and the healthy setup
+// above must not be dragged down by the new check.
+func TestRunPassesWhenSharedDirsAreReadable(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	root := t.TempDir()
+	s := &stubDaemon{status: lanternclient.Status{
+		PeerID:     "p1",
+		Addrs:      []string{"/ip4/192.168.1.11/tcp/41001"},
+		SharedDirs: []string{root},
+	}}
+	srv := s.start(t)
+	defer srv.Close()
+
+	r := Run(t.Context(), lanternclient.New(srv.URL, "tok"), Options{Token: "tok"})
+	c := find(t, r, "shared-dirs")
+	if c.Status != Pass || !contains(c.Detail, root) {
+		t.Fatalf("shared-dirs = %+v", c)
+	}
+	if !r.Healthy {
+		t.Errorf("a readable shared root is not unhealthy: %+v", r.Checks)
+	}
+}
+
+// Sharing nothing is a warning, not a failure: a device may be used only for
+// pushes or share codes.
+func TestRunWarnsWhenNothingIsShared(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	s := &stubDaemon{status: lanternclient.Status{
+		PeerID:     "p1",
+		Addrs:      []string{"/ip4/192.168.1.11/tcp/41001"},
+		SharedDirs: []string{},
+	}}
+	srv := s.start(t)
+	defer srv.Close()
+
+	r := Run(t.Context(), lanternclient.New(srv.URL, "tok"), Options{Token: "tok"})
+	c := find(t, r, "shared-dirs")
+	if c.Status != Warn || !contains(c.Fix, "--shared-dirs") {
+		t.Fatalf("shared-dirs = %+v", c)
+	}
+	if !r.Healthy {
+		t.Errorf("sharing nothing is a choice, not a failure: %+v", r.Checks)
+	}
+}
+
+// A daemon that does not report shared dirs skips rather than reporting every
+// device as sharing nothing, which would be a false alarm after a downgrade.
+func TestRunSkipsSharedDirsOnAnOlderDaemon(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	s := &stubDaemon{status: lanternclient.Status{PeerID: "p1", Addrs: []string{"/ip4/192.168.1.11/tcp/41001"}}}
+	srv := s.start(t)
+	defer srv.Close()
+
+	r := Run(t.Context(), lanternclient.New(srv.URL, "tok"), Options{Token: "tok"})
+	if c := find(t, r, "shared-dirs"); c.Status != Skip {
+		t.Fatalf("shared-dirs = %+v, want skip without a reported list", c)
+	}
+}
+
+func TestCheckConfigAcceptsAMissingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lanternd.json")
+	c := checkConfig(path)
+	if c.Status != Pass {
+		t.Errorf("missing config is not a fault: %+v", c)
+	}
+	if !strings.Contains(c.Detail, path) {
+		t.Errorf("detail does not name the file: %+v", c)
+	}
+}
+
+func TestCheckConfigAcceptsAValidFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lanternd.json")
+	if err := os.WriteFile(path, []byte(`{"device_name":"laptop"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if c := checkConfig(path); c.Status != Pass {
+		t.Errorf("valid config failed: %+v", c)
+	}
+}
+
+func TestCheckConfigNamesAMalformedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lanternd.json")
+	if err := os.WriteFile(path, []byte("{nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := checkConfig(path)
+	if c.Status != Fail {
+		t.Fatalf("malformed config did not fail: %+v", c)
+	}
+	if !strings.Contains(c.Detail, path) {
+		t.Errorf("detail does not name the file: %+v", c)
+	}
+	if c.Fix == "" {
+		t.Errorf("failure has no fix: %+v", c)
+	}
+}
+
+// A daemon that will not start because its config is broken looks like a
+// network problem from the CLI. The config check must therefore run and be
+// reported even when the daemon cannot be reached.
+func TestRunReportsABadConfigWhenTheDaemonIsDown(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lanternd.json")
+	if err := os.WriteFile(path, []byte("{nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := Run(t.Context(), lanternclient.New("http://127.0.0.1:1", ""), Options{ConfigPath: path})
+	if c := find(t, r, "config"); c.Status != Fail {
+		t.Errorf("config check = %+v, want a failure", c)
+	}
+	if r.Healthy {
+		t.Error("a broken config was reported healthy")
+	}
+}
+
+func TestCheckConfigSkipsWithoutAPath(t *testing.T) {
+	c := checkConfig("")
+	if c.Status != Skip {
+		t.Errorf("no path should skip, not pass or fail: %+v", c)
+	}
+	if !strings.Contains(c.Detail, "--config") {
+		t.Errorf("skip does not say how to check it: %+v", c)
+	}
+}

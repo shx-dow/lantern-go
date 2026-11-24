@@ -55,7 +55,13 @@ Lists the devices currently connected to the daemon.
 	case "discover":
 		return `lantern discover [--json]
 
-Prints this device and the peers it can see.
+Prints this device, the devices paired with it, and the peers it is connected
+to.
+
+A paired device is listed even when it is not connected: pairing does not open
+a connection, and Lantern dials when a command needs the device. "not
+connected, no known address" means this device has never seen it on the
+network -- check that both are on the same LAN, or pass --peer on the daemon.
 `
 	case "trust":
 		return `lantern trust <command> [args] [flags]
@@ -69,19 +75,66 @@ Commands:
   roots <peer-id|alias> [dirs...]  confine a device's writes (omit dirs to clear)
   remove <peer-id|alias>           unpair a device
 
+<peer-id> is the other device's ID, printed by "lantern status" there. A value
+that is not a peer ID is refused rather than paired: an unreachable pairing
+looks like a working one and is the harder problem to diagnose.
+
 Flags:
   --tier T                access tier for trust add
   --writable-roots DIRS   comma-separated directories a paired device may write
+
+"lantern devices" is the same as "lantern trust list".
 `
+	case "pair":
+		return pairUsage
 	case "files":
 		return `lantern files [dir] [--json]
 
-Lists files in the daemon's shared directories.
+Lists the daemon's shared roots, or the files under one.
+
+With no dir, prints the roots themselves. With a dir, prints that directory:
+a name ending in "/" is a directory, and "lantern get" copies files only.
+
+"lantern ls" is the same command.
 `
 	case "remote-files":
 		return `lantern remote-files <peer-id|alias> [dir] [--json]
 
-Lists files a connected peer shares.
+Lists a peer's shared roots, or the files under one of them.
+
+With no dir, prints the roots the peer exposes. With a dir, prints that
+directory: a name ending in "/" is a directory, and "lantern get" copies
+files only.
+`
+	case "get":
+		return `lantern get <device>:<path> [dest] [--json]
+
+Copies one file from a paired device. <device> is a paired alias or a peer ID;
+<path> is resolved by that device inside its shared dirs, so a name a listing
+printed works as typed.
+
+[dest] may be a file name, an existing directory (the remote name is used
+inside it), or omitted to write into the current directory. An existing file is
+never replaced; the download refuses instead. The destination directory must
+already exist, and the new file inherits its permissions.
+
+Every chunk is checked against the digest the sending device computed before
+anything is placed, so a corrupted or truncated copy leaves nothing behind.
+
+Flags:
+  --json           machine-readable JSONL on stdout
+  --daemon-url URL daemon to talk to (default http://127.0.0.1:43782)
+`
+	case "ui":
+		return `lantern ui [--daemon-url URL]
+
+Opens the daemon's web page in the default browser. The page is public and
+holds no secrets; the API calls it makes carry the daemon token from browser
+storage.
+
+The address comes from --daemon[=URL], --daemon-url, or LANTERND_URL, and
+defaults to http://127.0.0.1:43782. If no browser can be started, the URL is
+printed so it can be opened by hand.
 `
 	case "help":
 		return `lantern help [command]

@@ -123,32 +123,140 @@ Unblock-File .\windows-amd64\lantern.exe
 If SmartScreen appears, choose More info, then Run anyway. Linux needs no extra
 step.
 
-Start the daemon in its own terminal and leave it running:
+Name the device and choose what it shares once, then start the daemon in its
+own terminal and leave it running:
 
 ```sh
-lantern daemon --shared-dirs ~/Share --device-name laptop
+lantern setup       # asks for a device name and shared directories
+lantern daemon
 ```
+
+`lantern setup` writes the per-user `lanternd.json` and creates the shared
+directory if it is missing; `lantern daemon` reads that file on every start. To
+change the name or the directories later, edit the file or re-run
+`lantern setup --force`.
+
+Give each device a different name. It is the label the other devices see. The
+daemon serves only inside the directories it is given, and it stays read-only
+unless started with `--allow-writes`.
 
 Then run `lantern doctor` in another terminal. The CLI and the MCP server talk
 to the daemon over the local API. Closing the daemon's terminal stops it, and
 commands fail until it is started again.
 
-## Pair, then read
+## Settings
 
-```sh
-# on both devices
-lantern daemon --shared-dirs ~/Share --device-name laptop
+`lanternd.json` holds the daemon's settings. `lantern setup` writes it with the
+device name and shared directories; edit it directly for everything else, or
+point the daemon at another file with `--config PATH`. It is read at startup, so
+a change takes effect on the next start.
 
-# pair them, each side naming the other
-lantern discover
-lantern trust add <peer-id> laptop
+| Platform | Path |
+| --- | --- |
+| Linux | `$XDG_CONFIG_HOME/lantern/lanternd.json`, else `~/.config/lantern/lanternd.json` |
+| macOS | `~/Library/Application Support/lantern/lanternd.json` |
+| Windows | `%AppData%\lantern\lanternd.json` |
 
-# from the asking device
-lantern remote-files laptop
+Every field is optional, and a flag beats the file:
+
+| Field | Flag | Meaning |
+| --- | --- | --- |
+| `addr` | `--addr` | HTTP API address, default `127.0.0.1:43782` |
+| `p2p_port` | `--p2p-port` | libp2p listen port; `0` or absent picks one |
+| `data_dir` | `--data-dir` | identity, pairings, and token |
+| `device_name` | `--device-name` | name other devices see |
+| `shared_dirs` | `--shared-dirs` | directories paired devices may read |
+| `bootstrap_peers` | `--bootstrap` | bootstrap multiaddrs; `["none"]` disables them |
+| `relay_addrs` | `--relay` | static relays for NAT traversal |
+| `peer_addrs` | `--peer` | full multiaddrs for devices discovery cannot introduce |
+| `lan_only` | `--lan` / `--no-lan` | `false` uses the public DHT instead of the LAN |
+| `default_ttl_seconds` | `--default-ttl` | share lifetime; `0` never expires |
+
+```json
+{
+  "device_name": "laptop",
+  "shared_dirs": ["/home/you/Share"]
+}
 ```
 
-The alias given at pairing time is the name you address. See
-[the daemon API](docs/daemon-api.md) for reading a file by path and for
+Two things are deliberately not in the file:
+
+- **The bearer token.** It lives next to the identity in the data directory, at
+  `<data-dir>/.lanternd-token`.
+- **Write access.** `--allow-writes` and `--writable-dirs` are start-time
+  decisions, because a pairing is not permission to write. The daemon is
+  read-only unless it is started with them.
+
+## Pair two devices, then read a file
+
+On one device, print an invitation:
+
+```sh
+lantern pair
+```
+
+Send the string it prints to the other device, however you like, and run this
+there:
+
+```sh
+lantern pair <invitation>
+```
+
+One paste pairs both directions: each device knows the other's name and may read
+inside the other's shared directories. The invitation is single use, expires in
+ten minutes, and lives only in the daemon's memory, so restarting the daemon
+cancels it. It cannot grant writes, because that stays a start-time decision on
+the serving device.
+
+The invitation carries only a secret and an expiry. The redeeming device finds
+the inviter over the DHT, or over mDNS on a LAN, so both devices must be online
+and able to reach each other. If they cannot, pair each side by peer ID instead.
+A pairing is one direction at a time: the device that runs `trust add` lets the
+named device read from it.
+
+```sh
+lantern status      # on the laptop:   peer: 12D3KooW...
+lantern status      # on the desktop:  peer: 12D3KooW...
+
+# on the desktop: know the laptop as "laptop"
+lantern trust add <laptop-peer-id> laptop
+
+# on the laptop: know the desktop as "desktop" and allow it to read here
+lantern trust add <desktop-peer-id> desktop
+```
+
+The second command is what allows the desktop to read the laptop. The first
+gives the laptop the same access to the desktop, and gives the desktop the name
+and address it needs to dial.
+
+`lantern discover` lists the devices already paired with this one, connected or
+not, so running it again after pairing is how you confirm it took.
+`not connected, no known address` means this device has never seen the other one
+on the network.
+
+Put a file in the laptop's shared directory, then ask for it from the desktop:
+
+```sh
+# on the laptop
+echo hello > ~/Share/notes.md
+
+# on the desktop
+lantern remote-files laptop     # the laptop's shared roots
+lantern get laptop:notes.md     # writes ./notes.md
+```
+
+`lantern get <device>:<path>` takes the alias from pairing or a peer ID. The
+path is resolved by the serving device inside its shared dirs, so a name a
+listing printed works as typed. `[dest]` may name a file or an existing
+directory, and is the current directory when omitted. An existing file is
+never replaced, and the destination directory must already exist.
+
+`lantern files` lists this device's shared roots the same way, and
+`lantern trust list` shows what this device is paired with. A pairing opens no
+connection: nothing is dialed until a transfer needs it, so an idle device is
+normal.
+
+See [the daemon API](docs/daemon-api.md) for reading a file by path and for
 pushing.
 
 Unpaired peers and whole directories use the share code:

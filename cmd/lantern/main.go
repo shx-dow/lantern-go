@@ -45,6 +45,7 @@ var ownedSubcommands = map[string]bool{
 	"daemon":  true,
 	"doctor":  true,
 	"mcp":     true,
+	"setup":   true,
 	"version": true,
 }
 
@@ -128,7 +129,15 @@ func wantsHelp(args []string) bool {
 }
 
 // usageFor returns the help text for a command, or "" when it is unknown.
+// An alias names the same help as its command, so `lantern help ls` explains
+// what `lantern ls` actually does.
 func usageFor(name string) string {
+	switch name {
+	case "ls":
+		name = "files"
+	case "devices":
+		name = "trust"
+	}
 	switch name {
 	case "daemon":
 		return daemonapp.Usage
@@ -136,6 +145,8 @@ func usageFor(name string) string {
 		return doctorUsage
 	case "mcp":
 		return mcpserver.Usage
+	case "setup":
+		return setupUsage
 	case "version":
 		return versionUsage
 	}
@@ -175,6 +186,7 @@ type cliOptions struct {
 	daemonToken   string
 	tokenFile     string
 	probePeers    bool
+	pairTTL       time.Duration
 	tier          string
 	writableRoots []string
 	command       string
@@ -192,7 +204,7 @@ type cliOptions struct {
 // fresh in-process node for them — so they are deliberately absent.
 func commandNeedsDaemon(command string) bool {
 	switch command {
-	case "status", "discover", "peers", "list", "trust", "files", "remote-files":
+	case "status", "discover", "peers", "list", "trust", "files", "remote-files", "get", "pair":
 		return true
 	}
 	return false
@@ -225,7 +237,14 @@ func main() {
 				fmt.Fprint(os.Stderr, mcpserver.Usage)
 				return
 			}
-			runOrExit(mcpserver.Serve(ctx, os.Stdin, os.Stdout))
+			runOrExit(runMCP(ctx, rest, os.Stdin, os.Stdout))
+			return
+		case "setup":
+			if wantsHelp(rest) {
+				fmt.Fprint(os.Stderr, setupUsage)
+				return
+			}
+			runOrExit(runSetup(rest, os.Stdin, os.Stdout))
 			return
 		case "version":
 			if wantsHelp(rest) {
@@ -279,6 +298,14 @@ func main() {
 	// flags are parsed by the CLI, and the run needs the parsed values.
 	if opts.command == "doctor" {
 		runOrExit(runDoctorFlags(ctx, opts, os.Stdout))
+		return
+	}
+	// ui opens the daemon's page. It needs the address from --daemon/--daemon-url
+	// but not the daemon itself: /ui is public, so this works with lanternd
+	// stopped and with no token file. Routing it before the daemon branch also
+	// keeps it from bringing up an in-process node.
+	if opts.command == "ui" {
+		runOrExit(runUIFlags(opts, os.Stdout, openBrowser))
 		return
 	}
 
@@ -422,6 +449,7 @@ func parseArgs(args []string) (cliOptions, error) {
 		opts.probePeers = truthyFlag(v)
 		return nil
 	})
+	fs.DurationVar(&opts.pairTTL, "ttl", 0, "lifetime of a lantern pair invitation (default 10m)")
 	var helpRequested bool
 	fs.BoolVar(&helpRequested, "help", false, "show help")
 	fs.BoolVar(&helpRequested, "h", false, "shorthand for --help")
@@ -493,6 +521,9 @@ func parseArgs(args []string) (cliOptions, error) {
 	if helpFirst {
 		opts.command = "help"
 	}
+	if err := applyAliases(&opts); err != nil {
+		return opts, err
+	}
 	return opts, nil
 }
 
@@ -559,20 +590,28 @@ func usage() {
     status                       daemon status
     list [transfers|history]     daemon transfers
     peers                        connected peers
-    discover                     self + connected peers
+    discover                     self + paired devices + connected peers
     trust list                   paired devices
     trust add <peer-id> [alias]  pair a device, at --tier (default read)
     trust tier <peer-id|alias> T change what a paired device may do
     trust roots <peer-id|alias> [dirs...]  confine a device's writes
     trust remove <peer-id>       unpair a device
-    files [dir]                  list shared-dir files
-    remote-files <peer-id> [dir] list files on a connected peer
+    pair [invitation]            pair two devices with one paste, both ways
+    files [dir]                  list shared roots, or a directory under one
+    remote-files <peer-id> [dir] list a peer's shared roots or a directory
+    get <device>:<path> [dest]   copy a file from a paired device (verified)
+    ui                           open the daemon's page in a browser
+    setup                        write the daemon config for this device
     daemon                       run the background service (lantern daemon --help)
     mcp                          run the MCP stdio server for agents
     doctor                       diagnose a setup and print the fix for each problem
                                 (lantern doctor --probe-peers for real reachability)
     version                      version, commit, build date, toolchain, platform
     help [command]               show help for a command
+
+  aliases:
+    ls [dir]                     same as "files [dir]"
+    devices                      same as "trust list"
 
 flags:
   -h, --help        show help (also <command> --help)
@@ -596,6 +635,8 @@ examples:
   lantern send --json ./photo.jpg
   lantern --daemon send ./photo.jpg
   lantern --daemon receive <code> --out ./inbox
+  lantern pair
+  lantern get laptop:notes.md
   lantern status`)
 }
 
@@ -662,6 +703,8 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 		if runDaemonTransfer(ctx, c, enc, opts.jsonOut, rec.ID, "received:", "") {
 			os.Exit(1)
 		}
+	case "pair":
+		runPair(c, opts)
 	case "status":
 		st, err := c.Status()
 		if err != nil {
@@ -680,21 +723,17 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 		if err != nil {
 			fatal(opts.jsonOut, err)
 		}
+		devices, pairingKnown, err := fetchDevices(c)
+		if err != nil {
+			fatal(opts.jsonOut, err)
+		}
+		if devices == nil {
+			devices = []lanternclient.Device{}
+		}
 		if opts.jsonOut {
-			enc.Encode(map[string]any{"self": st, "peers": peers})
+			enc.Encode(map[string]any{"self": st, "devices": devices, "peers": peers})
 		} else {
-			fmt.Printf("self: %s (%s)\n", st.DeviceName, st.PeerID)
-			if len(peers) == 0 {
-				fmt.Println("no connected peers")
-			} else {
-				fmt.Println("peers:")
-				for _, p := range peers {
-					fmt.Printf("  %s\n", p.ID)
-					for _, a := range p.Addrs {
-						fmt.Printf("    %s\n", a)
-					}
-				}
-			}
+			renderDiscover(os.Stdout, discoverView{Self: st, Devices: devices, Peers: peers, PairingKnown: pairingKnown})
 		}
 	case "peers":
 		peers, err := c.Peers()
@@ -860,14 +899,19 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 		if err != nil {
 			fatal(opts.jsonOut, err)
 		}
+		roots := listsRoots(dir)
 		if opts.jsonOut {
 			enc.Encode(map[string]any{"files": files})
 		} else if len(files) == 0 {
-			fmt.Println("no files (configure --shared-dirs on lanternd)")
-		} else {
-			for _, f := range files {
-				fmt.Printf("%s %d %s\n", f.Name, f.Size, f.ModTime)
+			if roots {
+				fmt.Println("no shared roots (configure --shared-dirs on lanternd)")
+			} else {
+				fmt.Printf("no files in %s\n", dir)
 			}
+		} else if roots {
+			renderRoots(os.Stdout, files)
+		} else {
+			renderListing(os.Stdout, files)
 		}
 	case "remote-files":
 		if len(opts.positional) < 1 {
@@ -881,15 +925,22 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 		if err != nil {
 			fatal(opts.jsonOut, err)
 		}
+		roots := listsRoots(dir)
 		if opts.jsonOut {
 			enc.Encode(map[string]any{"files": files})
 		} else if len(files) == 0 {
-			fmt.Println("no files")
-		} else {
-			for _, f := range files {
-				fmt.Printf("%s %d %s\n", f.Name, f.Size, f.ModTime)
+			if roots {
+				fmt.Println("no shared roots")
+			} else {
+				fmt.Printf("no files in %s\n", dir)
 			}
+		} else if roots {
+			renderRoots(os.Stdout, files)
+		} else {
+			renderListing(os.Stdout, files)
 		}
+	case "get":
+		runGet(ctx, c, opts)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", opts.command)
 		usage()

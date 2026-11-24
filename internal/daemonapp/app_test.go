@@ -306,7 +306,7 @@ func TestStartupPrintsSecondDeviceCommand(t *testing.T) {
 }
 
 // splitArgs splits a command line into argv the way the shell the line is
-// written for would. It knows exactly the quoting shQuote emits: everything
+// written for would. It knows exactly the quoting ShellQuote emits: everything
 // single-quoted, with an embedded quote doubled on Windows (PowerShell reads
 // single quotes literally but has no backslash escape) and '\”-escaped on
 // POSIX shells.
@@ -427,5 +427,59 @@ func TestFlagSetReportsExplicitFlagsOnly(t *testing.T) {
 	}
 	if !flagSet(fs, "lan") {
 		t.Error("lan was given explicitly, so it must be reported as set")
+	}
+}
+
+// A shared root that does not exist is invisible by the time a read fails, so
+// the daemon says so where the operator is already looking: its own startup
+// output. Startup must continue, because a root on removable media is
+// legitimately absent at boot.
+func TestStartupNamesAMissingSharedDir(t *testing.T) {
+	var buf bytes.Buffer
+	missing := filepath.Join(t.TempDir(), "Share")
+	printSharedDirs(&buf, []string{missing})
+	out := buf.String()
+	for _, want := range []string{"shared dirs:", missing, "does not exist", "mkdir -p"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("startup output is missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// One root being fine must not hide the problem in the next one.
+func TestStartupReportsOnlyTheUnusableSharedDir(t *testing.T) {
+	good := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "gone")
+	var buf bytes.Buffer
+	printSharedDirs(&buf, []string{good, missing})
+	out := buf.String()
+	if !strings.Contains(out, good) || !strings.Contains(out, missing) {
+		t.Errorf("both roots should be named:\n%s", out)
+	}
+	if strings.Count(out, "warning:") != 1 {
+		t.Errorf("expected exactly one warning, one root is fine:\n%s", out)
+	}
+}
+
+// Starting with nothing shared is allowed, and the line says what it costs.
+func TestStartupSaysWhenNothingIsShared(t *testing.T) {
+	var buf bytes.Buffer
+	printSharedDirs(&buf, nil)
+	if out := buf.String(); !strings.Contains(out, "cannot read anything") || !strings.Contains(out, "--shared-dirs") {
+		t.Errorf("output does not say nothing is shared:\n%s", out)
+	}
+}
+
+// A file where a directory was configured is reported as such, not as
+// missing.
+func TestStartupRejectsAFileAsASharedDir(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "Share")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	printSharedDirs(&buf, []string{file})
+	if out := buf.String(); !strings.Contains(out, "is not a directory") {
+		t.Errorf("a file was not reported as a non-directory:\n%s", out)
 	}
 }

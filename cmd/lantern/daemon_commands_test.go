@@ -112,9 +112,17 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 			ok(map[string]any{"trusted": []map[string]any{
 				{"peer_id": "12D3kooONE", "alias": "nas", "tier": "read-write"},
 			}})
+		case "/v1/pairing/invitations":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"invitation":"lantern-pair1.invitation","expires_at":"2026-11-21T10:10:00Z"}`))
+		case "/v1/pairing/redeem":
+			ok(map[string]any{
+				"peer_id": "12D3kooLAPTOP", "device_name": "laptop", "tier": "read",
+			})
 		case "/v1/devices":
 			ok(map[string]any{"devices": []map[string]any{
-				{"peer_id": "12D3kooONE", "alias": "nas", "online": true},
+				{"peer_id": "12D3kooONE", "alias": "nas", "tier": "read-write", "online": true, "known_addresses": 1},
 			}})
 		case "/v1/transfers":
 			ok(map[string]any{"transfers": []map[string]any{
@@ -362,7 +370,7 @@ func TestHelpMentionsTheCommandsThatExist(t *testing.T) {
 	// Every command the CLI actually has. push is not one: it is the
 	// /v1/pushes endpoint, and asking help for it asserts a command that does
 	// not exist.
-	for _, cmd := range []string{"send", "receive", "status", "list", "peers", "discover", "trust", "files", "remote-files", "doctor", "version"} {
+	for _, cmd := range []string{"send", "receive", "status", "list", "peers", "discover", "trust", "files", "remote-files", "get", "doctor", "version"} {
 		if !strings.Contains(out, cmd) {
 			t.Errorf("help does not mention %q", cmd)
 		}

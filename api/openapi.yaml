@@ -321,6 +321,80 @@ paths:
           description: The unpair could not be persisted; the pairing is still in effect.
         '503':
           description: Pairing is not configured on this daemon.
+  /v1/pairing/invitations:
+    post:
+      summary: Mint a single-use pairing invitation
+      description: |-
+        Returns one string to paste on the other device, and when it stops
+        working. The invitation carries this device's peer ID, its current
+        dialable addresses, an expiry, and a random secret. It is held in
+        memory only: restarting the daemon invalidates any outstanding
+        invitation.
+
+        An invitation pairs exactly one device, at tier `read`, and is spent by
+        the first redemption that reaches this daemon, successful or not. It
+        cannot grant a write: `--allow-writes` and the writable dirs stay
+        start-time decisions on the serving device.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ttl_seconds:
+                  type: integer
+                  minimum: 1
+                  description: |-
+                    Lifetime. Absent or 0 means the default of 600 seconds; the
+                    maximum is 86400, so an invitation always expires.
+      responses:
+        '201':
+          description: Invitation minted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairInvitation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Pairing is not configured on this daemon.
+  /v1/pairing/redeem:
+    post:
+      summary: Redeem a pairing invitation
+      description: |-
+        Dials the device named by the invitation and presents its secret. On
+        success that device has recorded this one, and this device records it
+        back at tier `read`, which makes the pairing mutual. An existing
+        pairing keeps its tier and name.
+
+        A refusal names the reason: expired, already used, or unknown to that
+        device (usually because its daemon restarted).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [invitation]
+              properties:
+                invitation:
+                  type: string
+      responses:
+        '200':
+          description: Both devices are now paired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Pairing is not configured on this daemon.
   /v1/files:
     get:
       summary: List local shared-dir files
@@ -808,6 +882,14 @@ components:
         p2p_port:
           type: integer
           description: Fixed p2p listen port; 0 means it is random and changes on every restart.
+        shared_dirs:
+          type: array
+          items:
+            type: string
+          description: |-
+            Directories paired devices may read, as the daemon resolved them.
+            A root that does not exist on disk serves nothing, so `lantern
+            doctor` checks each one. Absent from older builds.
     PeerInfo:
       type: object
       required: [id, addrs, connected]
@@ -868,7 +950,11 @@ components:
       properties:
         peer_id:
           type: string
-          description: Peer ID, or an alias of an already paired device.
+          description: |-
+            The other device's libp2p peer ID, such as the one `lantern status`
+            prints there. A value that does not decode is a 400: pairing an
+            alias or a typo would store a device no dial can ever reach.
+            Use PATCH /v1/trust/{id} to change an existing pairing by alias.
         alias:
           type: string
         tier:
@@ -883,6 +969,34 @@ components:
             Restricts this device to a subset of the daemon's writable dirs.
             Only meaningful with tier `read-write`. Each root must sit inside
             the daemon's own writable dirs; anything else is a 400.
+    PairInvitation:
+      type: object
+      required: [invitation, expires_at]
+      properties:
+        invitation:
+          type: string
+          description: |-
+            The string to paste on the other device. It is a bearer capability:
+            treat it like a password until it is used or expires.
+        expires_at:
+          type: string
+          format: date-time
+    PairResult:
+      type: object
+      required: [peer_id, tier]
+      properties:
+        peer_id:
+          type: string
+          description: The device this one paired with.
+        device_name:
+          type: string
+          description: That device's name, when it has one; empty otherwise.
+        tier:
+          type: string
+          enum: [none, read, read-write]
+          description: |-
+            What this device now has on the other one. A new pairing is
+            `read`; redeeming an invitation never demotes an existing pairing.
     FileEntry:
       type: object
       required: [name, size, mod_time, is_dir]
@@ -952,7 +1066,7 @@ components:
           description: The hash the sender computed for the file, so the receiver can verify what it reads.
     ReadResponse:
       type: object
-      required: [device, path, offset, length, total, eof, encoding, content]
+      required: [device, path, offset, length, total, eof, encoding, content, sha256]
       properties:
         device:
           type: string
@@ -978,6 +1092,9 @@ components:
         content:
           type: string
           description: File bytes, decoded per `encoding`.
+        sha256:
+          type: string
+          description: The serving device's hex digest of the bytes in `content`. A client that writes them to disk verifies this before placing anything; a download with no digest is refused.
         entry:
           $ref: '#/components/schemas/FileEntry'
         warning:

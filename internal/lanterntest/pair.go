@@ -34,6 +34,11 @@ import (
 // DialTimeout bounds a test's whole life. It is generous enough that a loaded
 // runner does not fail a healthy dial, and short enough that a test which does
 // hang is reported rather than waited out.
+//
+// It is also handed to the swarm as the per-dial limit, because go-libp2p
+// enforces its own — 5 seconds for a private address — and a longer caller
+// context does not raise it. Without this, the context above would expire at
+// 30 seconds while the dial underneath had already given up at 5.
 const DialTimeout = 30 * time.Second
 
 // Device is one Lantern node, brought up for a test.
@@ -93,6 +98,9 @@ func New(t *testing.T, roots ...string) *Device {
 		// and costs every other device on the network a packet.
 		NoMDNS:  true,
 		DataDir: dataDir,
+		// The swarm's own per-dial limit, so a dial this fixture allows for
+		// DialTimeout is not cut short at 5 seconds underneath.
+		DialTimeout: DialTimeout,
 	})
 	if err != nil {
 		t.Fatalf("bringing up a lantern device: %v", err)

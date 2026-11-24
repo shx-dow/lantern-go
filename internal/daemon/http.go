@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 // Handler exposes the daemon over localhost HTTP for the CLI, GUI, and
@@ -101,6 +103,8 @@ func (h *Handler) routeTable() []route {
 		{Route{"POST", "/v1/trust"}, h.postTrust},
 		{Route{"PATCH", "/v1/trust/{id}"}, h.patchTrust},
 		{Route{"DELETE", "/v1/trust/{id}"}, h.deleteTrust},
+		{Route{"POST", "/v1/pairing/invitations"}, h.postPairingInvitations},
+		{Route{"POST", "/v1/pairing/redeem"}, h.postPairingRedeem},
 		{Route{"GET", "/v1/files"}, h.getFiles},
 		{Route{"GET", "/v1/devices"}, h.getDevices},
 		{Route{"GET", "/v1/peers/{id}/files"}, h.getRemoteFiles},
@@ -232,6 +236,11 @@ func (h *Handler) getHistory(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) getStatus(w http.ResponseWriter, _ *http.Request) {
+	// A nil slice would encode as null; clients iterate this list.
+	shared := []string{}
+	if h.daemon != nil && h.daemon.SharedDirs != nil {
+		shared = h.daemon.SharedDirs
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"peer_id":     h.peerID,
 		"addrs":       h.addrs,
@@ -250,6 +259,10 @@ func (h *Handler) getStatus(w http.ResponseWriter, _ *http.Request) {
 		// and any --peer address recorded elsewhere goes stale. Reporting it
 		// is what lets `lantern doctor` say so instead of guessing.
 		"p2p_port": h.p2pPort,
+		// shared_dirs is what paired devices may read, as the daemon
+		// resolved it. A root that does not exist on disk is invisible at
+		// every later step, so doctor needs the paths to check them.
+		"shared_dirs": shared,
 	})
 }
 
@@ -395,8 +408,23 @@ func (h *Handler) postTrust(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
 		return
 	}
+	// A peer ID that does not decode names a device that does not exist:
+	// nothing can ever dial it, and a "paired" device that can never be
+	// reached is the most confusing state this store can be in. Store the
+	// canonical form too, because every lookup at transfer time compares
+	// against the string libp2p reports, not against what was pasted.
+	wanted := strings.TrimSpace(req.PeerID)
+	if wanted == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("peer_id must not be empty"))
+		return
+	}
+	peerID, err := peer.Decode(wanted)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("peer_id %q is not a libp2p peer ID (paste the ID `lantern status` prints on the other device)", wanted))
+		return
+	}
 	entry, err := store.Add(TrustSpec{
-		PeerID:        strings.TrimSpace(req.PeerID),
+		PeerID:        peerID.String(),
 		Alias:         strings.TrimSpace(req.Alias),
 		Tier:          string(req.Tier),
 		WritableRoots: req.WritableRoots,

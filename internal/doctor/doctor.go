@@ -7,15 +7,18 @@ package doctor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/shx-dow/lantern-go/internal/daemon"
 	"github.com/shx-dow/lantern-go/internal/paths"
 	"github.com/shx-dow/lantern-go/pkg/lanternclient"
 )
@@ -69,6 +72,9 @@ type Options struct {
 	// ProbePeers dials each paired device to test reachability rather than
 	// reporting only whether a connection is currently open.
 	ProbePeers bool
+	// ConfigPath is the daemon config file to inspect. Empty means no path was
+	// named, and the check is skipped.
+	ConfigPath string
 }
 
 // mdnsListenWindow is how long the mDNS check listens for an answer. It is
@@ -89,6 +95,7 @@ func Run(ctx context.Context, client *lanternclient.Client, opts Options) Report
 	}
 
 	add(checkBinary())
+	add(checkConfig(opts.ConfigPath))
 
 	host := clientHost(client)
 
@@ -123,6 +130,7 @@ func Run(ctx context.Context, client *lanternclient.Client, opts Options) Report
 
 	add(checkListenAddrs(status.Addrs))
 	add(checkP2PPortPinned(status))
+	add(checkSharedDirs(status))
 	add(checkMDNS(ctx, status.Addrs))
 	add(checkFirewall(status.Addrs))
 	add(checkDevices(ctx, client, opts.ProbePeers))
@@ -138,6 +146,44 @@ func checkBinary() Check {
 		Status: Pass,
 		Detail: fmt.Sprintf("lantern %s on %s/%s", versionString(), runtime.GOOS, runtime.GOARCH),
 	}
+}
+
+// checkConfig reads the daemon's config file when one was named. A malformed
+// file is a startup failure that looks like a network problem from the CLI, so
+// the check runs before the daemon one and names the file. A missing file is
+// not a fault: the daemon runs on its built-in defaults without one.
+func checkConfig(path string) Check {
+	if strings.TrimSpace(path) == "" {
+		return Check{
+			Name:   "config",
+			Status: Skip,
+			Detail: "not checked: name a file with --config, or use a loopback daemon URL",
+		}
+	}
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Check{
+				Name:   "config",
+				Status: Pass,
+				Detail: fmt.Sprintf("no file at %s; built-in defaults apply", path),
+			}
+		}
+		return Check{
+			Name:   "config",
+			Status: Fail,
+			Detail: fmt.Sprintf("cannot read %s: %v", path, err),
+			Fix:    fmt.Sprintf("check the permissions on %s", path),
+		}
+	}
+	if _, err := daemon.LoadConfigFile(path); err != nil {
+		return Check{
+			Name:   "config",
+			Status: Fail,
+			Detail: err.Error(),
+			Fix:    fmt.Sprintf("repair the JSON in %s, or run \"lantern setup --force\" to replace it", path),
+		}
+	}
+	return Check{Name: "config", Status: Pass, Detail: fmt.Sprintf("read %s", path)}
 }
 
 // checkToken reports whether a token was supplied, since without one every
@@ -291,6 +337,100 @@ func checkP2PPortPinned(status lanternclient.Status) Check {
 	}
 }
 
+// checkSharedDirs reports whether the directories the daemon shares exist and
+// can be read. A missing root fails rather than warns: the daemon was told to
+// share it, so the read path that was promised does not exist, and every later
+// symptom (an empty listing, a read that looks like a missing file) points
+// somewhere else.
+//
+// A daemon too old to report shared_dirs skips instead of guessing from
+// /v1/files, where a missing root is indistinguishable from a root with
+// nothing in it.
+func checkSharedDirs(status lanternclient.Status) Check {
+	if status.SharedDirs == nil {
+		return Check{
+			Name:   "shared-dirs",
+			Status: Skip,
+			Detail: "the daemon does not report its shared dirs (older build)",
+		}
+	}
+	if len(status.SharedDirs) == 0 {
+		return Check{
+			Name:   "shared-dirs",
+			Status: Warn,
+			Detail: "no shared directories: a paired device can list and read nothing here",
+			Fix:    "mkdir -p ~/Share && lantern daemon --shared-dirs ~/Share",
+		}
+	}
+
+	var missing, notDir, unreadable []string
+	for _, dir := range status.SharedDirs {
+		fi, err := os.Stat(dir)
+		switch {
+		case os.IsNotExist(err):
+			missing = append(missing, dir)
+		case err != nil:
+			unreadable = append(unreadable, fmt.Sprintf("%s (%v)", dir, err))
+		case !fi.IsDir():
+			notDir = append(notDir, dir)
+		default:
+			// Open is enough to learn whether the daemon's user can read the
+			// directory without walking it; ReadDir would read every name.
+			f, err := os.Open(dir)
+			if err != nil {
+				unreadable = append(unreadable, fmt.Sprintf("%s (%v)", dir, err))
+				continue
+			}
+			_ = f.Close()
+		}
+	}
+
+	if len(missing) == 0 && len(notDir) == 0 && len(unreadable) == 0 {
+		return Check{
+			Name:   "shared-dirs",
+			Status: Pass,
+			Detail: fmt.Sprintf("%d readable: %s", len(status.SharedDirs), strings.Join(status.SharedDirs, ", ")),
+		}
+	}
+
+	var problems []string
+	if len(missing) > 0 {
+		problems = append(problems, "does not exist: "+strings.Join(missing, ", "))
+	}
+	if len(notDir) > 0 {
+		problems = append(problems, "is not a directory: "+strings.Join(notDir, ", "))
+	}
+	if len(unreadable) > 0 {
+		problems = append(problems, "cannot be read: "+strings.Join(unreadable, ", "))
+	}
+	var fixes []string
+	if len(missing) > 0 {
+		fixes = append(fixes, "mkdir -p "+strings.Join(quotePaths(missing), " "))
+	}
+	if len(notDir) > 0 || len(unreadable) > 0 {
+		fixes = append(fixes, "move it out of the way or start the daemon with a different --shared-dirs")
+	}
+	return Check{
+		Name:   "shared-dirs",
+		Status: Fail,
+		Detail: "shared root " + strings.Join(problems, "; "),
+		Fix:    strings.Join(fixes, "   # "),
+	}
+}
+
+// quotePaths makes a path with spaces safe in the fix line without touching
+// paths that do not need it.
+func quotePaths(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if strings.ContainsAny(p, " \t'\"") {
+			p = "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
 // checkMDNS tests whether mDNS announcements can leave this host at all.
 //
 // It deliberately does not ask whether a peer answered. A silent two-second
@@ -383,7 +523,7 @@ func checkDevices(ctx context.Context, client *lanternclient.Client, probe bool)
 			Name:   "paired-devices",
 			Status: Warn,
 			Detail: "no devices are paired, so nothing can be read from or pushed to",
-			Fix:    "lantern --daemon trust add <peer-id> <alias>   # run on both devices; trust is one-directional",
+			Fix:    "lantern --daemon pair   # paste the invitation on the other device; or trust add <peer-id> <alias> on each, since trust is one-directional",
 		}
 	}
 

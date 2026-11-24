@@ -245,6 +245,7 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 	}
 	d.WritesEnabled = *allowWrite
 	d.MaxWriteBytes = *maxWriteF
+	d.PairingName = name
 
 	if node := ln.Node(); node != nil && node.Host != nil {
 		// Reads and writes are gated per peer, not by pairing alone. A device
@@ -252,6 +253,12 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 		node.SetReadAccess(d.ReadableRootsFor)
 		node.RegisterListHandler()
 		node.RegisterFSHandler()
+
+		// An invitation pairs a peer at read. The decision, and the tier it
+		// records, stay on the device accepting it; the transport only checks
+		// that the secret was this device's and had not been spent.
+		node.SetPairAcceptor(d.AcceptPairing)
+		node.RegisterPairHandler()
 
 		// Writes are opt-in twice over: this device must allow writes at all,
 		// and the peer must be at read-write. Without --allow-writes the
@@ -327,6 +334,10 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 		// An agent client needs this token and nothing else reveals it, so
 		// say where it is rather than making people search the filesystem.
 		fmt.Fprintf(stderr, "  daemon token:          %s\n", daemon.TokenPath(dir))
+		// What is shared, and whether each root can actually be read, is the
+		// one piece of configuration whose absence is invisible later: the
+		// listing simply omits the root and a read looks like a missing file.
+		printSharedDirs(stderr, d.SharedDirs)
 		// Two daemons on one machine keep failing the same way: the second
 		// run is the same identity, so it dials itself. The way out is a
 		// separate --data-dir and a --peer to the first, so give both,
@@ -342,7 +353,7 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 				fmt.Fprintf(stderr,
 					"  second lantern on this machine:\n"+
 						"    lantern daemon --data-dir %s --addr 127.0.0.1:0 --peer %s\n",
-					shQuote(dir+"-2"), shQuote(ma))
+					ShellQuote(dir+"-2"), ShellQuote(ma))
 			}
 		}
 		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -365,6 +376,38 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 		logger.Printf("shutdown: %v", err)
 	}
 	return nil
+}
+
+// printSharedDirs prints what this device shares and, per root, why it will
+// serve nothing. It does not fail startup: a root on removable media is
+// legitimately absent at boot, and taking the daemon down would also take
+// down pushes and share codes. The line is here because silence is what made
+// this hard to find -- the daemon started, pairing worked, and every read
+// failed at the other end as if the file were not there.
+func printSharedDirs(w io.Writer, dirs []string) {
+	if len(dirs) == 0 {
+		fmt.Fprintln(w, "  shared dirs:           none; paired devices cannot read anything (pass --shared-dirs DIR)")
+		return
+	}
+	fmt.Fprintf(w, "  shared dirs:           %s\n", strings.Join(dirs, ", "))
+	for _, dir := range dirs {
+		fi, err := os.Stat(dir)
+		switch {
+		case os.IsNotExist(err):
+			fmt.Fprintf(w, "warning: shared dir %s does not exist, so reads from it will fail (mkdir -p %s)\n", dir, ShellQuote(dir))
+		case err != nil:
+			fmt.Fprintf(w, "warning: shared dir %s cannot be used: %v\n", dir, err)
+		case !fi.IsDir():
+			fmt.Fprintf(w, "warning: shared dir %s is not a directory, so reads from it will fail\n", dir)
+		default:
+			f, err := os.Open(dir)
+			if err != nil {
+				fmt.Fprintf(w, "warning: shared dir %s cannot be read: %v\n", dir, err)
+				continue
+			}
+			_ = f.Close()
+		}
+	}
 }
 
 // aliasOrID names a paired device for a log line.
@@ -452,7 +495,7 @@ func resolveDataDir(dir string) string {
 	return filepath.Clean(dir)
 }
 
-// shQuote wraps s for pasting into a shell: single quotes on everything, so
+// ShellQuote wraps s for pasting into a shell: single quotes on everything, so
 // the sentence survives spaces -- the default macOS data dir contains
 // "Application Support" and would otherwise split into separate arguments.
 // An embedded single quote is doubled for PowerShell (the default shell on
@@ -462,7 +505,7 @@ func resolveDataDir(dir string) string {
 // Sharing produces a nearly identical form on both families; the difference
 // only shows for a quote inside the value, which for a directory name is not
 // a setup this project needs to make pretty, only correct.
-func shQuote(s string) string {
+func ShellQuote(s string) string {
 	q := `'`
 	if runtime.GOOS == "windows" {
 		return q + strings.ReplaceAll(s, q, `''`) + q
