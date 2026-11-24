@@ -27,9 +27,13 @@ jobs:
           set -uo pipefail
 
           # GO-2024-3218 is a DHT content-censorship issue with no upstream fix.
-          # Naming it here keeps it from hiding a new finding. Remove this line
-          # when a fixed kad-dht release exists.
-          known='GO-2024-3218'
+          # GO-2026-6278 is a weak WebSocket mask-key PRNG. v1.5.3 reverted the
+          # crypto/rand fix, and the only version the database calls fixed is a
+          # pre-release snapshot 14 commits behind v1.5.3. Lantern never opens a
+          # WebSocket connection: it listens on TCP/QUIC and its peers advertise
+          # the same. Naming an ID here keeps it from hiding a new finding, so
+          # remove it when a release fixes the advisory.
+          known='GO-2024-3218|GO-2026-6278'
 
           rc=0
           out=$(govulncheck ./... 2>&1) || rc=$?
@@ -45,7 +49,7 @@ jobs:
           new=$(printf '%s\n' "$out" \
             | grep -oE 'GO-[0-9]{4}-[0-9]+' \
             | sort -u \
-            | grep -vx "$known" || true)
+            | grep -vxE "$known" || true)
           if [ -n "$new" ]; then
             echo "new reachable vulnerabilities:" >&2
             printf '%s\n' "$new" >&2
