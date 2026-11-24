@@ -2,11 +2,15 @@ package lantern
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	libpcrypto "github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 var errTest = errors.New("test error")
@@ -196,16 +200,20 @@ func TestResolvePeerFailsCleanlyWhenUnknown(t *testing.T) {
 	}
 	t.Cleanup(func() { ln.Close() })
 
-	// A real, well-formed peer ID that this node knows nothing about, so the
-	// failure is "not reachable" rather than "unparseable".
-	other, err := New(Config{DataDir: t.TempDir()})
+	// A well-formed peer ID with no host behind it. Starting a real node and
+	// calling it "unknown" is wrong: it is on the network, and discovery can
+	// find it before the resolve gives up.
+	unknownKey, _, err := libpcrypto.GenerateEd25519Key(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { other.Close() })
+	unknown, err := peer.IDFromPrivateKey(unknownKey)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ln.WithKnownAddrs(func(string) []string { return nil })
 
-	_, err = ln.resolvePeer(other.Node().Host.ID().String())
+	_, err = ln.resolvePeer(unknown.String())
 	if err == nil {
 		t.Fatal("expected an error for a peer that is not on the network")
 	}
