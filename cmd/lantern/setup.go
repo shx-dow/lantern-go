@@ -33,8 +33,12 @@ Flags:
   --force              replace an existing config file
 
 Afterwards:
-  lantern daemon       start the service; it reads this config
-  lantern doctor       check the setup from another terminal
+  lantern service install
+      install and start the per-user service; it reads this config
+  lantern doctor
+      check the setup from another terminal
+
+For a one-off foreground run, use "lantern daemon".
 
 Writes stay off. A pairing is not permission to write, so the daemon is
 read-only unless started with --allow-writes and --writable-dirs DIR. Those are
@@ -120,10 +124,12 @@ func runSetup(args []string, in io.Reader, out io.Writer) error {
 	}
 	fmt.Fprintf(out, `
 Next:
-  %s
-      start the service; it reads this config
+  lantern service install
+      install and start the per-user service; it reads this config
   lantern doctor
       check the setup from another terminal
+
+For a one-off foreground run, use: %s
 
 Paired devices can read these directories. Writes stay off: start the daemon
 with --allow-writes and --writable-dirs DIR to allow them. Write access is

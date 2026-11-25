@@ -123,26 +123,43 @@ Unblock-File .\windows-amd64\lantern.exe
 If SmartScreen appears, choose More info, then Run anyway. Linux needs no extra
 step.
 
-Name the device and choose what it shares once, then start the daemon in its
-own terminal and leave it running:
+Name the device and choose what it shares once, then install the daemon as a
+per-user service so it starts at login and keeps running after the terminal
+closes:
 
 ```sh
-lantern setup       # asks for a device name and shared directories
-lantern daemon
+lantern setup            # asks for a device name and shared directories
+lantern service install  # register the service and start it now
 ```
 
 `lantern setup` writes the per-user `lanternd.json` and creates the shared
-directory if it is missing; `lantern daemon` reads that file on every start. To
-change the name or the directories later, edit the file or re-run
-`lantern setup --force`.
+directory if it is missing; the service runs `lantern daemon`, which reads that
+file on every start. To change the name or the directories later, edit the file
+or re-run `lantern setup --force`, then restart the service with your platform's
+service manager (for example `systemctl --user restart lanternd` on Linux).
+
+`lantern service install` writes a systemd user unit on Linux, a launchd user
+agent on macOS, or a per-user startup entry on Windows. It runs as you, with
+your identity and shared roots, and needs no administrator rights. On Windows
+the entry takes effect at your next sign-in. `lantern service status` reports
+whether it is installed and running; `lantern service uninstall` stops it and
+removes the registration.
+
+On Linux, a systemd user service stops when you log out unless lingering is
+enabled. `lantern doctor` warns when it is off, and the fix is:
+
+```sh
+loginctl enable-linger "$USER"
+```
 
 Give each device a different name. It is the label the other devices see. The
 daemon serves only inside the directories it is given, and it stays read-only
 unless started with `--allow-writes`.
 
-Then run `lantern doctor` in another terminal. The CLI and the MCP server talk
-to the daemon over the local API. Closing the daemon's terminal stops it, and
-commands fail until it is started again.
+Then run `lantern doctor`. The CLI and the MCP server talk to the daemon over
+the local API. With the service installed, it keeps running after you close the
+terminal and comes back after a reboot; `lantern daemon` in the foreground is
+still available for debugging.
 
 ## Settings
 

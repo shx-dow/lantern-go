@@ -11,6 +11,7 @@ import (
 
 	"github.com/shx-dow/lantern-go/internal/daemon"
 	"github.com/shx-dow/lantern-go/internal/doctor"
+	"github.com/shx-dow/lantern-go/internal/service"
 	"github.com/shx-dow/lantern-go/pkg/lanternclient"
 )
 
@@ -78,11 +79,11 @@ func runDoctor(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	return runDoctorReport(ctx, lanternclient.New(normalizeBaseURL(addr), token), doctor.Options{
+	return runDoctorReport(ctx, lanternclient.New(normalizeBaseURL(addr), token), doctorOptions(ctx, addr, doctor.Options{
 		Token:      token,
 		ProbePeers: *probe,
 		ConfigPath: doctorConfigPath(*configPath, addr),
-	}, *jsonOut, out)
+	}), *jsonOut, out)
 }
 
 // doctorConfigPath picks the daemon config file to inspect. An explicit
@@ -106,16 +107,26 @@ func runDoctorFlags(ctx context.Context, opts cliOptions, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	report := doctor.Run(ctx, newDaemonClient(opts.daemonURL, token), doctor.Options{
+	report := doctor.Run(ctx, newDaemonClient(opts.daemonURL, token), doctorOptions(ctx, opts.daemonURL, doctor.Options{
 		Token:      token,
 		ProbePeers: opts.probePeers,
 		ConfigPath: doctorConfigPath("", opts.daemonURL),
-	})
+	}))
 	renderDoctorReport(report, opts.jsonOut, out)
 	if report.Failed() {
 		return errSilent
 	}
 	return nil
+}
+
+// doctorOptions adds the local service check only when doctor is pointed at a
+// loopback daemon. A service on this machine says nothing about a daemon on
+// another one, the same reason the token file and config path are loopback-only.
+func doctorOptions(ctx context.Context, addr string, o doctor.Options) doctor.Options {
+	if lanternclient.IsLoopbackURL(addr) {
+		o.ServiceStatus = func() (service.Status, error) { return service.Inspect(ctx) }
+	}
+	return o
 }
 
 func runDoctorReport(ctx context.Context, client *lanternclient.Client, opts doctor.Options, jsonOut bool, out io.Writer) error {

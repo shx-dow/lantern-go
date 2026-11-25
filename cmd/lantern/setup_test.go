@@ -74,7 +74,7 @@ func TestSetupWritesConfigFromFlags(t *testing.T) {
 			t.Errorf("written config has an unset field %s:\n%s", unset, data)
 		}
 	}
-	for _, want := range []string{"lantern daemon", "lantern doctor", "--allow-writes"} {
+	for _, want := range []string{"lantern service install", "lantern daemon", "lantern doctor", "--allow-writes"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output is missing %q:\n%s", want, out.String())
 		}
