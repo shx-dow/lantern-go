@@ -35,6 +35,8 @@ Run `lantern help <command>` for the full text. The main paths:
 - **Paired reads.** `lantern get <device>:<path>` copies a file and verifies
   the digest the serving device reports. `lantern files` lists this device's
   shared roots; `lantern remote-files <device> [dir]` lists a peer's.
+  `lantern push <device>:<path> <local>` is the write path; it needs
+  `--allow-writes` on the receiver and a `read-write` pairing.
 - **Share codes.** `lantern send` and `lantern receive` are the unpaired path;
   neither needs a pairing.
 - **Trust and diagnostics.** `lantern trust list|add|tier|roots|remove`,

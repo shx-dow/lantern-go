@@ -189,6 +189,7 @@ type cliOptions struct {
 	pairTTL       time.Duration
 	tier          string
 	writableRoots []string
+	overwrite     bool
 	command       string
 	positional    []string
 	// helpForCommand is set when -h/--help follows a command. The command
@@ -204,7 +205,7 @@ type cliOptions struct {
 // fresh in-process node for them — so they are deliberately absent.
 func commandNeedsDaemon(command string) bool {
 	switch command {
-	case "status", "discover", "peers", "list", "trust", "files", "remote-files", "get", "pair":
+	case "status", "discover", "peers", "list", "trust", "files", "remote-files", "get", "push", "pair":
 		return true
 	}
 	return false
@@ -450,6 +451,7 @@ func parseArgs(args []string) (cliOptions, error) {
 		return nil
 	})
 	fs.DurationVar(&opts.pairTTL, "ttl", 0, "lifetime of a lantern pair invitation (default 10m)")
+	fs.BoolVar(&opts.overwrite, "overwrite", false, "replace an existing destination on push")
 	var helpRequested bool
 	fs.BoolVar(&helpRequested, "help", false, "show help")
 	fs.BoolVar(&helpRequested, "h", false, "shorthand for --help")
@@ -600,6 +602,7 @@ func usage() {
     files [dir]                  list shared roots, or a directory under one
     remote-files <peer-id> [dir] list a peer's shared roots or a directory
     get <device>:<path> [dest]   copy a file from a paired device (verified)
+    push <device>:<path> <local> copy a local file or directory to a paired device
     ui                           open the daemon's page in a browser
     setup                        write the daemon config for this device
     daemon                       run the background service (lantern daemon --help)
@@ -637,6 +640,7 @@ examples:
   lantern --daemon receive <code> --out ./inbox
   lantern pair
   lantern get laptop:notes.md
+  lantern push nas:backup/report.txt ./report.txt
   lantern status`)
 }
 
@@ -941,6 +945,8 @@ func runDaemonCommand(ctx context.Context, opts cliOptions) {
 		}
 	case "get":
 		runGet(ctx, c, opts)
+	case "push":
+		runPush(c, opts)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", opts.command)
 		usage()
