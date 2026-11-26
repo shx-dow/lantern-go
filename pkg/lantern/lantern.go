@@ -117,6 +117,11 @@ type Lantern struct {
 	// nil, only live connections and fresh announcements are used.
 	knownAddrs func(peerID string) []string
 
+	// pairedLookup resolves a paired device through the name the pairing
+	// gives the two. It is consulted only after every address source above
+	// has come up empty. Optional: without it, an unknown peer stays unknown.
+	pairedLookup func(ctx context.Context, id peer.ID) (peer.AddrInfo, error)
+
 	// readPathFetches counts fetches that went over the fs read path rather
 	// than the transfer protocol. It is read by tests in this package: the
 	// whole point of the read-path shortcut is invisible from outside, since
@@ -130,6 +135,16 @@ type Lantern struct {
 // anything about pairing.
 func (l *Lantern) WithKnownAddrs(f func(peerID string) []string) *Lantern {
 	l.knownAddrs = f
+	return l
+}
+
+// WithPairedLookup supplies the last-resort address lookup for a paired
+// device, used when no connection, peerstore entry, or cached address names
+// it. The daemon installs this from its trust store, so an unpaired peer is
+// refused before any network work and only a device this one paired with is
+// ever asked.
+func (l *Lantern) WithPairedLookup(f func(ctx context.Context, id peer.ID) (peer.AddrInfo, error)) *Lantern {
+	l.pairedLookup = f
 	return l
 }
 

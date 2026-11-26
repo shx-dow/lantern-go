@@ -11,6 +11,7 @@ import (
 
 	libpcrypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 )
 
 var errTest = errors.New("test error")
@@ -181,7 +182,7 @@ func TestResolvePeerUsesCachedAddrs(t *testing.T) {
 	ln.WithKnownAddrs(func(string) []string { return addrs })
 	ln.Node().Host.Peerstore().ClearAddrs(other.Node().Host.ID())
 
-	pi, err := ln.resolvePeer(target)
+	pi, err := ln.resolvePeer(context.Background(), target)
 	if err != nil {
 		t.Fatalf("resolvePeer should fall back to cached addresses: %v", err)
 	}
@@ -213,7 +214,7 @@ func TestResolvePeerFailsCleanlyWhenUnknown(t *testing.T) {
 	}
 	ln.WithKnownAddrs(func(string) []string { return nil })
 
-	_, err = ln.resolvePeer(unknown.String())
+	_, err = ln.resolvePeer(context.Background(), unknown.String())
 	if err == nil {
 		t.Fatal("expected an error for a peer that is not on the network")
 	}
@@ -229,7 +230,83 @@ func TestResolvePeerRejectsGarbage(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
-	if _, err := ln.resolvePeer("not-a-peer-id"); err == nil {
+	if _, err := ln.resolvePeer(context.Background(), "not-a-peer-id"); err == nil {
 		t.Fatal("expected a decode error")
+	}
+}
+
+// A paired device whose cached address has gone stale is found through the
+// pairing's rendezvous. Before this fallback existed, resolvePeer stopped at
+// the cache and reported a device that was online as "not on this network".
+func TestResolvePeerUsesThePairedLookupWhenNoAddressIsKnown(t *testing.T) {
+	ln, err := New(Config{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	// A well-formed peer ID with no host behind it: the only way to name it is
+	// the paired lookup.
+	key, _, err := libpcrypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := peer.IDFromPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, err := multiaddr.NewMultiaddr("/ip4/192.0.2.10/tcp/41000")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	called := false
+	ln.WithPairedLookup(func(_ context.Context, id peer.ID) (peer.AddrInfo, error) {
+		called = true
+		if id != target {
+			t.Errorf("paired lookup asked for %s, want %s", id, target)
+		}
+		return peer.AddrInfo{ID: id, Addrs: []multiaddr.Multiaddr{addr}}, nil
+	})
+
+	info, err := ln.resolvePeer(context.Background(), target.String())
+	if err != nil {
+		t.Fatalf("resolvePeer ignored the paired lookup: %v", err)
+	}
+	if !called {
+		t.Fatal("the paired lookup was not consulted")
+	}
+	if info.ID != target || len(info.Addrs) != 1 || info.Addrs[0].String() != addr.String() {
+		t.Fatalf("resolvePeer returned %+v, want %s at %s", info, target, addr)
+	}
+}
+
+// The fallback is last: a fresher address from the peerstore must win, and the
+// lookup must not run at all.
+func TestResolvePeerPrefersAKnownAddressOverThePairedLookup(t *testing.T) {
+	ln, err := New(Config{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	other, err := New(Config{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { other.Close() })
+
+	ln.Node().Host.Peerstore().AddAddrs(other.Node().Host.ID(), other.Node().Host.Addrs(), time.Minute)
+	ln.WithPairedLookup(func(context.Context, peer.ID) (peer.AddrInfo, error) {
+		t.Error("the paired lookup ran even though a peerstore address was known")
+		return peer.AddrInfo{}, nil
+	})
+
+	info, err := ln.resolvePeer(context.Background(), other.Node().Host.ID().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Addrs) == 0 {
+		t.Fatal("resolved the peer with no address")
 	}
 }

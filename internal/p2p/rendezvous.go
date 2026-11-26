@@ -2,6 +2,8 @@ package p2p
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -237,4 +239,77 @@ func codeToCID(code string) cid.Cid {
 		panic(err)
 	}
 	return cid.NewCidV1(cid.Raw, h)
+}
+
+// pairedLookupTimeout bounds one paired-device lookup. The caller is already
+// about to dial and has no other address to try, so waiting a little is
+// worthwhile; waiting as long as a share-code lookup would make an offline
+// paired device feel like a hang.
+const pairedLookupTimeout = 15 * time.Second
+
+// PairedLookupKey is the rendezvous name two paired devices share. It is
+// derived from both peer IDs in sorted order under a domain separator, so both
+// sides compute the same name and neither can be found under it by a device
+// that knows only one of them. The peer IDs are not secrets; the gate is that
+// a device advertises this name only for devices it has paired with.
+//
+// The "paired-" prefix keeps a pairing name from colliding with a share code
+// (hex) or an invitation's "pair-" name.
+func PairedLookupKey(a, b peer.ID) string {
+	x, y := a.String(), b.String()
+	if x > y {
+		x, y = y, x
+	}
+	sum := sha256.Sum256([]byte("lantern/paired-lookup/1\x00" + x + "\x00" + y))
+	return "paired-" + base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// AdvertisePaired publishes this node's addresses under the name it shares
+// with other, until ctx ends. It is how a paired device whose cached address
+// has gone stale — a laptop that moved networks — is found again without mDNS
+// or a --peer flag.
+//
+// Only the device being advertised for can derive the same name from its own
+// ID and this one's, so this is a pairing's rendezvous, not a public listing.
+func (n *Node) AdvertisePaired(ctx context.Context, other peer.ID) error {
+	if n == nil || n.Host == nil {
+		return fmt.Errorf("node is not running")
+	}
+	if n.DHT == nil {
+		return fmt.Errorf("DHT discovery is not available on this node")
+	}
+	return n.Advertise(ctx, PairedLookupKey(n.Host.ID(), other))
+}
+
+// FindPaired returns where other is advertising the name the two devices
+// share. It accepts only other's own provider record: a third party that
+// learned both peer IDs and advertised the same name cannot redirect this
+// dial to itself.
+func (n *Node) FindPaired(ctx context.Context, other peer.ID) (peer.AddrInfo, error) {
+	if n == nil || n.Host == nil {
+		return peer.AddrInfo{}, fmt.Errorf("node is not ready")
+	}
+	if n.DHT == nil {
+		return peer.AddrInfo{}, fmt.Errorf("DHT discovery is not available on this node")
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, pairedLookupTimeout)
+	defer cancel()
+	providers, err := n.DHT.FindProviders(lookupCtx, codeToCID(PairedLookupKey(n.Host.ID(), other)))
+	if err != nil {
+		return peer.AddrInfo{}, fmt.Errorf("look up paired device %s: %w", other, err)
+	}
+	for _, p := range providers {
+		if p.ID != other {
+			continue
+		}
+		if len(p.Addrs) > 0 {
+			return p, nil
+		}
+		// A provider record without addresses is legal in the DHT. Ask the
+		// node itself before giving up on the lookup.
+		if info, err := n.DHT.FindPeer(lookupCtx, other); err == nil && len(info.Addrs) > 0 {
+			return info, nil
+		}
+	}
+	return peer.AddrInfo{}, fmt.Errorf("paired device %s is not advertising an address", other)
 }

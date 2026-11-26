@@ -234,6 +234,13 @@ not, so running it again after pairing is how you confirm it took.
 `not connected, no known address` means this device has never seen the other one
 on the network.
 
+Pairing also gives the two devices a private rendezvous: each advertises, on the
+DHT, a name derived from both peer IDs, and looks the other up there when mDNS
+and the cached address have nothing. Only the device that holds the other's
+peer ID can derive the name, and each side advertises it only for devices it has
+paired with. This finds an address; it is not a relay, and no bytes pass through
+a third device.
+
 Put a file in the laptop's shared directory, then ask for it from the desktop:
 
 ```sh
