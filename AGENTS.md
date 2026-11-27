@@ -11,6 +11,8 @@ root, Access tier). Use those words in code, docs, and commit messages.
   in a package that a test can call.
 - `internal/daemonapp` — daemon flags, startup, shutdown, and wiring.
 - `internal/daemon` — HTTP handlers, trust store, read and push orchestration.
+- `internal/service` — per-user service registration for `lantern service`
+  (systemd user unit, launchd agent, Windows startup entry).
 - `internal/p2p` — libp2p host, pairing, share codes, transfers, fs streams.
 - `internal/protocol`, `internal/crypto`, `internal/storage` — wire messages,
   keys and signatures, on-disk state.
@@ -27,8 +29,9 @@ root, Access tier). Use those words in code, docs, and commit messages.
 Run `lantern help <command>` for the full text. The main paths:
 
 - **First run.** `lantern setup` writes the per-user `lanternd.json` with a
-  device name and shared roots; `lantern daemon` reads it. `lantern ui` opens
-  the daemon's page at `<daemon-url>/ui`.
+  device name and shared roots; `lantern service install` registers and starts
+  the daemon as a per-user service; `lantern daemon` still runs it in the
+  foreground; `lantern ui` opens the daemon's page at `<daemon-url>/ui`.
 - **Pairing.** `lantern pair` mints a one-use invitation; `lantern pair
   <invitation>` redeems it and pairs both directions at `read`. `lantern trust
   add` is the manual fallback when discovery cannot reach the other device.

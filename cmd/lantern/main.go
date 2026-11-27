@@ -147,6 +147,8 @@ func usageFor(name string) string {
 		return mcpserver.Usage
 	case "setup":
 		return setupUsage
+	case "service":
+		return serviceUsage
 	case "version":
 		return versionUsage
 	}
@@ -307,6 +309,13 @@ func main() {
 	// keeps it from bringing up an in-process node.
 	if opts.command == "ui" {
 		runOrExit(runUIFlags(opts, os.Stdout, openBrowser))
+		return
+	}
+	// service manages a local registration and never talks to the daemon API,
+	// so it runs here rather than in runDaemonCommand and works while the
+	// daemon is stopped.
+	if opts.command == "service" {
+		runOrExit(runService(ctx, opts.positional, os.Stdout))
 		return
 	}
 
@@ -605,6 +614,7 @@ func usage() {
     push <device>:<path> <local> copy a local file or directory to a paired device
     ui                           open the daemon's page in a browser
     setup                        write the daemon config for this device
+    service install|uninstall|status  run the daemon as an always-on user service
     daemon                       run the background service (lantern daemon --help)
     mcp                          run the MCP stdio server for agents
     doctor                       diagnose a setup and print the fix for each problem
