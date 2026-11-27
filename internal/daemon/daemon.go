@@ -244,6 +244,22 @@ func (d *Daemon) PeerAddrs(peerID string) []string {
 	return nil
 }
 
+// FindPairedPeer resolves a paired device through the rendezvous name the
+// pairing gives the two, for the case where no cached address works any more:
+// a laptop that moved to another network. It refuses an unpaired peer before
+// any network work, so only a device this one has paired with is looked up —
+// and only such a device is advertising the shared name.
+func (d *Daemon) FindPairedPeer(ctx context.Context, id peer.ID) (peer.AddrInfo, error) {
+	if d.Trust == nil || !d.Trust.Trusted(id.String()) {
+		return peer.AddrInfo{}, fmt.Errorf("peer %s is not paired with this device", id)
+	}
+	node := d.node()
+	if node == nil {
+		return peer.AddrInfo{}, fmt.Errorf("node not ready")
+	}
+	return node.FindPaired(ctx, id)
+}
+
 // peerIDOf normalises a device reference to a peer ID string, or returns
 // the reference unchanged when it is not one.
 func peerIDOf(ref string) string {

@@ -27,10 +27,10 @@ type ReadResult struct {
 
 // resolvePeer turns a peer reference into a dialable address. It prefers a
 // live connection, then addresses learned from network discovery, then
-// addresses the caller supplies as a last resort. It never fails merely
-// because the peer is not connected yet: connecting is cheap and the
-// alternative is refusing work we could do.
-func (l *Lantern) resolvePeer(ref string) (peer.AddrInfo, error) {
+// addresses the caller supplies, then the pairing's DHT rendezvous. It never
+// fails merely because the peer is not connected yet: connecting is cheap and
+// the alternative is refusing work we could do.
+func (l *Lantern) resolvePeer(ctx context.Context, ref string) (peer.AddrInfo, error) {
 	if l.node == nil || l.node.Host == nil {
 		return peer.AddrInfo{}, fmt.Errorf("node not ready")
 	}
@@ -60,6 +60,11 @@ func (l *Lantern) resolvePeer(ref string) (peer.AddrInfo, error) {
 			}
 		}
 	}
+	if l.pairedLookup != nil {
+		if pi, err := l.pairedLookup(ctx, id); err == nil && pi.ID == id && len(pi.Addrs) > 0 {
+			return pi, nil
+		}
+	}
 	return peer.AddrInfo{}, fmt.Errorf("peer %s is not on this network yet; pair it, or make sure it is switched on", id)
 }
 
@@ -67,7 +72,7 @@ func (l *Lantern) resolvePeer(ref string) (peer.AddrInfo, error) {
 // zero length reads to the end of file, capped by the protocol's default.
 // Fetch is this call plus a write to disk.
 func (l *Lantern) ReadRemote(ctx context.Context, ref, path string, offset, length int64) (ReadResult, error) {
-	pi, err := l.resolvePeer(ref)
+	pi, err := l.resolvePeer(ctx, ref)
 	if err != nil {
 		return ReadResult{}, err
 	}
@@ -92,7 +97,7 @@ func (l *Lantern) ReadRemote(ctx context.Context, ref, path string, offset, leng
 // every pair on demand, and it is bounded so one unreachable peer cannot hang
 // the caller.
 func (l *Lantern) ProbePeer(ctx context.Context, ref string) error {
-	pi, err := l.resolvePeer(ref)
+	pi, err := l.resolvePeer(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -108,7 +113,7 @@ const probeDialTimeout = 10 * time.Second
 
 // StatRemote returns metadata for one path on a paired device.
 func (l *Lantern) StatRemote(ctx context.Context, ref, path string) (Entry, error) {
-	pi, err := l.resolvePeer(ref)
+	pi, err := l.resolvePeer(ctx, ref)
 	if err != nil {
 		return Entry{}, err
 	}
@@ -141,7 +146,7 @@ type PushResult struct {
 // policy, its overwrite setting, and its shared roots all apply, and a
 // refusal comes back before any content is sent.
 func (l *Lantern) PushRemote(ctx context.Context, ref, path string, content []byte, overwrite bool) (PushResult, error) {
-	pi, err := l.resolvePeer(ref)
+	pi, err := l.resolvePeer(ctx, ref)
 	if err != nil {
 		return PushResult{}, err
 	}
@@ -160,7 +165,7 @@ func (l *Lantern) PushRemote(ctx context.Context, ref, path string, content []by
 // itself, under its own write policy, and refuses to replace an existing
 // directory unless overwrite is set. Use storage.ZipDir to build the archive.
 func (l *Lantern) PushDirRemote(ctx context.Context, ref, path string, archive []byte, overwrite bool) (PushResult, error) {
-	pi, err := l.resolvePeer(ref)
+	pi, err := l.resolvePeer(ctx, ref)
 	if err != nil {
 		return PushResult{}, err
 	}
@@ -174,7 +179,7 @@ func (l *Lantern) PushDirRemote(ctx context.Context, ref, path string, archive [
 // ListRemoteEntries lists one directory level on a paired device. Empty dir
 // lists the remote's shared roots.
 func (l *Lantern) ListRemoteEntries(ctx context.Context, ref, dir string) ([]Entry, error) {
-	pi, err := l.resolvePeer(ref)
+	pi, err := l.resolvePeer(ctx, ref)
 	if err != nil {
 		return nil, err
 	}

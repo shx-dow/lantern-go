@@ -213,6 +213,11 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 	// restart can reach a paired device before the network has announced it
 	// again.
 	ln.WithKnownAddrs(d.PeerAddrs)
+	// When even the cache has nothing usable — a laptop that moved networks —
+	// the pairing's rendezvous on the DHT is the last source. The daemon
+	// supplies it so the session layer never looks up a device that is not
+	// paired with this one.
+	ln.WithPairedLookup(d.FindPairedPeer)
 
 	// Static peers (--peer) are dialed in the background with retries: the
 	// other side is routinely not up yet when this daemon starts. Seeding
@@ -277,6 +282,12 @@ func Run(ctx context.Context, args []string, stderr io.Writer) error {
 		} else {
 			logger.Printf("writes are disabled; pass --allow-writes to let a peer at tier %q write here", daemon.TierReadWrite)
 		}
+
+		// A paired device that is not on this LAN and has no cached address is
+		// found through the DHT under a name only the two can derive. Advertise
+		// for the pairings this daemon has now and reconcile as they change, so
+		// a pairing added later needs no restart.
+		go advertisePairings(ctx, logger, node, trust)
 	}
 
 	var addrs []string
@@ -511,6 +522,81 @@ func ShellQuote(s string) string {
 		return q + strings.ReplaceAll(s, q, `''`) + q
 	}
 	return q + strings.ReplaceAll(s, q, `'\''`) + q
+}
+
+// pairAdvertisementScan is how often the running DHT advertisements are
+// compared with the trust store. A new pairing usually reaches its first
+// command through the address learned while pairing, so a short delay before
+// the rendezvous is advertised is harmless; the scan is what makes a pairing
+// change take effect without a daemon restart.
+const pairAdvertisementScan = 30 * time.Second
+
+// advertisePairings keeps one DHT advertisement running per paired device
+// until ctx ends, adding new pairings and withdrawing removed ones at each
+// scan. The advertised name comes from both peer IDs (p2p.PairedLookupKey), so
+// it is a rendezvous for the pairing rather than a public listing.
+func advertisePairings(ctx context.Context, logger *log.Logger, node *p2p.Node, trust *daemon.TrustStore) {
+	// done closes when an advertisement loop exits, so the next scan can try
+	// again instead of believing a pairing is still covered.
+	type advertisement struct {
+		cancel context.CancelFunc
+		done   chan struct{}
+	}
+	running := make(map[peer.ID]*advertisement)
+	defer func() {
+		for _, a := range running {
+			a.cancel()
+		}
+	}()
+
+	scan := func() {
+		paired := make(map[peer.ID]bool)
+		for _, e := range trust.List() {
+			id, err := peer.Decode(e.PeerID)
+			if err != nil {
+				continue
+			}
+			paired[id] = true
+			if _, ok := running[id]; ok {
+				continue
+			}
+			advCtx, cancel := context.WithCancel(ctx)
+			a := &advertisement{cancel: cancel, done: make(chan struct{})}
+			running[id] = a
+			go func(id peer.ID) {
+				defer close(a.done)
+				if err := node.AdvertisePaired(advCtx, id); err != nil && advCtx.Err() == nil {
+					logger.Printf("advertise pairing with %s: %v", id, err)
+				}
+			}(id)
+		}
+		for id, a := range running {
+			if !paired[id] {
+				a.cancel()
+				delete(running, id)
+				continue
+			}
+			select {
+			case <-a.done:
+				// The loop stopped without the pairing going away: a failed
+				// advertisement, say. Let the next scan start it again.
+				delete(running, id)
+			default:
+			}
+		}
+	}
+
+	scan()
+	ticker := time.NewTicker(pairAdvertisementScan)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			scan()
+		}
+	}
 }
 
 // dialStaticPeers connects to --peer addresses, retrying every 20s until
