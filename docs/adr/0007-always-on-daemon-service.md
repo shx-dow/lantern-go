@@ -49,10 +49,26 @@ whether the daemon is running, and exits non-zero when it is not running.
 
 The command uses the executable that is running it, resolved through symlinks,
 so the service starts the same binary the user invoked. It runs `lantern
-daemon` with no extra flags, which means the daemon reads the per-user
-`lanternd.json` written by `lantern setup`. Write access stays a start-time
-flag and is deliberately not put in the unit: a service installed today must
-not silently grant a write capability that the operator never chose.
+daemon` with the flags the operator passed to `service install`:
+`--allow-writes`, `--writable-dirs`, `--p2p-port`, `--peer`, `--data-dir`,
+`--addr`, `--config`, and `--allow-remote`. A flag that is not given is left
+out of the registration, so the daemon reads `lanternd.json` and its own
+defaults for it; an install with no flags behaves exactly like `lantern setup`
+then `lantern daemon`.
+
+Write access still has to be chosen explicitly. `--allow-writes` is written
+into the registration only when the operator passes it, and a reinstall
+without it takes it away again: a service installed today must not silently
+grant a write capability that nobody asked for. `--config` and `--data-dir`
+are accepted for the same reason — a daemon started with a non-default state
+directory should come back after a reboot still using it.
+
+`--token` is refused. The unit, plist, and registry value are readable by
+every local user, and the token is what keeps the loopback API from other
+accounts on the same machine; it stays in the data directory.
+
+The registration is the only stored copy of these choices. Changing one means
+running `install` again, which rewrites the file and restarts the service.
 
 ### Linux: systemd user unit
 
@@ -110,6 +126,27 @@ cost is that a console window appears at sign-in and the daemon's output goes
 to that window rather than a log file. `uninstall` removes the value; it does
 not kill a daemon the user may have started by hand.
 
+### One registration at a time
+
+Before writing anything, `install` looks for another registration that runs
+`lantern daemon`: another `*.service` in the systemd user unit directories,
+another launch agent in `~/Library/LaunchAgents` or `/Library/LaunchAgents`,
+or another value under `HKCU\...\Run` besides its own. Finding one is an error
+that names it and the command that removes it.
+
+The case this exists for is the hand-written unit people already have from
+following older instructions. Adding `lanternd.service` beside it would leave
+both enabled, so the next login would start two daemons, the second would fail
+on the identity directory, and the user would see only "not running".
+Refusing is reversible in one step and keeps the failure where it can be
+explained.
+
+`install` also reports the manager's last output when the daemon exits right
+after a successful start. `systemctl --user enable --now` returns once the job
+is accepted, not once the process has stayed up, so a locked identity
+directory or a busy port is otherwise indistinguishable from a service that
+merely needs starting.
+
 ### `lantern doctor`
 
 Doctor gains a `service` check. It runs only when doctor is pointed at a
@@ -130,12 +167,17 @@ Doctor stays read-only. Reading the state means `systemctl --user is-active`,
 ## Consequences
 
 - The first-run path no longer asks anyone to keep a terminal open.
+- A device that should accept pushes installs the service with
+  `--allow-writes` (and `--writable-dirs`), so the always-on daemon and the
+  write path are not mutually exclusive.
+- A machine with an older hand-written unit is told to remove it rather than
+  left with two daemons that fight after the next login.
 - The service runs as the user, with the user's identity and shared roots, and
   no new privilege.
 - A foreground `lantern daemon` and a service daemon cannot both own the same
-  identity directory. Installing while a foreground daemon is running reports
-  the service manager's start failure; stop the foreground one and re-run
-  `install`.
+  identity directory. Installing while a foreground daemon is running prints
+  the manager's last output, which is where the daemon says the directory is
+  locked; stop the foreground one and re-run `install`.
 - Unsupported platforms (systemd-less Linux, and any OS outside the three)
   keep the foreground command. They are not silently given a broken unit.
 - No new network surface, account, or relay. The unit carries no secret; the

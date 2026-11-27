@@ -16,19 +16,56 @@ const (
 	runValue = "Lantern"
 )
 
-// Install writes the per-user startup value. It takes effect at the next
-// sign-in; a daemon started by hand now is left alone.
-func Install(ctx context.Context) (Status, error) {
+// Install writes the per-user startup value with the operator's daemon
+// arguments. It takes effect at the next sign-in; a daemon started by hand now
+// is left alone.
+func Install(ctx context.Context, opts Options) (Status, error) {
+	if err := validateArgs(opts.DaemonArgs); err != nil {
+		return Status{}, err
+	}
+	if regs := otherRegistrations(ctx); len(regs) > 0 {
+		return Status{}, conflictError(regs)
+	}
 	exe, err := executablePath()
 	if err != nil {
 		return Status{}, err
 	}
-	out, err := commandRunner(ctx, "reg", "add", runKey, "/v", runValue, "/t", "REG_SZ", "/d", windowsRunValue(exe), "/f")
+	out, err := commandRunner(ctx, "reg", "add", runKey, "/v", runValue, "/t", "REG_SZ", "/d", windowsRunValue(exe, opts.DaemonArgs), "/f")
 	if err != nil {
 		return Status{}, fmt.Errorf("reg add %s: %w%s",
 			runKey, missingCommand(err, "reg", "the Windows registry is not available here"), outputSuffix(out))
 	}
 	return Inspect(ctx)
+}
+
+// otherRegistrations finds other Run values that start a Lantern daemon. Two
+// entries would start two daemons at the next sign-in, and the second would
+// fail on the identity directory.
+func otherRegistrations(ctx context.Context) []registration {
+	out, err := commandRunner(ctx, "reg", "query", runKey)
+	if err != nil {
+		return nil
+	}
+	var regs []registration
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || !strings.EqualFold(fields[1], "REG_SZ") {
+			continue
+		}
+		name := fields[0]
+		if name == runValue {
+			continue
+		}
+		lower := strings.ToLower(strings.Join(fields[2:], " "))
+		if !strings.Contains(lower, "lantern") || !strings.Contains(lower, "daemon") {
+			continue
+		}
+		regs = append(regs, registration{
+			Path:   runKey + `\` + name,
+			Remove: "reg delete " + runKey + " /v " + name + " /f",
+		})
+	}
+	return regs
 }
 
 // Uninstall removes the startup value. It does not stop a daemon the user

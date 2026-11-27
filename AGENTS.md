@@ -111,13 +111,19 @@ that is not obvious needs agreement before implementation.
   fallback when the two devices cannot discover each other.
 - `lantern setup` writes `lanternd.json` and keeps the daemon read-only.
   `--allow-writes` and `--writable-dirs` are start-time flags and are
-  deliberately not stored in that file.
+  deliberately not stored in that file. A service carries them instead:
+  `lantern service install --allow-writes --writable-dirs DIR` writes them into
+  the unit, and `--token` is refused because that file is world-readable.
 - `lantern ui` opens `<daemon-url>/ui`. The page is served without auth; every
   `/v1/` request it makes still needs the bearer token from browser storage.
 - The bearer token lives at `<data-dir>/.lanternd-token`. Clients read it only
   when the daemon URL is loopback.
 - A peer cannot write unless the daemon runs with `--allow-writes` and the
   destination is inside `--writable-dirs`.
+- `lantern service install` refuses when another registration already runs
+  `lantern daemon` (an older hand-written unit, say), because both would start
+  at login and one would lose the identity directory. The error names the
+  command that removes it.
 - The default daemon URL is `http://127.0.0.1:43782`.
 - `lantern send` and `lantern receive` are the unpaired, share-code path.
   Paired devices use the daemon API and the CLI's paired commands.

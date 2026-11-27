@@ -44,9 +44,16 @@ func homeDir() (string, error) {
 	return home, nil
 }
 
-// Install writes the launch agent, boots out any previous copy, and
-// bootstraps the new one so it runs now and at every login.
-func Install(ctx context.Context) (Status, error) {
+// Install writes the launch agent with the operator's daemon arguments, boots
+// out any previous copy, and bootstraps the new one so it runs now and at every
+// login.
+func Install(ctx context.Context, opts Options) (Status, error) {
+	if err := validateArgs(opts.DaemonArgs); err != nil {
+		return Status{}, err
+	}
+	if regs := otherRegistrations(); len(regs) > 0 {
+		return Status{}, conflictError(regs)
+	}
 	exe, err := executablePath()
 	if err != nil {
 		return Status{}, err
@@ -61,7 +68,7 @@ func Install(ctx context.Context) (Status, error) {
 	if err := os.MkdirAll(logDir(), 0o755); err != nil {
 		return Status{}, fmt.Errorf("create log directory: %w", err)
 	}
-	if err := os.WriteFile(plistPath(), []byte(launchdPlist(exe, home)), 0o644); err != nil {
+	if err := os.WriteFile(plistPath(), []byte(launchdPlist(exe, home, opts.DaemonArgs)), 0o644); err != nil {
 		return Status{}, fmt.Errorf("write launch agent %s: %w", plistPath(), err)
 	}
 
@@ -74,7 +81,95 @@ func Install(ctx context.Context) (Status, error) {
 			missingCommand(err, "launchctl", "launchd is not available here"),
 			outputSuffix(out))
 	}
-	return Inspect(ctx)
+	st, err := Inspect(ctx)
+	if err != nil {
+		return st, err
+	}
+	if !st.Running {
+		st.LogTail = plistLogTail()
+	}
+	return st, nil
+}
+
+// plistLogTail returns the last lines launchd captured on stderr, which is
+// where the daemon's own reason for exiting lands when a start fails.
+func plistLogTail() string {
+	body, err := os.ReadFile(filepath.Join(logDir(), "lanternd.err.log"))
+	if err != nil {
+		return ""
+	}
+	const maxBytes = 8 << 10
+	if len(body) > maxBytes {
+		body = body[len(body)-maxBytes:]
+	}
+	return logTail(string(body), 15)
+}
+
+// otherRegistrations finds launch agents that already run a Lantern daemon.
+// Two loaded agents compete for the identity directory and the port.
+func otherRegistrations() []registration {
+	home, _ := os.UserHomeDir()
+	dirs := []string{"/Library/LaunchAgents"}
+	if home != "" {
+		dirs = append([]string{filepath.Join(home, "Library", "LaunchAgents")}, dirs...)
+	}
+	ours := plistPath()
+	uid := strconv.Itoa(os.Getuid())
+	seen := make(map[string]bool)
+	var regs []registration
+	for _, dir := range dirs {
+		paths, _ := filepath.Glob(filepath.Join(dir, "*.plist"))
+		for _, path := range paths {
+			if path == ours || seen[path] {
+				continue
+			}
+			seen[path] = true
+			body, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			if !plistRunsLanternDaemon(string(body)) {
+				continue
+			}
+			label := plistLabel(string(body))
+			if label == "" {
+				label = strings.TrimSuffix(filepath.Base(path), ".plist")
+			}
+			regs = append(regs, registration{
+				Path:   path,
+				Remove: "launchctl bootout gui/" + uid + "/" + label + " && rm " + path,
+			})
+		}
+	}
+	return regs
+}
+
+// plistRunsLanternDaemon is a deliberately loose match: the file names a
+// lantern binary somewhere and has a program argument that is exactly
+// "daemon". Parsing the plist as XML would be stricter, but launchd accepts
+// more than one shape and a false negative here means two daemons start.
+func plistRunsLanternDaemon(body string) bool {
+	lower := strings.ToLower(body)
+	return strings.Contains(lower, "lantern") && strings.Contains(body, "<string>daemon</string>")
+}
+
+// plistLabel reads the Label value, which is what launchctl addresses.
+func plistLabel(body string) string {
+	i := strings.Index(body, "<key>Label</key>")
+	if i < 0 {
+		return ""
+	}
+	after := body[i+len("<key>Label</key>"):]
+	start := strings.Index(after, "<string>")
+	if start < 0 {
+		return ""
+	}
+	after = after[start+len("<string>"):]
+	end := strings.Index(after, "</string>")
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(after[:end])
 }
 
 // Uninstall boots the agent out and removes the plist. removed reports

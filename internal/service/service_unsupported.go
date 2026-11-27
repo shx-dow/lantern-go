@@ -10,7 +10,7 @@ import (
 
 // Install is not available on this platform. The foreground `lantern daemon`
 // command still works; it just has no per-user registration to install.
-func Install(context.Context) (Status, error) {
+func Install(context.Context, Options) (Status, error) {
 	return Status{}, fmt.Errorf("no per-user service mechanism for %s; run \"lantern daemon\" under your init system", runtime.GOOS)
 }
 
