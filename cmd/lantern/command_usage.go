@@ -125,6 +125,24 @@ Flags:
   --json           machine-readable JSONL on stdout
   --daemon-url URL daemon to talk to (default http://127.0.0.1:43782)
 `
+	case "push":
+		return `lantern push <device>:<path> <local> [--overwrite] [--json]
+
+Copies one local file or directory onto a paired device. <device> is a paired
+alias or a peer ID, <path> is the destination there, and <local> is the source
+on this device. The receiving device must have paired this one at tier
+"read-write"; nothing is placed until the digest of what arrived is verified.
+
+A directory is archived on this device and expanded on the receiver, creating
+the tree there. An existing destination is refused unless --overwrite is
+given, and overwriting a directory replaces the whole tree rather than merging
+into it.
+
+Flags:
+  --overwrite      replace an existing destination
+  --json           machine-readable JSONL on stdout
+  --daemon-url URL daemon to talk to (default http://127.0.0.1:43782)
+`
 	case "ui":
 		return `lantern ui [--daemon-url URL]
 

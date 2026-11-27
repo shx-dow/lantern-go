@@ -590,6 +590,37 @@ func (c *Client) RemoteFiles(peerID, dir string) ([]FileEntry, error) {
 	return out.Files, c.roundTrip(http.MethodGet, path, nil, &out)
 }
 
+// PushResult reports what a receiving device stored. A file push sets Entry;
+// a directory push sets Entries, because the receiver expands an archive into
+// a tree rather than storing one file.
+type PushResult struct {
+	Device      string      `json:"device"`
+	RemotePath  string      `json:"remote_path"`
+	Bytes       int64       `json:"bytes"`
+	SHA256      string      `json:"sha256"`
+	LocalSHA256 string      `json:"local_sha256"`
+	Entry       *FileEntry  `json:"entry,omitempty"`
+	Entries     []FileEntry `json:"entries,omitempty"`
+}
+
+// Push sends a local file or directory to another device. to is a paired
+// alias or peer ID, path is the local source, and remotePath is where the
+// receiver stores it; an empty remotePath asks the daemon to use the source's
+// base name. A directory is archived and expanded on the receiver, replacing
+// any tree already there, so overwrite is required for an existing tree.
+func (c *Client) Push(to, path, remotePath string, overwrite bool) (PushResult, error) {
+	body := map[string]any{"to": to, "path": path}
+	if remotePath != "" {
+		body["remote_path"] = remotePath
+	}
+	if overwrite {
+		body["overwrite"] = true
+	}
+	var out PushResult
+	err := c.roundTrip(http.MethodPost, "/v1/pushes", body, &out)
+	return out, err
+}
+
 // ReadChunk is one byte range of a file on a paired device, as the daemon
 // serves it. Data is decoded from Content per Encoding. SHA256 is the serving
 // device's digest of exactly those bytes; a caller that writes them somewhere

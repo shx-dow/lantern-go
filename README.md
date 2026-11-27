@@ -268,6 +268,24 @@ listing printed works as typed. `[dest]` may name a file or an existing
 directory, and is the current directory when omitted. An existing file is
 never replaced, and the destination directory must already exist.
 
+The reverse direction needs two deliberate grants on the receiving device: the
+daemon started with `--allow-writes` (and `--writable-dirs`, if the default is
+too broad) and this device paired at `read-write`:
+
+```sh
+# on the laptop: let the desktop write into ~/Inbox
+lantern trust tier desktop read-write
+lantern trust roots desktop ~/Inbox
+
+# on the desktop
+lantern push laptop:Inbox/notes.md ./notes.md
+```
+
+`lantern push <device>:<path> <local>` sends one file or a whole directory,
+which arrives as a tree. An existing destination is refused unless
+`--overwrite` is given; overwriting a directory replaces the whole tree rather
+than merging into it.
+
 `lantern files` lists this device's shared roots the same way, and
 `lantern trust list` shows what this device is paired with. A pairing opens no
 connection: nothing is dialed until a transfer needs it, so an idle device is

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -136,6 +137,12 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 			ok(map[string]any{"files": []map[string]any{
 				{"name": "notes.md", "size": 12, "is_dir": false},
 			}})
+		case "/v1/pushes":
+			ok(map[string]any{
+				"device": "12D3kooONE", "remote_path": "notes.md", "bytes": 12,
+				"sha256": strings.Repeat("a", 64), "local_sha256": strings.Repeat("a", 64),
+				"entry": map[string]any{"name": "notes.md", "size": 12, "is_dir": false},
+			})
 		case "/v1/shares":
 			ok(map[string]any{"shares": []map[string]any{
 				{"id": "share1", "state": "done", "file_name": "shared.txt", "bytes": 3, "total": 3},
@@ -231,6 +238,10 @@ func (d *fakeDaemon) runAt(t *testing.T, url string, args ...string) (string, st
 // empty list because it called the wrong path looks exactly like a device
 // with nothing in it.
 func TestEachDaemonCommandReachesItsRoute(t *testing.T) {
+	source := filepath.Join(t.TempDir(), "notes.md")
+	if err := os.WriteFile(source, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct {
 		args []string
 		want string // a route the daemon must have seen
@@ -244,6 +255,7 @@ func TestEachDaemonCommandReachesItsRoute(t *testing.T) {
 		{[]string{"trust", "list"}, "/v1/trust"},
 		{[]string{"files"}, "/v1/files"},
 		{[]string{"remote-files", "12D3kooONE"}, "/v1/peers/12D3kooONE/files"},
+		{[]string{"push", "12D3kooONE:notes.md", source}, "/v1/pushes"},
 	}
 	for _, c := range cases {
 		t.Run(strings.Join(c.args, " "), func(t *testing.T) {
@@ -367,10 +379,10 @@ func lastLine(s string) string {
 func TestHelpMentionsTheCommandsThatExist(t *testing.T) {
 	stdout, stderr, _ := runCLI(t, "help")
 	out := stdout + stderr
-	// Every command the CLI actually has. push is not one: it is the
-	// /v1/pushes endpoint, and asking help for it asserts a command that does
-	// not exist.
-	for _, cmd := range []string{"send", "receive", "status", "list", "peers", "discover", "trust", "files", "remote-files", "get", "doctor", "version"} {
+	// Every command the CLI actually has. The top-level help is how someone
+	// finds a command they have not used yet, so one missing here is one
+	// nobody discovers.
+	for _, cmd := range []string{"send", "receive", "status", "list", "peers", "discover", "trust", "files", "remote-files", "get", "push", "doctor", "version"} {
 		if !strings.Contains(out, cmd) {
 			t.Errorf("help does not mention %q", cmd)
 		}

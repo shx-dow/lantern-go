@@ -40,6 +40,67 @@ func fakeDaemon() *httptest.Server {
 	return httptest.NewServer(mux)
 }
 
+// Push bodies map one-to-one onto the daemon's request fields; an omitted
+// remote path or a false overwrite must not be sent as a misleading zero.
+func TestPushSendsTheTargetAndSource(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		remote    string
+		overwrite bool
+		want      map[string]any
+	}{
+		{
+			name:   "remote path and no overwrite",
+			remote: "notes.md",
+			want:   map[string]any{"to": "desk", "path": "/tmp/notes.md", "remote_path": "notes.md"},
+		},
+		{
+			name:      "overwrite and default remote path",
+			overwrite: true,
+			want:      map[string]any{"to": "desk", "path": "/tmp/notes.md", "overwrite": true},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/v1/pushes" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Errorf("decode request body: %v", err)
+				}
+				_ = json.NewEncoder(w).Encode(PushResult{
+					Device: "p9", RemotePath: "notes.md", Bytes: 3,
+					SHA256: "aa", LocalSHA256: "aa",
+					Entry: &FileEntry{Name: "notes.md", Size: 3},
+				})
+			}))
+			defer srv.Close()
+
+			res, err := New(srv.URL, "token").Push("desk", "/tmp/notes.md", tc.remote, tc.overwrite)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("request body has %d fields, want %d: %v", len(got), len(tc.want), got)
+			}
+			for key, want := range tc.want {
+				if got[key] != want {
+					t.Errorf("body[%q] = %v, want %v", key, got[key], want)
+				}
+			}
+			if res.Device != "p9" || res.RemotePath != "notes.md" || res.Bytes != 3 {
+				t.Errorf("bad push result: %+v", res)
+			}
+			if res.Entry == nil || res.Entry.Name != "notes.md" {
+				t.Errorf("push result lost the stored entry: %+v", res)
+			}
+		})
+	}
+}
+
 func TestClientRoundTrip(t *testing.T) {
 	srv := fakeDaemon()
 	defer srv.Close()
