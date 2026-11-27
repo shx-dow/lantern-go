@@ -14,24 +14,31 @@ import (
 // syntax wrong is shown the shape that works rather than only the failure.
 const getUsage = "usage: lantern get <device>:<path> [dest] (for example: lantern get laptop:notes.md)"
 
-// parseGetTarget splits a `device:path` argument at the first colon.
+// parseDevicePath splits a `device:path` argument at the first colon.
 //
 // Nothing else is trimmed or normalized: an alias is resolved by the daemon,
-// and the path is resolved by the device that owns the file. Splitting at the
-// first colon leaves a Windows path on the far side intact.
-func parseGetTarget(arg string) (device, path string, err error) {
+// and the path is resolved by the device that owns the file (or receives the
+// write). Splitting at the first colon leaves a Windows path on the far side
+// intact. usage is the command's one-line form, repeated in the error so the
+// caller is shown the shape that works.
+func parseDevicePath(arg, usage string) (device, path string, err error) {
 	i := strings.Index(arg, ":")
 	if i < 0 {
-		return "", "", fmt.Errorf("no device in %q; %s", arg, getUsage)
+		return "", "", fmt.Errorf("no device in %q; %s", arg, usage)
 	}
 	device, path = arg[:i], arg[i+1:]
 	if strings.TrimSpace(device) == "" {
-		return "", "", fmt.Errorf("no device before the colon; %s", getUsage)
+		return "", "", fmt.Errorf("no device before the colon; %s", usage)
 	}
 	if strings.TrimSpace(path) == "" {
-		return "", "", fmt.Errorf("no path after the device name; %s", getUsage)
+		return "", "", fmt.Errorf("no path after the device name; %s", usage)
 	}
 	return device, path, nil
+}
+
+// parseGetTarget is parseDevicePath with the read command's usage.
+func parseGetTarget(arg string) (device, path string, err error) {
+	return parseDevicePath(arg, getUsage)
 }
 
 // runGet copies one file from a paired device to local disk. It is the read
