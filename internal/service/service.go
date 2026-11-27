@@ -17,6 +17,17 @@ import (
 	"strings"
 )
 
+// Options are the operator's choices for one installation. The registration is
+// the only place they are stored, so changing one means installing again.
+type Options struct {
+	// DaemonArgs are extra arguments after "daemon" in the registration. They
+	// are the daemon's own flags — --allow-writes, --writable-dirs, --peer,
+	// and so on — so the service runs with the choices the operator made
+	// instead of the bare defaults. The bearer token is refused: the unit,
+	// plist, and registry value are readable by every local user.
+	DaemonArgs []string
+}
+
 // Status describes the service registration and whether the daemon is running.
 type Status struct {
 	// Supported is false on a platform with no per-user mechanism, so callers
@@ -37,6 +48,11 @@ type Status struct {
 	Detail string `json:"detail,omitempty"`
 	// Fix is the next command when the state is not the desired one.
 	Fix string `json:"fix,omitempty"`
+	// LogTail is the service manager's recent output when installation
+	// succeeded but the daemon did not come up. Empty when nothing was
+	// captured; it exists so a failure like "another daemon holds the
+	// identity directory" is reported instead of guessed at.
+	LogTail string `json:"log_tail,omitempty"`
 }
 
 // commandRunner runs one command and returns its combined output. It is a
@@ -82,4 +98,63 @@ func outputSuffix(out []byte) string {
 		return ""
 	}
 	return ": " + strings.Join(strings.Fields(s), " ")
+}
+
+// validateArgs refuses an argument that would write the bearer token into the
+// service file. That file is mode 0644 (or a registry value) and every local
+// user can read it, while the token is what protects the loopback API even
+// from another account on the same machine.
+func validateArgs(args []string) error {
+	for _, a := range args {
+		name := a
+		if i := strings.IndexByte(name, '='); i >= 0 {
+			name = name[:i]
+		}
+		if name == "--token" || name == "-token" {
+			return errors.New("refusing to put the bearer token in the service file: every local user can read it; leave the token in the data directory")
+		}
+	}
+	return nil
+}
+
+// registration is another service entry on this machine that runs
+// `lantern daemon`. Two of them compete for the same identity directory and
+// the same listen port, and the second one to start loses.
+type registration struct {
+	// Path is the file or registry value that defines it, for the message.
+	Path string
+	// Remove is the command that unregisters it.
+	Remove string
+}
+
+// conflictError explains what already owns the daemon role and how to hand it
+// over. Installing over it would leave two registrations enabled, so the next
+// login would start two daemons and one would fail.
+func conflictError(regs []registration) error {
+	var b strings.Builder
+	b.WriteString("another registration already runs the Lantern daemon:")
+	for _, r := range regs {
+		b.WriteString("\n  " + r.Path)
+	}
+	b.WriteString("\nremove it before installing, or the two will compete for the identity directory:")
+	for _, r := range regs {
+		if r.Remove != "" {
+			b.WriteString("\n  " + r.Remove)
+		}
+	}
+	return errors.New(b.String())
+}
+
+// logTail keeps the last few lines of captured output, for the message an
+// install failure deserves. An empty or unreadable source yields "".
+func logTail(text string, lines int) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	parts := strings.Split(text, "\n")
+	if len(parts) > lines {
+		parts = parts[len(parts)-lines:]
+	}
+	return strings.Join(parts, "\n")
 }

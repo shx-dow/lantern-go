@@ -512,6 +512,14 @@ func parseArgs(args []string) (cliOptions, error) {
 		// A lone "-" is what a user means by stdin, not a misspelled flag.
 		if !helpFirst && opts.command == "" && rest[0] != "-" {
 			opts.command = rest[0]
+			// `service install` takes the daemon's own flags (--allow-writes,
+			// --writable-dirs, ...). The global flag set does not define them,
+			// so once service is named, everything after it belongs to the
+			// command and is parsed by its own flag set.
+			if opts.command == "service" {
+				opts.positional = append(opts.positional, rest[1:]...)
+				break
+			}
 		} else {
 			opts.positional = append(opts.positional, rest[0])
 		}

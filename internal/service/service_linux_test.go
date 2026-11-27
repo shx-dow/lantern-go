@@ -27,7 +27,7 @@ func writeUnit(t *testing.T) string {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(systemdUnit("/usr/local/bin/lantern")), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(systemdUnit("/usr/local/bin/lantern", nil)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -126,7 +126,7 @@ func TestInstallWritesTheUnitAndEnablesIt(t *testing.T) {
 		return nil, nil
 	})
 
-	st, err := Install(t.Context())
+	st, err := Install(t.Context(), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,6 +147,159 @@ func TestInstallWritesTheUnitAndEnablesIt(t *testing.T) {
 		if !hasCall(calls, want) {
 			t.Errorf("install did not run %v; calls: %v", want, calls)
 		}
+	}
+}
+
+// The unit is where an install flag lives. Without this, `lantern service
+// install --allow-writes` would report success and the daemon would still be
+// read-only, which is the one thing the flag exists to prevent.
+func TestInstallWritesTheDaemonArgsIntoTheUnit(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	fakeRunner(t, func(_ context.Context, name string, args ...string) ([]byte, error) {
+		switch {
+		case name == "systemctl" && containsArg(args, "is-active"):
+			return []byte("active\n"), nil
+		case name == "loginctl":
+			return []byte("Linger=yes\n"), nil
+		}
+		return nil, nil
+	})
+
+	args := []string{"--allow-writes", "--writable-dirs=/home/me/In box", "--p2p-port=41001"}
+	st, err := Install(t.Context(), Options{DaemonArgs: args})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.Running {
+		t.Fatalf("status after install = %+v, want running", st)
+	}
+	body, err := os.ReadFile(unitPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`daemon "--allow-writes"`,
+		`"--writable-dirs=/home/me/In box"`,
+		`"--p2p-port=41001"`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("unit is missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// The unit file is world-readable, so a token in it would hand the loopback
+// API to every local account. The refusal has to happen before the file is
+// written.
+func TestInstallRefusesToWriteTheBearerToken(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	fakeRunner(t, func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		t.Fatalf("install ran %s before validating its arguments", name)
+		return nil, nil
+	})
+
+	_, err := Install(t.Context(), Options{DaemonArgs: []string{"--token=secret"}})
+	if err == nil {
+		t.Fatal("install accepted a bearer token")
+	}
+	if !strings.Contains(err.Error(), "token") {
+		t.Errorf("error does not name the token: %v", err)
+	}
+	if _, statErr := os.Stat(unitPath()); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("a refused install still wrote the unit: %v", statErr)
+	}
+}
+
+// A hand-written unit from before this command existed is the state most
+// existing users are in. Installing a second one leaves both enabled, so the
+// next login starts two daemons and one loses.
+func TestInstallRefusesASecondLanternRegistration(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	other := filepath.Join(filepath.Dir(unitPath()), "lantern.service")
+	if err := os.MkdirAll(filepath.Dir(other), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, []byte(`[Unit]
+Description=Lantern file-transfer daemon
+
+[Service]
+ExecStart="/home/me/Lantern Bin/lantern" daemon --p2p-port 41001
+
+[Install]
+WantedBy=default.target
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fakeRunner(t, func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		t.Fatalf("install ran %s with a competing registration", name)
+		return nil, nil
+	})
+
+	_, err := Install(t.Context(), Options{})
+	if err == nil {
+		t.Fatal("install accepted a second registration that runs lantern daemon")
+	}
+	for _, want := range []string{other, "systemctl --user disable --now lantern.service"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error is missing %q:\n%v", want, err)
+		}
+	}
+	if _, statErr := os.Stat(unitPath()); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("a refused install still wrote the unit: %v", statErr)
+	}
+}
+
+// A unit that does not run lantern daemon is not a conflict, and neither is a
+// unit whose command only mentions the word.
+func TestOtherRegistrationsIgnoresUnrelatedUnits(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := filepath.Dir(unitPath())
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"backup.service":         "[Service]\nExecStart=/usr/bin/restic backup /home\n",
+		"lantern-docs.service":   "[Service]\nExecStart=/usr/bin/lantern-docs-watcher --once\n",
+		"lantern-status.service": "[Service]\nExecStart=/usr/bin/lantern status\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if regs := otherRegistrations(); len(regs) != 0 {
+		t.Fatalf("otherRegistrations = %v, want none", regs)
+	}
+}
+
+// enable --now returns before the daemon has proved it can stay up. When it
+// exits at once, the journal is the only place that says why; without it the
+// message is "not running", which sends the user to a start command that will
+// fail the same way.
+func TestInstallReportsWhyTheDaemonDidNotStart(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	fakeRunner(t, func(_ context.Context, name string, args ...string) ([]byte, error) {
+		switch {
+		case name == "systemctl" && containsArg(args, "is-active"):
+			return []byte("inactive\n"), errors.New("exit status 3")
+		case name == "systemctl":
+			return nil, nil
+		case name == "loginctl":
+			return []byte("Linger=yes\n"), nil
+		case name == "journalctl":
+			return []byte("lanternd[123]: identity directory is locked by another daemon\n"), nil
+		}
+		return nil, errors.New("unexpected command: " + name)
+	})
+
+	st, err := Install(t.Context(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Running {
+		t.Fatal("status reports running for a daemon that exited")
+	}
+	if !strings.Contains(st.LogTail, "identity directory is locked") {
+		t.Errorf("log tail = %q, want the daemon's own reason", st.LogTail)
 	}
 }
 

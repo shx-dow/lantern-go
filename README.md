@@ -145,6 +145,21 @@ the entry takes effect at your next sign-in. `lantern service status` reports
 whether it is installed and running; `lantern service uninstall` stops it and
 removes the registration.
 
+The service runs `lantern daemon` with the flags you give `service install`.
+Anything you leave out comes from `lanternd.json`, so a device that should
+accept pushes needs its write permission chosen there, not added to the config
+file:
+
+```sh
+lantern service install --allow-writes --writable-dirs ~/Inbox
+```
+
+Installing again replaces the registration, so that is also how a flag is
+changed or removed. The registration never contains the daemon token: it is
+readable by every local user, and the token stays in the data directory. If a
+hand-written unit already runs `lantern daemon`, `service install` names it and
+stops rather than leaving two services to fight after the next login.
+
 On Linux, a systemd user service stops when you log out unless lingering is
 enabled. `lantern doctor` warns when it is off, and the fix is:
 
@@ -276,11 +291,17 @@ directory, and is the current directory when omitted. An existing file is
 never replaced, and the destination directory must already exist.
 
 The reverse direction needs two deliberate grants on the receiving device: the
-daemon started with `--allow-writes` (and `--writable-dirs`, if the default is
+daemon running with `--allow-writes` (and `--writable-dirs`, if the default is
 too broad) and this device paired at `read-write`:
 
 ```sh
-# on the laptop: let the desktop write into ~/Inbox
+# on the laptop, if it runs as a service:
+lantern service install --allow-writes --writable-dirs ~/Inbox
+
+# or, for a foreground daemon:
+lantern daemon --allow-writes --writable-dirs ~/Inbox
+
+# in either case, on the laptop:
 lantern trust tier desktop read-write
 lantern trust roots desktop ~/Inbox
 
