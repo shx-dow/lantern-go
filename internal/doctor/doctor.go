@@ -20,6 +20,7 @@ import (
 
 	"github.com/shx-dow/lantern-go/internal/daemon"
 	"github.com/shx-dow/lantern-go/internal/paths"
+	"github.com/shx-dow/lantern-go/internal/service"
 	"github.com/shx-dow/lantern-go/pkg/lanternclient"
 )
 
@@ -75,6 +76,10 @@ type Options struct {
 	// ConfigPath is the daemon config file to inspect. Empty means no path was
 	// named, and the check is skipped.
 	ConfigPath string
+	// ServiceStatus reports whether the always-on daemon service is installed
+	// and running. Nil skips the check, which is right for a daemon on another
+	// machine or an embedder that does not manage a service.
+	ServiceStatus func() (service.Status, error)
 }
 
 // mdnsListenWindow is how long the mDNS check listens for an answer. It is
@@ -110,6 +115,7 @@ func Run(ctx context.Context, client *lanternclient.Client, opts Options) Report
 			Status: Skip,
 			Detail: "not checked: the daemon is unreachable, so the token file cannot be located",
 		})
+		addServiceCheck(add, opts)
 		return r
 	}
 	add(Check{
@@ -118,6 +124,7 @@ func Run(ctx context.Context, client *lanternclient.Client, opts Options) Report
 		Detail: fmt.Sprintf("reachable at %s as %s (%s), lan_only=%v",
 			host, orDash(status.DeviceName), orDash(status.PeerID), status.LANOnly),
 	})
+	addServiceCheck(add, opts)
 
 	stateDir := strings.TrimSpace(status.StateDir)
 	if stateDir == "" {
@@ -269,6 +276,64 @@ func daemonCheck(host string, err error) Check {
 		Status: Fail,
 		Detail: fmt.Sprintf("no daemon answering at %s: %v", host, err),
 		Fix:    "lantern daemon",
+	}
+}
+
+// addServiceCheck runs the service check only when a provider was supplied.
+// A daemon on another machine has no local service to inspect, so the CLI
+// leaves the provider nil for a non-loopback URL.
+func addServiceCheck(add func(Check), opts Options) {
+	if opts.ServiceStatus == nil {
+		return
+	}
+	add(checkService(opts.ServiceStatus))
+}
+
+// checkService reports whether the daemon is installed as a per-user service
+// and running. A foreground daemon works but stops with its terminal, so that
+// is a warning rather than a failure; a registration that exists but is not
+// running is a failure, because the next reboot will not bring it back.
+func checkService(status func() (service.Status, error)) Check {
+	st, err := status()
+	if err != nil {
+		return Check{
+			Name:   "service",
+			Status: Warn,
+			Detail: fmt.Sprintf("cannot read the daemon service state: %v", err),
+			Fix:    "lantern service status",
+		}
+	}
+	if !st.Supported {
+		return Check{
+			Name:   "service",
+			Status: Skip,
+			Detail: "no per-user service mechanism on " + st.Platform + "; run lantern daemon under your init system",
+		}
+	}
+	switch {
+	case !st.Installed:
+		return Check{
+			Name:   "service",
+			Status: Warn,
+			Detail: "the daemon is not installed as a service, so it stops when its terminal closes",
+			Fix:    "lantern service install",
+		}
+	case !st.Running:
+		return Check{
+			Name:   "service",
+			Status: Fail,
+			Detail: st.Detail,
+			Fix:    st.Fix,
+		}
+	case st.Linger != nil && !*st.Linger:
+		return Check{
+			Name:   "service",
+			Status: Warn,
+			Detail: st.Detail,
+			Fix:    "loginctl enable-linger $USER",
+		}
+	default:
+		return Check{Name: "service", Status: Pass, Detail: st.Detail}
 	}
 }
 
