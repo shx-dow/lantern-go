@@ -262,6 +262,28 @@ func TestImportRefusesWhileTheDaemonHoldsTheStateDirectory(t *testing.T) {
 	}
 }
 
+func TestPreRestorePathDoesNotReuseAName(t *testing.T) {
+	base := filepath.Join(t.TempDir(), paths.IdentityKeyFileName)
+	stamp := "20260101T000000"
+	first, err := preRestorePath(base, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(first, []byte("previous"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := preRestorePath(base, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second == first {
+		t.Fatal("the second restore would overwrite the first backup")
+	}
+	if !strings.HasSuffix(second, "-2") {
+		t.Fatalf("second backup %q does not carry a counter", second)
+	}
+}
+
 func TestImportRejectsMalformedArchives(t *testing.T) {
 	validPeer := "12D3KooWDEwzFKVu6kM2atQLgDE1PhyfACEc9uwqtzh2zQmv1iWE"
 	validKDF := KDFParams{

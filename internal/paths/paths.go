@@ -17,10 +17,10 @@ import (
 // appDir is the directory name used under each platform's per-user root.
 const appDir = "lantern"
 
-// File names inside Data. They are named here because two packages write
-// them (p2p owns the key, daemon owns the trust store) and because an identity
-// backup has to carry exactly the files that make a device itself. Renaming
-// one without the other would silently split an identity across two files.
+// File names inside Data. They are named here because two packages own them
+// (p2p the key, daemon the trust store) and an identity backup has to carry
+// exactly the files that make a device itself. Renaming one without the other
+// would silently split an identity across two files.
 const (
 	// IdentityKeyFileName is the persisted libp2p private key.
 	IdentityKeyFileName = "lantern-identity.key"

@@ -310,7 +310,10 @@ func Import(dataDir string, archive, passphrase []byte, force bool) (Result, err
 			}
 			return result, fmt.Errorf("inspect %s: %w", path, err)
 		}
-		moved := path + ".pre-restore-" + stamp
+		moved, err := preRestorePath(path, stamp)
+		if err != nil {
+			return result, fmt.Errorf("keep the previous %s: %w", name, err)
+		}
 		if err := os.Rename(path, moved); err != nil {
 			return result, fmt.Errorf("keep the previous %s: %w", name, err)
 		}
@@ -404,6 +407,26 @@ func (k KDFParams) validate() error {
 		return errors.New("identity archive salt is damaged")
 	}
 	return nil
+}
+
+// preRestorePath returns a name that is not taken. Two forced imports in the
+// same second would otherwise overwrite the first import's backup, which
+// defeats the point of keeping the previous files.
+func preRestorePath(path, stamp string) (string, error) {
+	for i := 1; i <= 100; i++ {
+		candidate := path + ".pre-restore-" + stamp
+		if i > 1 {
+			candidate = fmt.Sprintf("%s.pre-restore-%s-%d", path, stamp, i)
+		}
+		_, err := os.Stat(candidate)
+		if errors.Is(err, os.ErrNotExist) {
+			return candidate, nil
+		}
+		if err != nil {
+			return "", err
+		}
+	}
+	return "", errors.New("too many previous files already kept")
 }
 
 func readTrust(dir string) (int, []byte, error) {

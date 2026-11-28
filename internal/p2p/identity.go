@@ -51,9 +51,9 @@ func LoadOrCreatePrivKey(dir string) (crypto.PrivKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal identity: %w", err)
 	}
-	// Flush the bytes before the rename publishes the name. Without this, a
-	// power loss can leave the new identity reachable but empty, which is the
-	// corruption this file now refuses to paper over.
+	// WritePrivateFile flushes the bytes before the rename publishes the name.
+	// Without that, a power loss can leave the new identity reachable but
+	// empty, which is the corruption this file refuses to paper over.
 	if err := storage.WritePrivateFile(path, raw); err != nil {
 		return nil, fmt.Errorf("write identity: %w", err)
 	}
