@@ -42,11 +42,12 @@ const defaultDaemonURL = "http://127.0.0.1:43782"
 // ownedSubcommands are handled here rather than by parseArgs, because each
 // carries its own flags and its own output contract.
 var ownedSubcommands = map[string]bool{
-	"daemon":  true,
-	"doctor":  true,
-	"mcp":     true,
-	"setup":   true,
-	"version": true,
+	"daemon":   true,
+	"doctor":   true,
+	"identity": true,
+	"mcp":      true,
+	"setup":    true,
+	"version":  true,
 }
 
 // globalFlagsWithValues are the CLI flags that consume the argument after
@@ -149,6 +150,8 @@ func usageFor(name string) string {
 		return setupUsage
 	case "service":
 		return serviceUsage
+	case "identity":
+		return identityUsage
 	case "version":
 		return versionUsage
 	}
@@ -248,6 +251,13 @@ func main() {
 				return
 			}
 			runOrExit(runSetup(rest, os.Stdin, os.Stdout))
+			return
+		case "identity":
+			if wantsHelp(rest) {
+				fmt.Fprint(os.Stderr, identityUsage)
+				return
+			}
+			runOrExit(runIdentity(rest, os.Stdin, os.Stdout, os.Stderr))
 			return
 		case "version":
 			if wantsHelp(rest) {
@@ -623,6 +633,7 @@ func usage() {
     ui                           open the daemon's page in a browser
     setup                        write the daemon config for this device
     service install|uninstall|status  run the daemon as an always-on user service
+    identity export|import       back up or restore this device's identity and pairings
     daemon                       run the background service (lantern daemon --help)
     mcp                          run the MCP stdio server for agents
     doctor                       diagnose a setup and print the fix for each problem
