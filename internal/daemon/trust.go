@@ -205,7 +205,7 @@ func NewTrustStore(dataDir string) (*TrustStore, error) {
 	if err := os.MkdirAll(dataDir, storage.PrivateDirPerm); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
-	s := &TrustStore{path: filepath.Join(dataDir, "trusted_peers.json"), byID: make(map[string]TrustEntry)}
+	s := &TrustStore{path: filepath.Join(dataDir, paths.TrustFileName), byID: make(map[string]TrustEntry)}
 	raw, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {

@@ -13,6 +13,7 @@ require (
 	github.com/multiformats/go-multihash v0.2.3
 	go.yaml.in/yaml/v3 v3.0.6
 	golang.org/x/crypto v0.59.0
+	golang.org/x/term v0.48.0
 )
 
 require (

@@ -11,13 +11,12 @@ import (
 	"github.com/shx-dow/lantern-go/internal/storage"
 )
 
-// identityFileName is the persisted libp2p private key for stable peer IDs
-// across restarts. The file holds the marshalled private key bytes with
-// owner-only permissions.
-const identityFileName = "lantern-identity.key"
-
 // LoadOrCreatePrivKey returns the stable private key in dir, generating and
 // persisting a fresh Ed25519 key when none exists.
+//
+// The key lives at paths.IdentityKeyFileName and holds the marshalled private
+// key bytes with owner-only permissions. It is the file an identity backup
+// carries, so its name is shared rather than repeated here.
 func LoadOrCreatePrivKey(dir string) (crypto.PrivKey, error) {
 	if dir == "" {
 		// Never fall back to a temporary directory: the identity key is the
@@ -28,7 +27,7 @@ func LoadOrCreatePrivKey(dir string) (crypto.PrivKey, error) {
 	if err := os.MkdirAll(dir, storage.PrivateDirPerm); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
-	path := filepath.Join(dir, identityFileName)
+	path := filepath.Join(dir, paths.IdentityKeyFileName)
 	if raw, err := os.ReadFile(path); err == nil {
 		key, err := crypto.UnmarshalPrivateKey(raw)
 		if err == nil {
@@ -52,32 +51,11 @@ func LoadOrCreatePrivKey(dir string) (crypto.PrivKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal identity: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".lantern-identity-*")
-	if err != nil {
-		return nil, fmt.Errorf("create identity: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-	if err := tmp.Chmod(storage.PrivateFilePerm); err != nil {
-		_ = tmp.Close()
-		return nil, fmt.Errorf("protect identity: %w", err)
-	}
-	if _, err := tmp.Write(raw); err != nil {
-		_ = tmp.Close()
-		return nil, fmt.Errorf("write identity: %w", err)
-	}
 	// Flush the bytes before the rename publishes the name. Without this, a
 	// power loss can leave the new identity reachable but empty, which is the
 	// corruption this file now refuses to paper over.
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return nil, fmt.Errorf("sync identity: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return nil, fmt.Errorf("close identity: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return nil, fmt.Errorf("publish identity: %w", err)
+	if err := storage.WritePrivateFile(path, raw); err != nil {
+		return nil, fmt.Errorf("write identity: %w", err)
 	}
 	return priv, nil
 }

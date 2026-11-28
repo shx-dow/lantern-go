@@ -48,7 +48,7 @@ func TestIdentityRefusesToReplaceCorruptKey(t *testing.T) {
 			if _, err := LoadOrCreatePrivKey(dir); err != nil {
 				t.Fatal(err)
 			}
-			path := filepath.Join(dir, identityFileName)
+			path := filepath.Join(dir, paths.IdentityKeyFileName)
 			if err := os.WriteFile(path, []byte(tc.body), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -140,7 +140,7 @@ func TestIdentityDefaultDirIsPersistent(t *testing.T) {
 		t.Fatal("the default identity did not persist between calls")
 	}
 
-	path := filepath.Join(paths.Data(), identityFileName)
+	path := filepath.Join(paths.Data(), paths.IdentityKeyFileName)
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("identity key is not at the persistent location %q: %v", path, err)
 	}
@@ -153,7 +153,7 @@ func TestIdentityKeyIsOwnerOnly(t *testing.T) {
 	if _, err := LoadOrCreatePrivKey(dir); err != nil {
 		t.Fatal(err)
 	}
-	fi, err := os.Stat(filepath.Join(dir, identityFileName))
+	fi, err := os.Stat(filepath.Join(dir, paths.IdentityKeyFileName))
 	if err != nil {
 		t.Fatal(err)
 	}

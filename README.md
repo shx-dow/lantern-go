@@ -329,6 +329,33 @@ lantern send ./path/to/file-or-dir
 lantern receive <share-code> [output-directory]
 ```
 
+## Back up the identity
+
+The identity is the private key behind this device's peer ID. Other devices pair
+with that peer ID, so losing the key means pairing every one of them again.
+`lantern identity export` writes the key and the pairings to one archive,
+encrypted with a passphrase you choose:
+
+```sh
+lantern identity export -o lantern-identity.lantern
+```
+
+Keep the archive somewhere this machine is not. It holds a private key, so treat
+it as one: without the passphrase it is useless, and a forgotten passphrase
+cannot be recovered. Export is safe while the daemon runs.
+
+Restoring replaces the identity the daemon loaded, so stop the daemon first
+(`systemctl --user stop lanternd` on Linux, or the platform's service manager):
+
+```sh
+lantern identity import lantern-identity.lantern
+```
+
+If an identity already exists, import refuses until you add `--force`; the
+previous files are kept beside them as `*.pre-restore-*`. Shared directories,
+`--writable-dirs`, and the bearer token belong to the machine, not the identity,
+and are not restored.
+
 ## What holds, on every route
 
 - The receiving device resolves the destination, inside its own roots
